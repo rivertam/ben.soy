@@ -17,6 +17,26 @@ file under "API contract".
   repeated fall DST hour distinct without exposing importer IDs.
   `auto-filter.js` only debounces full-log form changes and navigates to the
   canonical GET URL; the Apply button remains the no-JavaScript path.
+- `/lifting/log` also renders the volume heatmap, restricted to the sets the
+  active filters admit. That calendar comes from
+  `Snapshot::calendar_filtered` in-process (the same per-set predicate as the
+  set log); the public `/api/fitness/calendar` endpoint deliberately still
+  accepts no query parameters. Heatmap day cells carry the active filters
+  (minus `from`/`to`/`page`) into their day links.
+- Workout pages derive a muscle map (front/back SVG plus text lists) at
+  render time: `muscles.rs` intersects each exercise's stored muscle tags
+  with `PRIMARY_BY_MOVEMENT`, a static table mirroring which muscles each
+  `fitness_sync::exercise_tags` movement rule treats as the movers; leftover
+  muscle tags render as secondary. No rank is stored anywhere — like
+  records, the split is derived, and the wire contract is unchanged (tags
+  reach the page through `Snapshot::exercise_tag_map`, not JSON).
+- Workout pages also render a plain-text share block (`share.rs` +
+  `share.js`): a Strong-style set list ending in the workout's permanent
+  URL, built from the request's Host/`x-forwarded-proto` like the planes
+  receipt QR. The text lives in a readonly `<textarea>` — selectable
+  without JavaScript, and on the em-dash layer's skip list
+  (`src/emdash.rs`) so user-authored em dashes stay plain text;
+  `share.js` only reveals the clipboard button.
 - Public reads and the authenticated import:
   `src/app/interests/lifting/archive/` — `routes.rs` over the engine
   (filters, import validation, in-memory snapshot, store) and `db.rs`

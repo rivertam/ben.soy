@@ -220,6 +220,19 @@ impl Filters {
             .collect()
     }
 
+    /// The active filters a heatmap day link should carry: everything
+    /// except `from`/`to` (the day supplies those) and `page` (a narrower
+    /// result set restarts at page one).
+    pub(super) fn day_link_query(&self) -> String {
+        let pairs = self
+            .pairs
+            .iter()
+            .filter(|(key, _)| key != "from" && key != "to" && key != "page")
+            .cloned()
+            .collect();
+        Self { pairs }.query()
+    }
+
     pub(super) fn page_url(&self, page: usize) -> String {
         let mut pairs = self
             .pairs
@@ -378,6 +391,25 @@ mod tests {
         assert_eq!(
             filters.page_url(3),
             "/lifting/log?movement=squat-type&page=3#set-log"
+        );
+    }
+
+    #[test]
+    fn day_link_query_drops_dates_and_pagination_only() {
+        let filters = Filters::normalize(vec![
+            ("movement".into(), "squat-type".into()),
+            ("from".into(), "2026-01-01".into()),
+            ("to".into(), "2026-02-01".into()),
+            ("per_page".into(), "40".into()),
+            ("page".into(), "3".into()),
+        ])
+        .expect("safe query");
+        assert_eq!(filters.day_link_query(), "movement=squat-type&per_page=40");
+        assert_eq!(
+            Filters::normalize(vec![("from".into(), "2026-01-01".into())])
+                .expect("safe query")
+                .day_link_query(),
+            ""
         );
     }
 

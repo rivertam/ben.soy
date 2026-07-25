@@ -356,6 +356,44 @@ impl Snapshot {
         self.calendar.clone()
     }
 
+    /// Daily volume points over only the sets a filter admits, using the
+    /// same per-set predicate as `sets_page` so the log page's heatmap
+    /// and its set log can never disagree about what matched. Pagination
+    /// fields are irrelevant here and ignored. With an empty filter this
+    /// reproduces `calendar()` exactly, including zero-point warm-up-only
+    /// days.
+    pub fn calendar_filtered(&self, filters: &Filters) -> api::Calendar {
+        let needle = filters.q.as_ref().map(|q| q.to_ascii_lowercase());
+        let mut by_date: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+        for workout in &self.workouts {
+            for set in &workout.sets {
+                if self.matches(filters, needle.as_deref(), workout, set) {
+                    let points =
+                        scoring::set_volume_points(&set.wire.set_type, set.wire.effort_hundredths);
+                    *by_date.entry(workout.local_date.as_str()).or_default() += points;
+                }
+            }
+        }
+        api::Calendar {
+            version: self.version,
+            days: by_date
+                .into_iter()
+                .map(|(date, volume_points)| api::CalendarDay {
+                    date: date.to_string(),
+                    volume_points,
+                })
+                .collect(),
+        }
+    }
+
+    /// Movement/muscle/equipment tags keyed by canonical exercise name —
+    /// the same map the tag filters consult. Pages use it to derive the
+    /// muscle involvement a workout page displays; it never rides the
+    /// public wire.
+    pub fn exercise_tag_map(&self) -> &HashMap<String, Vec<(String, String)>> {
+        &self.tags_by_exercise
+    }
+
     pub fn ids(&self) -> api::SetIds {
         self.ids.clone()
     }
@@ -787,6 +825,54 @@ mod tests {
         assert_eq!(snap.sets_page(&morning).total_workouts, 2);
         let night = parse_filters(&[("time_of_day".into(), "night".into())]).unwrap();
         assert_eq!(snap.sets_page(&night).total_workouts, 0);
+    }
+
+    #[test]
+    fn filtered_calendar_mirrors_the_set_predicate() {
+        let snap = snapshot();
+
+        // Empty filter reproduces the precomputed calendar exactly.
+        let all = snap.calendar_filtered(&parse_filters(&[]).unwrap());
+        let precomputed = snap.calendar();
+        assert_eq!(all.version, precomputed.version);
+        assert_eq!(all.days.len(), precomputed.days.len());
+        for (filtered, unfiltered) in all.days.iter().zip(precomputed.days.iter()) {
+            assert_eq!(filtered.date, unfiltered.date);
+            assert_eq!(filtered.volume_points, unfiltered.volume_points);
+        }
+        assert_eq!(all.days[1].volume_points, 6, "two RPE-8 sets that day");
+
+        // A set-level filter drops only the non-matching sets' points.
+        let squats = snap.calendar_filtered(
+            &parse_filters(&[("movement".into(), "squat-type".into())]).unwrap(),
+        );
+        assert_eq!(squats.days.len(), 2, "both days still have a squat set");
+        assert_eq!(squats.days[0].date, "2026-07-20");
+        assert_eq!(squats.days[0].volume_points, 3);
+        assert_eq!(
+            squats.days[1].volume_points, 3,
+            "the bench set no longer scores"
+        );
+
+        // A day with zero matching sets disappears entirely.
+        let bench =
+            snap.calendar_filtered(&parse_filters(&[("q".into(), "bench".into())]).unwrap());
+        assert_eq!(bench.days.len(), 1);
+        assert_eq!(bench.days[0].date, "2026-07-21");
+        assert_eq!(bench.days[0].volume_points, 3);
+    }
+
+    #[test]
+    fn exercise_tag_map_exposes_the_filter_side_tags() {
+        let snap = snapshot();
+        let tags = snap.exercise_tag_map();
+        let squat = tags.get("Squat (Barbell)").expect("tagged exercise");
+        assert!(squat.contains(&("movement".to_string(), "squat-type".to_string())));
+        assert!(squat.contains(&("muscle".to_string(), "quads".to_string())));
+        assert!(
+            !tags.contains_key("Bench Press"),
+            "untagged exercise absent"
+        );
     }
 
     #[test]

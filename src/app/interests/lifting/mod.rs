@@ -6,7 +6,9 @@ mod data;
 mod filters;
 mod format;
 mod heatmap;
+mod muscles;
 mod results;
+mod share;
 
 use self::archive::store::FitnessStore;
 use topcoat::{
@@ -208,13 +210,15 @@ async fn lifting_log(cx: &Cx) -> Result {
 
     let meta = interest("lifting");
     let api_pairs = filters.api_pairs();
-    let (facets, sets) = fitness::load(app_context::<FitnessStore>(cx), &api_pairs).await;
+    let (facets, sets, calendar) = fitness::load(app_context::<FitnessStore>(cx), &api_pairs).await;
     if let Err(error) = &facets {
         eprintln!("fitness facets fetch failed: {error}");
     }
     if let Err(error) = &sets {
         eprintln!("fitness sets fetch failed: {error}");
     }
+    let calendar_days = calendar.ok().map(|calendar| calendar.days);
+    let day_link_query = filters.day_link_query();
     if let Ok(page) = &sets {
         let last_page = total_pages(page);
         if page.page > last_page {
@@ -798,6 +802,18 @@ async fn lifting_log(cx: &Cx) -> Result {
                     </section>
                 )
 
+                if let Some(days) = calendar_days {
+                    rail_section(
+                        class: "mt-12",
+                        stamp: "volume",
+                        heatmap::calendar_heatmap(
+                            days: days,
+                            link_query: day_link_query,
+                            filtered: !active_filters.is_empty()
+                        )
+                    )
+                }
+
                 rail_section(
                     class: "mt-12",
                     stamp: "sets",
@@ -923,19 +939,25 @@ async fn lift_detail(cx: &Cx) -> Result {
         return Err(redirect(&workout_url(workout_path)).into());
     }
 
-    let detail = fitness::load_workout_by_path(app_context::<FitnessStore>(cx), workout_path).await;
-    if matches!(&detail, Err(error) if error.is_not_found()) {
+    let loaded = fitness::load_workout_by_path(app_context::<FitnessStore>(cx), workout_path).await;
+    if matches!(&loaded, Err(error) if error.is_not_found()) {
         return Err(not_found().into());
     }
-    if let Err(error) = &detail {
+    if let Err(error) = &loaded {
         eprintln!("fitness workout fetch failed: {error}");
     }
 
     let meta = interest("lifting");
-    let workout = detail
-        .as_ref()
-        .ok()
-        .and_then(|detail| detail.workout.as_ref());
+    let detail = loaded.as_ref().ok().map(|(detail, _)| detail);
+    let workout = detail.and_then(|detail| detail.workout.as_ref());
+    let involvement = loaded.as_ref().ok().and_then(|(detail, tags)| {
+        detail
+            .workout
+            .as_ref()
+            .map(|workout| muscles::workout_involvement(workout, tags))
+    });
+    let share_text =
+        workout.map(|workout| share::share_text(workout, share::request_origin(cx).as_deref()));
     let page_title = workout
         .map(|workout| format!("{} · {}", workout.title, meta.title))
         .unwrap_or_else(|| meta.title.to_string());
@@ -943,13 +965,9 @@ async fn lift_detail(cx: &Cx) -> Result {
         .map(|workout| workout.title.as_str())
         .unwrap_or("Workout");
     let newer_lift_url = detail
-        .as_ref()
-        .ok()
         .and_then(|detail| detail.newer_workout_path.as_deref())
         .map(workout_url);
     let older_lift_url = detail
-        .as_ref()
-        .ok()
         .and_then(|detail| detail.older_workout_path.as_deref())
         .map(workout_url);
 
@@ -960,11 +978,20 @@ async fn lift_detail(cx: &Cx) -> Result {
             active: "interests",
             runtime: false,
             if let Some(workout) = workout {
-                lift_detail_head(workout: workout)
+                lift_detail_head(workout: workout, share_text: share_text.as_deref().unwrap_or(""))
             } else {
                 page_head(stamp: "lift", title: page_heading, lede: "")
             }
-            <div>
+            // `relative` + `min-h` anchor the muscle-map aside: in the
+            // wide-viewport gutter it is absolutely positioned out of the
+            // flow (nothing pushes the set log down), and the minimum
+            // height keeps a short workout's footer from sliding under it.
+            <div
+                class=(class!(
+                    "relative",
+                    "min-[90rem]:min-h-[24rem]" if involvement.is_some(),
+                ))
+            >
                 <section class=(LIST) aria-label="Workout">
                     if let Some(workout) = workout {
                         workout_detail(workout: workout)
@@ -980,6 +1007,24 @@ async fn lift_detail(cx: &Cx) -> Result {
                         </div>
                     }
                 </section>
+
+                // The muscle map rides the right page gutter on viewports
+                // wide enough to hold a 14.5rem panel beside the centered
+                // 56rem shell (56 + 2×16.5 = 89rem, so 90rem clears it);
+                // below that it flows here, after the whole set log.
+                if let Some(involvement) = &involvement {
+                    <aside
+                        class="mt-12 pt-4 border-t border-hairline \
+                             min-[90rem]:absolute min-[90rem]:left-full min-[90rem]:top-0 \
+                             min-[90rem]:ml-8 min-[90rem]:w-[14.5rem] \
+                             min-[90rem]:mt-0 min-[90rem]:pt-0 min-[90rem]:border-t-0"
+                    >
+                        <p class=(META_LABEL)>"muscles worked"</p>
+                        <div class="mt-3">
+                            muscles::muscle_map(involvement: involvement)
+                        </div>
+                    </aside>
+                }
 
                 if newer_lift_url.is_some() || older_lift_url.is_some() {
                     <nav
@@ -1015,6 +1060,10 @@ async fn lift_detail(cx: &Cx) -> Result {
                         }
                     </nav>
                 }
+
+                if share_text.is_some() {
+                    <script type="module" src=(share::SHARE_JS)></script>
+                }
             </div>
             back_link(href: "/lifting", label: "latest lift")
         )
@@ -1022,7 +1071,7 @@ async fn lift_detail(cx: &Cx) -> Result {
 }
 
 #[component]
-async fn lift_detail_head(workout: &fitness::Workout) -> Result {
+async fn lift_detail_head(workout: &fitness::Workout, share_text: &str) -> Result {
     let workout = WorkoutCard::from(workout);
     view! {
         <header class="rail-row mt-16">
@@ -1064,6 +1113,9 @@ async fn lift_detail_head(workout: &fitness::Workout) -> Result {
                     "{} {}", workout.set_count, plural(workout.set_count, "set", "sets"),
                 ))</dd>
             </div>
+            if !share_text.is_empty() {
+                share::share_row(text: share_text)
+            }
         </dl>
     }
 }

@@ -50,27 +50,39 @@ impl fmt::Display for LoadError {
     }
 }
 
-/// The full-log page's pair of reads. Both come from one snapshot, so the
-/// facet counts and the filtered page can never disagree about versions.
+/// The full-log page's reads. All come from one snapshot, so the facet
+/// counts, the filtered page, and the filtered calendar can never
+/// disagree about versions — or about which sets matched.
 pub async fn load(
     store: &FitnessStore,
     filters: &[(String, String)],
-) -> (Result<Facets, LoadError>, Result<SetPage, LoadError>) {
+) -> (
+    Result<Facets, LoadError>,
+    Result<SetPage, LoadError>,
+    Result<Calendar, LoadError>,
+) {
     let snapshot = match store.snapshot().await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             let message = error.to_string();
             return (
                 Err(LoadError::Unavailable(message.clone())),
+                Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message)),
             );
         }
     };
-    let sets = match parse_filters(filters) {
-        Ok(parsed) => Ok(snapshot.sets_page(&parsed)),
-        Err(message) => Err(LoadError::Rejected(message)),
+    let (sets, calendar) = match parse_filters(filters) {
+        Ok(parsed) => (
+            Ok(snapshot.sets_page(&parsed)),
+            Ok(snapshot.calendar_filtered(&parsed)),
+        ),
+        Err(message) => (
+            Err(LoadError::Rejected(message.clone())),
+            Err(LoadError::Rejected(message)),
+        ),
     };
-    (Ok(snapshot.facets()), sets)
+    (Ok(snapshot.facets()), sets, calendar)
 }
 
 /// The landing view: archive-wide daily totals plus the newest workout.
@@ -92,11 +104,18 @@ pub async fn load_home(
     }
 }
 
+/// Movement/muscle/equipment tags for the exercises one workout used,
+/// keyed by canonical exercise name. Snapshot-derived and page-only —
+/// deliberately not part of any public JSON envelope.
+pub type ExerciseTags = std::collections::HashMap<String, Vec<(String, String)>>;
+
 /// Resolve a canonical public path. Rejections mirror the API's 404s.
+/// The tags come from the same snapshot as the workout, so the muscle
+/// summary always describes exactly the sets on the page.
 pub async fn load_workout_by_path(
     store: &FitnessStore,
     path: &str,
-) -> Result<WorkoutDetail, LoadError> {
+) -> Result<(WorkoutDetail, ExerciseTags), LoadError> {
     let Some(instant) = eastern::parse_public_path(path) else {
         return Err(LoadError::NotFound("not found".to_string()));
     };
@@ -104,9 +123,21 @@ pub async fn load_workout_by_path(
         .snapshot()
         .await
         .map_err(|error| LoadError::Unavailable(error.to_string()))?;
-    snapshot
+    let detail = snapshot
         .by_path(&instant)
-        .ok_or_else(|| LoadError::NotFound("not found".to_string()))
+        .ok_or_else(|| LoadError::NotFound("not found".to_string()))?;
+    let mut tags = ExerciseTags::new();
+    if let Some(workout) = &detail.workout {
+        let map = snapshot.exercise_tag_map();
+        for set in &workout.sets {
+            if !tags.contains_key(&set.exercise_name)
+                && let Some(pairs) = map.get(&set.exercise_name)
+            {
+                tags.insert(set.exercise_name.clone(), pairs.clone());
+            }
+        }
+    }
+    Ok((detail, tags))
 }
 
 #[cfg(test)]

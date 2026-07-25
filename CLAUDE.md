@@ -32,3 +32,4 @@ Rust SSR personal site on topcoat 0.3.0 — a niche framework; read
 - Spire runs are data, not content: `/`, `/spire`, `/feed.xml` render them live from `/api/spire/runs` — publish runs with `just sync-spire`, never by editing the repo
 - Fitness sets are database data, not content: never hardcode the CSV; changes spanning `/lifting`, import, API, schema, tags, or local startup must preserve `docs/fitness.md` invariants
 - Records (`/lifting` badges) are derived from set history at snapshot build (`src/app/interests/lifting/archive/records.rs`), never stored or imported — there is deliberately no records table
+- Muscle-map primary/secondary (`lifting/muscles.rs`) is likewise derived at render — no rank column; a taxonomy change in `exercise_tags()` must keep `PRIMARY_BY_MOVEMENT` aligned

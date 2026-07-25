@@ -38,9 +38,22 @@ const CELL_HOVER: &str = "hover:border-oxide \
 /// The volume calendar. It is deliberately an owned prop: callers can pass
 /// the successful calendar API payload straight through without adding a
 /// browser runtime or serializing data into the page.
+///
+/// `link_query` carries the log page's active filters (already canonical,
+/// minus `from`/`to`/`page`): day cells then link to that filtered log
+/// narrowed to their date. `filtered` — passed separately because the two
+/// disagree in both directions (`from`/`to` narrow the calendar but leave
+/// the day links, `per_page` rides the day links but filters nothing) —
+/// says whether the days really are a filtered subset, and drives the
+/// subtitle, aria wording, and empty state. The landing page passes
+/// neither and keeps the archive-wide behavior.
 #[component]
-pub(super) async fn calendar_heatmap(days: Vec<CalendarDay>) -> Result {
-    let Some(calendar) = Calendar::from_days(&days) else {
+pub(super) async fn calendar_heatmap(
+    days: Vec<CalendarDay>,
+    #[default(String::new())] link_query: String,
+    #[default(false)] filtered: bool,
+) -> Result {
+    let Some(calendar) = Calendar::from_days(&days, &link_query) else {
         return view! {
             <section aria-labelledby="fitness-heatmap-title">
                 <header
@@ -57,7 +70,11 @@ pub(super) async fn calendar_heatmap(days: Vec<CalendarDay>) -> Result {
                     </div>
                 </header>
                 <p class=(class!(HEAT_NOTE, "mt-[0.8rem]"))>
-                    "No lifting days are available yet."
+                    if filtered {
+                        "No logged days match these filters."
+                    } else {
+                        "No lifting days are available yet."
+                    }
                 </p>
             </section>
         };
@@ -65,11 +82,22 @@ pub(super) async fn calendar_heatmap(days: Vec<CalendarDay>) -> Result {
 
     let ending = format_short(calendar.latest);
     let start = format_short(calendar.latest - 53.weeks());
-    let subtitle = format!("{start} - {ending}");
-    let navigation_label = format!(
-        "Volume points by day for the 53 weeks ending {ending}. {} logged days are links to their lifts.",
-        calendar.logged_days,
-    );
+    let subtitle = if filtered {
+        format!("{start} - {ending} · matching sets only")
+    } else {
+        format!("{start} - {ending}")
+    };
+    let navigation_label = if filtered {
+        format!(
+            "Volume points from sets matching the active filters, by day, for the 53 weeks ending {ending}. {} matching days are links to their lifts.",
+            calendar.logged_days,
+        )
+    } else {
+        format!(
+            "Volume points by day for the 53 weeks ending {ending}. {} logged days are links to their lifts.",
+            calendar.logged_days,
+        )
+    };
     let legend_styles: Vec<String> = (0..=4).map(heat_style).collect();
 
     view! {
@@ -187,7 +215,7 @@ struct Calendar {
 }
 
 impl Calendar {
-    fn from_days(days: &[CalendarDay]) -> Option<Self> {
+    fn from_days(days: &[CalendarDay], link_query: &str) -> Option<Self> {
         let mut points_by_day = BTreeMap::new();
         for day in days {
             let date: Date = day.date.parse().ok()?;
@@ -211,7 +239,7 @@ impl Calendar {
             if has_lift {
                 logged_days += 1;
             }
-            cells.push(HeatmapCell::new(date, points, has_lift));
+            cells.push(HeatmapCell::new(date, points, has_lift, link_query));
         }
         let month_labels = MonthLabel::from_cells(&cells);
         Some(Self {
@@ -232,7 +260,7 @@ struct HeatmapCell {
 }
 
 impl HeatmapCell {
-    fn new(date: Date, points: u32, has_lift: bool) -> Self {
+    fn new(date: Date, points: u32, has_lift: bool, link_query: &str) -> Self {
         let intensity = intensity(points);
         let border = if has_lift && points == 0 {
             CELL_BORDER_ZERO
@@ -249,10 +277,19 @@ impl HeatmapCell {
         } else {
             format!("{date_label}: no volume points")
         };
+        // Day links keep the log's other filters; `from`/`to`/`page` were
+        // already stripped from `link_query` so the day itself wins.
+        let href = has_lift.then(|| {
+            if link_query.is_empty() {
+                format!("/lifting/log?from={date}&to={date}#set-log")
+            } else {
+                format!("/lifting/log?{link_query}&from={date}&to={date}#set-log")
+            }
+        });
         Self {
             date,
             border,
-            href: has_lift.then(|| format!("/lifting/log?from={date}&to={date}#set-log")),
+            href,
             label,
             style: heat_style(intensity),
         }
@@ -335,7 +372,7 @@ mod tests {
 
     #[test]
     fn grid_is_53_complete_sunday_to_saturday_weeks_anchored_to_latest_day() {
-        let calendar = Calendar::from_days(&[day("2026-07-21", 42)]).expect("calendar");
+        let calendar = Calendar::from_days(&[day("2026-07-21", 42)], "").expect("calendar");
 
         assert_eq!(calendar.cells.len(), 371);
         assert_eq!(calendar.latest.to_string(), "2026-07-21");
@@ -377,9 +414,22 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_calendar_days_sum_without_losing_their_link() {
+    fn filtered_day_links_keep_the_active_filters() {
         let calendar =
-            Calendar::from_days(&[day("2024-02-29", 20), day("2024-02-29", 25)]).expect("calendar");
+            Calendar::from_days(&[day("2026-07-21", 12)], "movement=squat-type&per_page=40")
+                .expect("calendar");
+        assert_eq!(
+            calendar.cells[366].href.as_deref(),
+            Some(
+                "/lifting/log?movement=squat-type&per_page=40&from=2026-07-21&to=2026-07-21#set-log"
+            )
+        );
+    }
+
+    #[test]
+    fn duplicate_calendar_days_sum_without_losing_their_link() {
+        let calendar = Calendar::from_days(&[day("2024-02-29", 20), day("2024-02-29", 25)], "")
+            .expect("calendar");
         let leap_day = calendar
             .cells
             .iter()
