@@ -8,10 +8,9 @@ Ground truth:
 
 - Vendored sources: `~/.cargo/registry/src/index.crates.io-*/toasty-0.9.0/`
   (query builder in `src/stmt/`, handles in `src/db/`) and
-  `toasty-cli-0.9.0/` (migration commands). `CHANGELOG.md` sits at the crate
-  root — read it first when the version moves.
-- The `Model` derive is documented exhaustively in
-  `toasty-macros-0.9.0/src/lib.rs`; that doc comment is the attribute list.
+  `toasty-cli-0.9.0/` (migration commands)
+- `toasty-macros-0.9.0/src/lib.rs` — the `Model` derive's doc comment is the
+  authoritative attribute reference
 - docs.rs: https://docs.rs/toasty/0.9.0 — repo: https://github.com/tokio-rs/toasty
 - This repo's usage, best-first: `src/app/interests/spire/db.rs` (queries,
   transaction, idempotent insert), `src/app/analytics/db.rs` (raw SQL,
@@ -79,10 +78,9 @@ Attributes the derive accepts: `table`, `key`, `index`, `unique`, `auto`,
 - **Toasty hydrates whole rows.** A wide blob column is paid on every list
   read, which is why `SpireRunRaw` holds the ~100 KB `.run` payload in its
   own table, write-only by construction. New blob → new table.
-- No model here stores JSON as JSON — `SpireRunRaw.raw` is a plain `String`.
-  If you ever add a `Json<T>` or `serde_json::Value` field, 0.9.0 **requires**
-  an explicit `#[column(type = …)]` on it (`text`, `varchar(n)`, `json`, or
-  `jsonb`); without one it does not compile.
+- A `Json<T>` or `serde_json::Value` field **must** carry an explicit
+  `#[column(type = …)]` (`text`, `varchar(n)`, `json`, `jsonb`) or it does
+  not compile. No model here has one — `SpireRunRaw.raw` is a plain `String`.
 - Money/weight/effort are stored as scaled integers (`weight_milli`,
   `effort_hundredths`), never floats. Keep it that way.
 - Postgres here has no CHECK constraints (D1's STRICT/CHECK didn't carry
@@ -130,12 +128,11 @@ already stored, filter the payload down to genuinely new rows, write them
 plus a version bump inside one transaction. A primary-key collision aborts
 the transaction, and the CLI just reruns.
 
-0.9.0 added upsert: the derive generates `Model::upsert_by_<field>(…)` per
-primary key and per unique constraint, with `.on_create()`, `.on_update()`,
-and `.or_ignore()` — the last yields `Some(row)` after an insert and `None`
-after a conflict. It is one statement per row. The import paths deliberately
-stay on select-then-`create_many`: they report `added`/`skipped` from the
-pre-select and write the whole batch in one round trip.
+Upsert exists — `Model::upsert_by_<field>(…)`, generated per primary key and
+per unique constraint, with `.on_create()`, `.on_update()`, and `.or_ignore()`
+(`Some(row)` on insert, `None` on conflict) — but it is one statement per row.
+The import paths stay on select-then-`create_many` on purpose: `added`/
+`skipped` come from the pre-select, and the batch is one round trip.
 
 ## Raw SQL escape hatch
 
@@ -189,10 +186,10 @@ Subcommands: `apply`, `generate`, `snapshot`, `drop`, `reset`.
 - Review the generated SQL before applying. Toasty writes what the diff
   implies, including drops.
 - `migration reset` **drops every table**. Local only.
-- After bumping the toasty version, run `just migrate-local migration generate`
-  before touching a model: it must print "no migration needed". A changed
-  snapshot format would otherwise surface later as a bogus migration attached
-  to a real schema edit. (0.8.0 → 0.9.0 was clean.)
+- After a toasty version bump, run `just migrate-local migration generate`
+  before touching a model: it must print "no migration needed", or a changed
+  snapshot format will surface later as a bogus migration welded to a real
+  schema edit.
 - The runtime image has no `migrate` binary; production migrations are run
   from a checkout (`docs/railway-deploy.md`).
 - Writing to prod Postgres from Claude is blocked by the permission
