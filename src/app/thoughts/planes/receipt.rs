@@ -125,6 +125,7 @@ async fn receipt_comparisons(scale_kg: f64, compare_href: String) -> Result {
 pub async fn receipt(
     cx: &Cx,
     from: Airport,
+    vias: Vec<Airport>,
     to: Airport,
     cabin: Cabin,
     round_trip: bool,
@@ -173,10 +174,17 @@ pub async fn receipt(
         if share_path.contains('?') { "&" } else { "?" }
     );
 
-    let route_line = format!(
-        "{} ({}) {arrow} {} ({})",
-        from.city, from.iata, to.city, to.iata
-    );
+    // The itinerary chain, origin → layovers → destination; the round-trip
+    // glyph joins every hop since each leg is flown both ways.
+    let chain = std::iter::once(&from)
+        .chain(vias.iter())
+        .chain(std::iter::once(&to))
+        .collect::<Vec<_>>();
+    let route_line = chain
+        .iter()
+        .map(|a| format!("{} ({})", a.city, a.iata))
+        .collect::<Vec<_>>()
+        .join(&format!(" {arrow} "));
     let route_meta = if staycation {
         "you’re already there — 0 km flown".to_string()
     } else {
@@ -188,9 +196,12 @@ pub async fn receipt(
         )
     };
     let code_text = format!(
-        "{} {arrow} {} · {}",
-        from.iata,
-        to.iata,
+        "{} · {}",
+        chain
+            .iter()
+            .map(|a| a.iata.as_str())
+            .collect::<Vec<_>>()
+            .join(&format!(" {arrow} ")),
         cabin.as_str().to_uppercase()
     );
 

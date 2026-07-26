@@ -27,6 +27,7 @@ Rust SSR personal site on topcoat 0.3.0 — a niche framework; read
 - `styles/planes-charts.css` hardcodes generated `seg-<bar>-<slice>` and `data-pick-*` names; the css tests in `charts.rs` are the tripwire
 - After editing `reference_data.rs` run `just test` — unknown source/option/activity ids panic at render time, tests catch them first
 - `?oneway` is presence-only and `trip=oneway` also parses (share-URL back-compat) — don't simplify
+- Layover `via` params are hand-parsed from the raw query (`parse_vias`), never declared in `PlanesQuery` — serde errors on repeated declared keys and the error redirect would wipe the query
 - `emissions.rs` deliberately models only the myclimate fuel curve; the missing aircraft-production and infrastructure terms are not an omission to complete
 - Units: kg CO₂e and km everywhere; number formatting mirrors Intl.NumberFormat half-away-from-zero — don't "fix" the rounding
 - Spire runs are data, not content: `/`, `/spire`, `/feed.xml` render them live from `/api/spire/runs` — publish runs with `just sync-spire`, never by editing the repo

@@ -27,7 +27,9 @@ use super::{
     comparison_scale::{
         ComparisonMode, comparison_rows, domain_color, list_makeup_chips, pick_makeup_row,
     },
-    emissions::{Cabin, FlightImpact, FlightInput, JET_FUEL_KG_PER_LITRE, flight_impact},
+    emissions::{
+        Cabin, Coordinates, FlightImpact, JET_FUEL_KG_PER_LITRE, great_circle_km, route_impact,
+    },
     format::{
         format_bar_value, format_count, format_ice, format_js_number, format_litres, format_tonnes,
         format_tonnes_smart, format_whole, format_years_span,
@@ -598,6 +600,7 @@ pub async fn charts_section(
     impact: FlightImpact,
     round_trip: bool,
     from: Airport,
+    vias: Vec<Airport>,
     to: Airport,
     cabin: Cabin,
     share_path: String,
@@ -605,19 +608,12 @@ pub async fn charts_section(
 ) -> Result {
     let to_city = to.city.clone();
     let flight_tonnes = impact.tonnes_co2e;
-    let flight_input = FlightInput {
-        from: from.coordinates(),
-        to: to.coordinates(),
-        cabin,
-        round_trip,
-    };
-    let cabin_years = |cabin: Cabin| {
-        flight_impact(&FlightInput {
-            cabin,
-            ..flight_input
-        })
-        .travel_budget_years
-    };
+    let stops: Vec<Coordinates> = std::iter::once(&from)
+        .chain(vias.iter())
+        .chain(std::iter::once(&to))
+        .map(Airport::coordinates)
+        .collect();
+    let cabin_years = |cabin: Cabin| route_impact(&stops, cabin, round_trip).travel_budget_years;
     let flight_kg = flight_tonnes * 1000.0;
     let monk_t = monk_tonnes();
     let scale_max = flight_tonnes.max(monk_t);
@@ -642,8 +638,14 @@ pub async fn charts_section(
         1.0
     };
     // The seat map depicts the nearer haul model; 2000 km is the midpoint of
-    // the 1500–2500 km blend zone the fuel model interpolates across.
-    let long_haul = impact.distance_km >= 2000.0;
+    // the 1500–2500 km blend zone the fuel model interpolates across. With
+    // layovers each leg flies its own aircraft — the longest leg (the bulk
+    // of the bill) picks the one drawn.
+    let longest_leg_km = stops
+        .windows(2)
+        .map(|w| great_circle_km(w[0].lat, w[0].lon, w[1].lat, w[1].lon))
+        .fold(0.0_f64, f64::max);
+    let long_haul = longest_leg_km >= 2000.0;
     let sac_len = SACRIFICE_BARS.len() as i64;
     let start_view = initial_view.clone();
 
@@ -1378,6 +1380,7 @@ pub async fn charts_section(
                     <div :hidden=$(view.get() != "receipt")>
                         receipt::receipt(
                             from: from.clone(),
+                            vias: vias.clone(),
                             to: to.clone(),
                             cabin: cabin,
                             round_trip: round_trip,

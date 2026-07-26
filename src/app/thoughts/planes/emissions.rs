@@ -349,6 +349,25 @@ pub struct FlightImpact {
     pub travel_budget_years: f64,
 }
 
+/// The all-zeros bill: `distance_km` is an exact 0.0 because the receipt's
+/// staycation branch compares it with `==`.
+fn zero_impact() -> FlightImpact {
+    FlightImpact {
+        distance_km: 0.0,
+        tonnes_co2e: 0.0,
+        co2_tonnes: 0.0,
+        fuel_kg: 0.0,
+        wtt_tonnes: 0.0,
+        contrail_tonnes: 0.0,
+        nox_other_tonnes: 0.0,
+        sky_factor: 1.0,
+        seat_share_of_aircraft: 1.0,
+        aircraft_tonnes_co2e: 0.0,
+        ice_m2: 0.0,
+        travel_budget_years: 0.0,
+    }
+}
+
 pub fn flight_impact(input: &FlightInput) -> FlightImpact {
     let &FlightInput {
         from,
@@ -358,20 +377,7 @@ pub fn flight_impact(input: &FlightInput) -> FlightImpact {
     } = input;
     let distance_km = great_circle_km(from.lat, from.lon, to.lat, to.lon);
     if distance_km < 0.5 {
-        return FlightImpact {
-            distance_km: 0.0,
-            tonnes_co2e: 0.0,
-            co2_tonnes: 0.0,
-            fuel_kg: 0.0,
-            wtt_tonnes: 0.0,
-            contrail_tonnes: 0.0,
-            nox_other_tonnes: 0.0,
-            sky_factor: 1.0,
-            seat_share_of_aircraft: 1.0,
-            aircraft_tonnes_co2e: 0.0,
-            ice_m2: 0.0,
-            travel_budget_years: 0.0,
-        };
+        return zero_impact();
     }
     let legs = if round_trip { 2.0 } else { 1.0 };
     let seat_share_of_aircraft =
@@ -396,6 +402,73 @@ pub fn flight_impact(input: &FlightInput) -> FlightImpact {
         sky_factor,
         seat_share_of_aircraft,
         aircraft_tonnes_co2e: tonnes_co2e / seat_share_of_aircraft,
+        ice_m2: co2_tonnes * ICE_M2_PER_TONNE,
+        travel_budget_years: tonnes_co2e / TRAVEL_BUDGET_TONNES_PER_YEAR,
+    }
+}
+
+/// A multi-leg itinerary: `stops` flown in order (and all legs flown back
+/// again when `round_trip`). Each leg is priced independently — the fuel
+/// curve's constant term, per-leg detour constant, haul-model choice, and
+/// contrail sky factor are all per-leg quantities, which is exactly why a
+/// layover bills differently than the nonstop. Sub-half-km legs (adjacent
+/// duplicate stops) contribute nothing, and an itinerary with no real leg
+/// returns the same exact-zero bill as a staycation.
+///
+/// Aggregates keep `flight_impact`'s invariants: the four lines sum to
+/// `tonnes_co2e`; `sky_factor` becomes the CO₂-weighted mean of leg skies
+/// (so `contrail = co2 × 0.63 × sky` still holds); `aircraft_tonnes_co2e`
+/// sums the legs' whole-aircraft bills and `seat_share_of_aircraft` is
+/// derived from it, preserving `aircraft == tonnes / seat_share`.
+/// `distance_km` stays the one-way sum, mirroring the single-leg convention.
+pub fn route_impact(stops: &[Coordinates], cabin: Cabin, round_trip: bool) -> FlightImpact {
+    let legs: Vec<FlightImpact> = stops
+        .windows(2)
+        .map(|w| {
+            flight_impact(&FlightInput {
+                from: w[0],
+                to: w[1],
+                cabin,
+                round_trip: false,
+            })
+        })
+        .filter(|leg| leg.distance_km > 0.0)
+        .collect();
+    if legs.is_empty() {
+        return zero_impact();
+    }
+
+    let trip_factor = if round_trip { 2.0 } else { 1.0 };
+    let distance_km: f64 = legs.iter().map(|l| l.distance_km).sum();
+    let fuel_kg: f64 = legs.iter().map(|l| l.fuel_kg).sum::<f64>() * trip_factor;
+    let contrail_tonnes: f64 = legs.iter().map(|l| l.contrail_tonnes).sum::<f64>() * trip_factor;
+    let aircraft_tonnes_co2e: f64 =
+        legs.iter().map(|l| l.aircraft_tonnes_co2e).sum::<f64>() * trip_factor;
+
+    let co2_tonnes = (fuel_kg * EF) / 1000.0;
+    let wtt_tonnes = (fuel_kg * P) / 1000.0;
+    let nox_other_tonnes = co2_tonnes * NOX_OTHER_PER_CO2;
+    let tonnes_co2e = co2_tonnes + wtt_tonnes + contrail_tonnes + nox_other_tonnes;
+
+    FlightImpact {
+        distance_km,
+        tonnes_co2e,
+        co2_tonnes,
+        fuel_kg,
+        wtt_tonnes,
+        contrail_tonnes,
+        nox_other_tonnes,
+        // A lone leg keeps its factor verbatim: the CO₂-weighted quotient
+        // re-derives the same number but perturbs it by an ulp, and the
+        // dataset parks routes exactly on the receipt sky-note's ×0.75 and
+        // ×1.25 sentence boundaries.
+        sky_factor: if legs.len() == 1 {
+            legs[0].sky_factor
+        } else {
+            contrail_tonnes / (co2_tonnes * CONTRAIL_PER_CO2)
+        },
+        seat_share_of_aircraft: tonnes_co2e / aircraft_tonnes_co2e,
+        aircraft_tonnes_co2e,
         ice_m2: co2_tonnes * ICE_M2_PER_TONNE,
         travel_budget_years: tonnes_co2e / TRAVEL_BUDGET_TONNES_PER_YEAR,
     }
@@ -508,5 +581,149 @@ mod tests {
         // land above the global mean but below the corridor peak.
         let f = contrail_sky_factor(JFK, LHR);
         assert!(f > 1.2 && f < 2.4, "got {f}");
+    }
+
+    const KEF: Coordinates = Coordinates {
+        lat: 63.985,
+        lon: -22.6056,
+    };
+
+    fn assert_close(a: f64, b: f64, what: &str) {
+        let scale = a.abs().max(b.abs()).max(1e-12);
+        assert!((a - b).abs() / scale < 1e-12, "{what}: {a} vs {b}");
+    }
+
+    #[test]
+    fn nonstop_route_matches_flight_impact() {
+        let nonstop = flight_impact(&FlightInput {
+            from: JFK,
+            to: LHR,
+            cabin: Cabin::Business,
+            round_trip: true,
+        });
+        let route = route_impact(&[JFK, LHR], Cabin::Business, true);
+        assert_close(route.distance_km, nonstop.distance_km, "distance");
+        assert_close(route.fuel_kg, nonstop.fuel_kg, "fuel");
+        assert_close(route.tonnes_co2e, nonstop.tonnes_co2e, "total");
+        assert_close(route.contrail_tonnes, nonstop.contrail_tonnes, "contrail");
+        // Bit-exact, not merely close: real routes land exactly on the
+        // receipt sky-note's ×0.75/×1.25 sentence boundaries, so an ulp of
+        // drift flips its wording on old share URLs.
+        assert_eq!(route.sky_factor.to_bits(), nonstop.sky_factor.to_bits());
+        assert_close(
+            route.seat_share_of_aircraft,
+            nonstop.seat_share_of_aircraft,
+            "seat share",
+        );
+        assert_close(
+            route.aircraft_tonnes_co2e,
+            nonstop.aircraft_tonnes_co2e,
+            "aircraft",
+        );
+        assert_close(
+            route.travel_budget_years,
+            nonstop.travel_budget_years,
+            "budget years",
+        );
+    }
+
+    #[test]
+    fn layover_burns_more_fuel_than_nonstop() {
+        // Each leg pays its own fuel-curve intercept and detour constant, so
+        // connecting through Keflavík must out-burn the JFK–LHR nonstop.
+        let nonstop = flight_impact(&FlightInput {
+            from: JFK,
+            to: LHR,
+            cabin: Cabin::Economy,
+            round_trip: false,
+        });
+        let via_kef = route_impact(&[JFK, KEF, LHR], Cabin::Economy, false);
+        assert!(via_kef.distance_km > nonstop.distance_km);
+        assert!(
+            via_kef.fuel_kg > nonstop.fuel_kg,
+            "{} vs {}",
+            via_kef.fuel_kg,
+            nonstop.fuel_kg
+        );
+    }
+
+    #[test]
+    fn route_sums_its_legs_and_keeps_the_invariants() {
+        let leg = |from, to| {
+            flight_impact(&FlightInput {
+                from,
+                to,
+                cabin: Cabin::Economy,
+                round_trip: false,
+            })
+        };
+        let (a, b) = (leg(JFK, KEF), leg(KEF, LHR));
+        let route = route_impact(&[JFK, KEF, LHR], Cabin::Economy, false);
+        assert_close(route.distance_km, a.distance_km + b.distance_km, "distance");
+        assert_close(route.fuel_kg, a.fuel_kg + b.fuel_kg, "fuel");
+        assert_close(
+            route.contrail_tonnes,
+            a.contrail_tonnes + b.contrail_tonnes,
+            "contrail",
+        );
+        assert_close(
+            route.aircraft_tonnes_co2e,
+            a.aircraft_tonnes_co2e + b.aircraft_tonnes_co2e,
+            "aircraft",
+        );
+        // The two legs fly different skies; the aggregate factor must sit
+        // between them, priced so the contrail identity still holds.
+        let (lo, hi) = (
+            a.sky_factor.min(b.sky_factor),
+            a.sky_factor.max(b.sky_factor),
+        );
+        assert!(route.sky_factor > lo && route.sky_factor < hi);
+        let sum =
+            route.co2_tonnes + route.wtt_tonnes + route.contrail_tonnes + route.nox_other_tonnes;
+        assert!((route.tonnes_co2e - sum).abs() < 1e-12);
+        assert_close(
+            route.contrail_tonnes,
+            route.co2_tonnes * CONTRAIL_PER_CO2 * route.sky_factor,
+            "contrail identity",
+        );
+        assert_close(
+            route.aircraft_tonnes_co2e,
+            route.tonnes_co2e / route.seat_share_of_aircraft,
+            "aircraft identity",
+        );
+        assert_close(route.ice_m2, route.co2_tonnes * ICE_M2_PER_TONNE, "ice");
+    }
+
+    #[test]
+    fn route_round_trip_doubles_fuel_but_not_distance() {
+        let one = route_impact(&[JFK, KEF, LHR], Cabin::Economy, false);
+        let two = route_impact(&[JFK, KEF, LHR], Cabin::Economy, true);
+        assert_close(two.fuel_kg, 2.0 * one.fuel_kg, "fuel");
+        assert_close(two.tonnes_co2e, 2.0 * one.tonnes_co2e, "total");
+        assert_close(two.distance_km, one.distance_km, "distance stays one-way");
+    }
+
+    #[test]
+    fn degenerate_legs_contribute_nothing() {
+        let plain = route_impact(&[JFK, LHR], Cabin::Economy, false);
+        let stutter = route_impact(&[JFK, JFK, LHR], Cabin::Economy, false);
+        assert_close(stutter.tonnes_co2e, plain.tonnes_co2e, "total");
+        assert_close(stutter.distance_km, plain.distance_km, "distance");
+
+        // An itinerary with no real leg is still an exact-zero staycation.
+        let staycation = route_impact(&[JFK, JFK], Cabin::Economy, false);
+        assert_eq!(staycation.distance_km, 0.0);
+        assert_eq!(staycation.tonnes_co2e, 0.0);
+        assert_eq!(staycation.seat_share_of_aircraft, 1.0);
+    }
+
+    #[test]
+    fn out_and_back_one_way_equals_the_round_trip() {
+        // JFK → LHR → JFK one-way flies the same two legs as the JFK ⇄ LHR
+        // round trip; the bills must agree.
+        let out_and_back = route_impact(&[JFK, LHR, JFK], Cabin::Economy, false);
+        let round = route_impact(&[JFK, LHR], Cabin::Economy, true);
+        assert_close(out_and_back.fuel_kg, round.fuel_kg, "fuel");
+        assert_close(out_and_back.tonnes_co2e, round.tonnes_co2e, "total");
     }
 }

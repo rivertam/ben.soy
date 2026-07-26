@@ -54,8 +54,11 @@
   --sans: var(--font-body);
   --mono: var(--font-meta);
 
-  /* the docked strip's height, for sticky offsets and anchor margins */
-  --strip-h: 4.5rem;
+  /* The docked strip's height, for sticky offsets and anchor margins.
+     --strip-h-measured is set by airport-combobox.js from the strip's real
+     box (its row count now varies with the route's via fields); without JS
+     the static guesses below still apply. */
+  --strip-h: var(--strip-h-measured, 4.5rem);
 }
 
 /* In narrower panes the docked strip wraps to a second row; every consumer
@@ -64,6 +67,6 @@
    container query can't restyle the container itself. */
 @container dispatch (max-width: 800px) {
   .dispatch > * {
-    --strip-h: 6.5rem;
+    --strip-h: var(--strip-h-measured, 6.5rem);
   }
 }

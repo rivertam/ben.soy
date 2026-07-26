@@ -104,10 +104,20 @@
   letter-spacing: 0.1em;
 }
 
+/* The docked route bay packs as a wrapping row — a nonstop's three fields
+   (From, empty via slot, To) share one row instead of half-filling a second
+   grid row; longer routes wrap. Flight order comes free from the DOM. */
 .dispatch .form-dock .route-fields {
+  display: flex;
+  flex-wrap: wrap;
   flex: 1 1 14rem;
   gap: 0.35rem;
   margin: 0;
+  min-width: 0;
+}
+
+.dispatch .form-dock .field {
+  flex: 1 1 7rem;
   min-width: 0;
 }
 
@@ -168,9 +178,24 @@
   gap: 1rem;
 }
 
+/* The DOM runs in flight order (From, vias, To — see form.rs), but the big
+   labeled strip still leads with From | To: pin To beside From and the via
+   fields auto-flow into the rows beneath. The dock ignores this (it lays
+   out as a flex row), and the single-column pane below drops the pin so the
+   stack simply reads in flight order. */
+.dispatch .route-fields .field--to {
+  grid-column: 2;
+  grid-row: 1;
+}
+
 @container dispatch (max-width: 560px) {
   .dispatch .route-fields {
     grid-template-columns: 1fr;
+  }
+
+  .dispatch .route-fields .field--to {
+    grid-column: auto;
+    grid-row: auto;
   }
 }
 

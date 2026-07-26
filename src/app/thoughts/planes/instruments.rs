@@ -13,6 +13,7 @@ use topcoat::{
 };
 
 use super::{
+    airports::Airport,
     emissions::{Cabin, cabin_weight},
     format::format_whole,
     sources::cite,
@@ -80,6 +81,40 @@ fn great_circle_points(lat1: f64, lon1: f64, lat2: f64, lon2: f64, n: usize) -> 
         }
     }
     points
+}
+
+/// The great circles of a multi-stop route as one continuous polyline:
+/// per-leg sampled points concatenated with the longitude unwrap carried
+/// across leg joins (each leg's `great_circle_points` run starts from raw
+/// coordinates, so a join can otherwise jump by ±360°). Returns the points
+/// and, for each stop, its index into them.
+fn route_polyline(stops: &[(f64, f64)], n_per_leg: usize) -> (Vec<(f64, f64)>, Vec<usize>) {
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut stop_at: Vec<usize> = Vec::new();
+    for w in stops.windows(2) {
+        let mut seg = great_circle_points(w[0].0, w[0].1, w[1].0, w[1].1, n_per_leg);
+        if pts.is_empty() {
+            stop_at.push(0);
+            pts.extend(seg);
+        } else {
+            // The leg starts where the previous one ended; its raw start
+            // longitude equals the previous unwrapped end modulo 360°.
+            let shift = ((pts.last().expect("points").1 - seg[0].1) / 360.0).round() * 360.0;
+            for p in &mut seg {
+                p.1 += shift;
+            }
+            pts.extend(seg.into_iter().skip(1));
+        }
+        stop_at.push(pts.len() - 1);
+    }
+    if pts.is_empty() {
+        // A single-stop (or empty) route: plot the point itself.
+        for &(lat, lon) in stops {
+            stop_at.push(pts.len());
+            pts.push((lat, lon));
+        }
+    }
+    (pts, stop_at)
 }
 
 /// The graticule spacing for a span of degrees: the smallest conventional
@@ -156,22 +191,23 @@ fn route_window(pts: &[(f64, f64)]) -> RouteWindow {
     }
 }
 
-/// The route as its great circle on a local equirectangular plot —
+/// One of the route's stops, projected for the figure: the dot position and
+/// the label beside it, pre-formatted for SVG attributes.
+struct StopMark {
+    iata: String,
+    x: f64,
+    y: f64,
+}
+
+/// The route as its great circle(s) on a local equirectangular plot —
 /// x is longitude scaled by cos(mid-latitude) so shapes stay honest, the
 /// graticule is the scale, and the dashed oxide line is the same grammar as
-/// the charts' flight tick.
+/// the charts' flight tick. `stops` is the whole itinerary in order —
+/// origin, any layovers, destination.
 #[component]
-pub async fn route_figure(
-    from_iata: String,
-    from_lat: f64,
-    from_lon: f64,
-    to_iata: String,
-    to_lat: f64,
-    to_lon: f64,
-    round_trip: bool,
-    km_flown: String,
-) -> Result {
-    let pts = great_circle_points(from_lat, from_lon, to_lat, to_lon, 64);
+pub async fn route_figure(stops: Vec<Airport>, round_trip: bool, km_flown: String) -> Result {
+    let coords: Vec<(f64, f64)> = stops.iter().map(|a| (a.lat, a.lon)).collect();
+    let (pts, stop_at) = route_polyline(&coords, 64);
     let RouteWindow {
         x0,
         y0,
@@ -185,6 +221,7 @@ pub async fn route_figure(
         lon_hi,
     } = route_window(&pts);
     let trip_label = if round_trip { "round trip" } else { "one way" };
+    let leg_count = stops.len().saturating_sub(1).max(1);
 
     let path: String = pts
         .iter()
@@ -214,12 +251,28 @@ pub async fn route_figure(
     let sw = vw * 0.004;
     let fs = vw * 0.062;
     let dot = vw * 0.014;
-    // Endpoints come from the *unwrapped* path, not the raw coordinates —
-    // on an antimeridian-crossing route the raw destination longitude sits
-    // a world away from the polyline's actual end.
-    let (first, last) = (pts[0], *pts.last().expect("sampled points"));
-    let (fx, fy) = (first.1 * xs, -first.0);
-    let (tx, ty) = (last.1 * xs, -last.0);
+    // Stop positions come from the *unwrapped* path, not the raw
+    // coordinates — on an antimeridian-crossing route a raw longitude can
+    // sit a world away from the polyline's actual pass through the stop.
+    let marks: Vec<StopMark> = stops
+        .iter()
+        .zip(&stop_at)
+        .map(|(a, &i)| StopMark {
+            iata: a.iata.clone(),
+            x: pts[i].1 * xs,
+            y: -pts[i].0,
+        })
+        .collect();
+    let (fx, fy) = (marks[0].x, marks[0].y);
+    let (tx, ty) = {
+        let last = marks.last().expect("route stops");
+        (last.x, last.y)
+    };
+    let via_marks: Vec<&StopMark> = marks
+        .get(1..marks.len().saturating_sub(1))
+        .unwrap_or_default()
+        .iter()
+        .collect();
     // Labels sit below their dots, nudged inside the box; when the dot is
     // too close to the bottom edge the label flips above it instead.
     let label_x = |x: f64| x.clamp(x0 + fs * 1.6, x0 + vw - fs * 1.6);
@@ -230,6 +283,67 @@ pub async fn route_figure(
             y + fs * 1.45
         }
     };
+    let via_names = via_marks
+        .iter()
+        .map(|m| m.iata.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let aria = if via_marks.is_empty() {
+        format!(
+            "The great-circle route from {} to {} on a {}-degree graticule, {}",
+            marks[0].iata,
+            marks[marks.len() - 1].iata,
+            step,
+            trip_label
+        )
+    } else {
+        format!(
+            "The great-circle route from {} via {} to {} on a {}-degree graticule, {}",
+            marks[0].iata,
+            via_names,
+            marks[marks.len() - 1].iata,
+            step,
+            trip_label
+        )
+    };
+    let fig_note = if leg_count == 1 {
+        format!("the great circle · {trip_label} · {step}° graticule")
+    } else {
+        format!("{leg_count} great circles · {trip_label} · {step}° graticule")
+    };
+    // Via labels stagger above/below the line and drop out rather than
+    // pile up: a label only lands where it won't collide with one already
+    // placed (the endpoints always win). Suppressed stops keep their dots,
+    // and the aria label names every stop regardless.
+    let mut placed: Vec<(f64, f64)> = vec![(label_x(fx), label_y(fy)), (label_x(tx), label_y(ty))];
+    let via_labels: Vec<StopMark> = via_marks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let x = label_x(m.x);
+            let above = m.y - fs * 0.9;
+            let y = if i % 2 == 1 && above > y0 + fs * 1.2 {
+                above
+            } else {
+                label_y(m.y)
+            };
+            let clash = placed
+                .iter()
+                .any(|&(px, py)| (px - x).abs() < fs * 2.2 && (py - y).abs() < fs * 1.05);
+            if clash {
+                return None;
+            }
+            placed.push((x, y));
+            Some(StopMark {
+                iata: m.iata.clone(),
+                x,
+                y,
+            })
+        })
+        .collect();
+    let via_dots: Vec<(String, String)> = via_marks.iter().map(|m| (f2(m.x), f2(m.y))).collect();
+    let from_iata = marks[0].iata.clone();
+    let to_iata = marks[marks.len() - 1].iata.clone();
 
     view! {
         <aside class="instrument" aria-label="Route flown">
@@ -240,10 +354,7 @@ pub async fn route_figure(
             <svg
                 viewBox=(format!("{x0:.2} {y0:.2} {vw:.2} {vh:.2}"))
                 role="img"
-                aria-label=(format!(
-                    "The great-circle route from {} to {} on a {}-degree graticule, {}",
-                    from_iata, to_iata, step, trip_label
-                ))
+                aria-label=(aria)
             >
                 <g stroke="var(--hairline)" stroke-width=(f2(sw))>
                     for m in meridians {
@@ -270,6 +381,29 @@ pub async fn route_figure(
                     stroke-width=(f2(sw * 2.5))
                 />
                 <circle cx=(f2(tx)) cy=(f2(ty)) r=(f2(dot)) fill="var(--cost)" />
+                for d in via_dots {
+                    <circle
+                        cx=(d.0)
+                        cy=(d.1)
+                        r=(f2(dot * 0.72))
+                        fill="var(--cost)"
+                        stroke="var(--card)"
+                        stroke-width=(f2(sw * 2.0))
+                    />
+                }
+                for l in via_labels {
+                    <text
+                        class="fig-mono"
+                        x=(f2(l.x))
+                        y=(f2(l.y))
+                        text-anchor="middle"
+                        font-size=(f2(fs * 0.85))
+                        fill="var(--ink-2)"
+                        stroke="var(--card)"
+                        stroke-width=(f2(fs * 0.3))
+                        paint-order="stroke"
+                    >(l.iata)</text>
+                }
                 <text
                     class="fig-mono"
                     x=(f2(label_x(fx)))
@@ -294,7 +428,7 @@ pub async fn route_figure(
                 >(to_iata.as_str())</text>
             </svg>
             <div class="fig-note">
-                (format!("the great circle · {trip_label} · {step}° graticule"))
+                (fig_note)
             </div>
         </aside>
     }
@@ -1078,6 +1212,38 @@ mod tests {
         // The unwrapped run leaves the [-180, 180] band rather than snapping.
         let lon_min = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
         assert!(lon_min < -180.0);
+    }
+
+    #[test]
+    fn multi_leg_polyline_stays_continuous_across_joins() {
+        // LAX → HNL → SYD: the second leg crosses the antimeridian, and its
+        // sampling restarts from raw coordinates — the join must re-anchor
+        // into the first leg's unwrapped run without a 360° jump.
+        let stops = [(33.94, -118.41), (21.32, -157.92), (-33.95, 151.18)];
+        let (pts, stop_at) = route_polyline(&stops, 64);
+        assert_eq!(pts.len(), 2 * 64 + 1);
+        assert_eq!(stop_at, vec![0, 64, 128]);
+        for w in pts.windows(2) {
+            assert!(
+                (w[1].1 - w[0].1).abs() < 180.0,
+                "longitude jump {} → {}",
+                w[0].1,
+                w[1].1
+            );
+        }
+        // Each stop's polyline point is the stop itself, modulo unwrapping.
+        for (&(lat, lon), &i) in stops.iter().zip(&stop_at) {
+            assert!((pts[i].0 - lat).abs() < 1e-6);
+            let dlon = (pts[i].1 - lon).rem_euclid(360.0);
+            assert!(dlon.min(360.0 - dlon) < 1e-6, "lon {} vs {}", pts[i].1, lon);
+        }
+    }
+
+    #[test]
+    fn single_stop_route_plots_the_point() {
+        let (pts, stop_at) = route_polyline(&[(40.64, -73.78)], 64);
+        assert_eq!(pts, vec![(40.64, -73.78)]);
+        assert_eq!(stop_at, vec![0]);
     }
 
     #[test]

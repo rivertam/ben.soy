@@ -22,7 +22,7 @@ mod sources;
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, query_params},
+    router::{page, query_params, uri},
     view::view,
 };
 
@@ -32,13 +32,18 @@ use crate::components::{
 
 use self::{
     airports::{Airport, find_airport},
-    emissions::{Cabin, FlightInput, flight_impact},
+    emissions::{Cabin, Coordinates, route_impact},
     format::{format_km, format_tonnes},
     sources::sources_section,
 };
 
 use form::flight_form;
 
+// Layovers deliberately do NOT appear here: `#[query_params]` parses with
+// serde_urlencoded, where a repeated *declared* field is a duplicate-field
+// error (and the error redirect would wipe the whole query string), while
+// repeated keys the struct doesn't declare are simply ignored. So `via`
+// repeats freely in the URL and `parse_vias` reads it from the raw query.
 #[query_params(error = redirect("?"))]
 struct PlanesQuery {
     from: Option<String>,
@@ -53,12 +58,53 @@ fn resolve(param: Option<&str>) -> Option<&'static Airport> {
     find_airport(param?.trim())
 }
 
+/// The route's layovers, in flight order: every repeated `via` param in the
+/// raw query string (numbered `via1`..`viaN` names parse too — an earlier
+/// revision of this page emitted them). Unresolvable values drop out
+/// (matching `from`/`to`, whose unresolved text also doesn't survive the
+/// round trip); the route falls back to fewer stops rather than
+/// un-revealing.
+fn parse_vias(query: &str) -> Vec<&'static Airport> {
+    form_urlencoded::parse(query.as_bytes())
+        .filter(|(key, _)| {
+            key.strip_prefix("via")
+                .is_some_and(|rest| rest.is_empty() || rest.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .filter_map(|(_, value)| find_airport(value.trim()))
+        .collect()
+}
+
+/// The share query mirrors the original's `routeSearchParams`: defaults
+/// (economy, round trip) are omitted, the chart view never rides along, and
+/// layovers ride as repeated `via` params in flight order. `iatas` is the
+/// whole chain — origin, layovers, destination.
+fn share_path(iatas: &[&str], cabin: Cabin, round_trip: bool) -> String {
+    let mut path = format!(
+        "/thoughts/how-bad-are-planes?from={}&to={}",
+        iatas.first().unwrap_or(&""),
+        iatas.last().unwrap_or(&"")
+    );
+    if iatas.len() > 2 {
+        for via in &iatas[1..iatas.len() - 1] {
+            path.push_str(&format!("&via={via}"));
+        }
+    }
+    if cabin != Cabin::Economy {
+        path.push_str(&format!("&cabin={}", cabin.as_str()));
+    }
+    if !round_trip {
+        path.push_str("&trip=oneway");
+    }
+    path
+}
+
 #[page("/thoughts/how-bad-are-planes")]
 async fn planes(cx: &Cx) -> Result {
     let q = query_params::<PlanesQuery>(cx)?;
 
     let from = resolve(q.from.as_deref());
     let to = resolve(q.to.as_deref());
+    let vias = parse_vias(uri(cx).query().unwrap_or(""));
     let cabin = q
         .cabin
         .as_deref()
@@ -78,53 +124,55 @@ async fn planes(cx: &Cx) -> Result {
 
     let title;
     let mut seal_total = String::new();
+    // The vias the form redisplays: the canonical collapsed chain once the
+    // route is filed, the raw resolved codes before that.
+    let mut form_vias: Vec<Airport> = vias.iter().map(|a| (*a).clone()).collect();
     // The route card rides the top of the margin column, above the notes —
     // outside the dispatch pane, so it's built alongside revealed_part.
     let mut route_card = None;
     let revealed_part = match (from, to) {
         (Some(from), Some(to)) => {
-            let input = FlightInput {
-                from: from.coordinates(),
-                to: to.coordinates(),
-                cabin,
-                round_trip,
-            };
-            let impact = flight_impact(&input);
+            // Origin → layovers → destination, with a via collapsed when it
+            // repeats its neighbor (it would only add a zero-length leg and
+            // a silly route line). from == to with no vias stays a two-stop
+            // staycation, which is why only vias collapse — never `to`.
+            let mut chain: Vec<&'static Airport> = vec![from];
+            for via in &vias {
+                if via.iata != chain.last().expect("chain has origin").iata {
+                    chain.push(via);
+                }
+            }
+            if chain.len() > 1 && chain.last().expect("chain has stops").iata == to.iata {
+                chain.pop();
+            }
+            chain.push(to);
+            let route_vias: Vec<Airport> = chain[1..chain.len() - 1]
+                .iter()
+                .map(|a| (*a).clone())
+                .collect();
+            form_vias = route_vias.clone();
+
+            let stops: Vec<Coordinates> = chain.iter().map(|a| a.coordinates()).collect();
+            let impact = route_impact(&stops, cabin, round_trip);
             let legs_km = impact.distance_km * if round_trip { 2.0 } else { 1.0 };
+            let figure_stops: Vec<Airport> = chain.iter().map(|a| (*a).clone()).collect();
             route_card = Some(view! {
                 <div class="dispatch desk-route">
                     instruments::route_figure(
-                        from_iata: from.iata.clone(),
-                        from_lat: from.lat,
-                        from_lon: from.lon,
-                        to_iata: to.iata.clone(),
-                        to_lat: to.lat,
-                        to_lon: to.lon,
+                        stops: figure_stops,
                         round_trip: round_trip,
                         km_flown: format_km(legs_km),
                     )
                 </div>
             }?);
 
-            // The share query mirrors the original's `routeSearchParams`:
-            // defaults (economy, round trip) are omitted, chart view never rides along.
-            let mut share_path = format!(
-                "/thoughts/how-bad-are-planes?from={}&to={}",
-                from.iata, to.iata
-            );
-            if cabin != Cabin::Economy {
-                share_path.push_str(&format!("&cabin={}", cabin.as_str()));
-            }
-            if !round_trip {
-                share_path.push_str("&trip=oneway");
-            }
+            let iatas: Vec<&str> = chain.iter().map(|a| a.iata.as_str()).collect();
+            let share_path = share_path(&iatas, cabin, round_trip);
 
             seal_total = format_tonnes(impact.tonnes_co2e);
             title = format!(
-                "{} {} {} · {} CO₂e — How bad are planes?",
-                from.iata,
-                if round_trip { "⇄" } else { "→" },
-                to.iata,
+                "{} · {} CO₂e — How bad are planes?",
+                iatas.join(if round_trip { " ⇄ " } else { " → " }),
                 format_tonnes(impact.tonnes_co2e),
             );
 
@@ -133,6 +181,7 @@ async fn planes(cx: &Cx) -> Result {
                     impact: impact,
                     round_trip: round_trip,
                     from: from.clone(),
+                    vias: route_vias,
                     to: to.clone(),
                     cabin: cabin,
                     share_path: share_path,
@@ -162,6 +211,7 @@ async fn planes(cx: &Cx) -> Result {
                         flight_form(
                             from: from.cloned(),
                             to: to.cloned(),
+                            vias: form_vias,
                             cabin: cabin,
                             round_trip: round_trip,
                             revealed: revealed,
@@ -303,4 +353,49 @@ async fn planes(cx: &Cx) -> Result {
             back_link(href: "/thoughts", label: "all thoughts")
         </article>
     ) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn share_path_keeps_the_original_nonstop_format() {
+        // Old share URLs must keep round-tripping: defaults omitted, no via
+        // params on a nonstop.
+        assert_eq!(
+            share_path(&["JFK", "LHR"], Cabin::Economy, true),
+            "/thoughts/how-bad-are-planes?from=JFK&to=LHR"
+        );
+        assert_eq!(
+            share_path(&["JFK", "LHR"], Cabin::Business, false),
+            "/thoughts/how-bad-are-planes?from=JFK&to=LHR&cabin=business&trip=oneway"
+        );
+    }
+
+    #[test]
+    fn share_path_repeats_vias_in_flight_order() {
+        assert_eq!(
+            share_path(&["JFK", "KEF", "AMS", "LHR"], Cabin::Economy, true),
+            "/thoughts/how-bad-are-planes?from=JFK&to=LHR&via=KEF&via=AMS"
+        );
+    }
+
+    #[test]
+    fn vias_parse_in_appearance_order_and_round_trip_the_share_path() {
+        let iatas =
+            |vias: Vec<&'static Airport>| vias.iter().map(|a| a.iata.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            iatas(parse_vias("from=JFK&to=LHR&via=KEF&via=AMS&trip=oneway")),
+            ["KEF", "AMS"]
+        );
+        // The numbered names an earlier revision emitted still parse, and
+        // unresolvable or empty values drop out.
+        assert_eq!(
+            iatas(parse_vias("via1=KEF&via=&via2=ZZZZ&via=ams")),
+            ["KEF", "AMS"]
+        );
+        assert!(parse_vias("viable=KEF&victory=AMS").is_empty());
+        assert!(parse_vias("").is_empty());
+    }
 }

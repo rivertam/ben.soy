@@ -329,7 +329,27 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;')
 }
 
+/**
+ * The docked strip's height varies with the route's via fields as they wrap,
+ * so the static --strip-h guesses in planes-tokens.css only fit routes whose
+ * fields pack into one row. Feed the real box back as --strip-h-measured
+ * (which the token declarations prefer); without JS the guesses still apply,
+ * calibrated to the packed nonstop dock — a no-JS multi-row route degrades
+ * to sticky offsets that sit a little high.
+ */
+function trackStripHeight() {
+  const strip = document.querySelector('.dispatch .form-dock')
+  const dispatch = document.querySelector('.dispatch')
+  if (!strip || !dispatch) return
+  const apply = () => {
+    dispatch.style.setProperty('--strip-h-measured', `${strip.getBoundingClientRect().height}px`)
+  }
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(apply).observe(strip)
+  apply()
+}
+
 async function boot() {
+  trackStripHeight()
   const host = document.querySelector('[data-airports-url]')
   const url = host?.getAttribute('data-airports-url')
   if (!url) return
