@@ -34,9 +34,9 @@ subtle = "2.6.1"
 toasty = { version = "0.8.0", features = ["postgresql"] }
 toasty-cli = "0.8.0"
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync"] }
-topcoat = { version = "0.3.0", features = ["tailwind", "font-fontsource"] }
+topcoat = { version = "0.4.0", features = ["tailwind", "font-fontsource"] }
 url = "2.5.8"
 uuid = { version = "1.19.0", features = ["v4"] }
 
 [build-dependencies]
-topcoat = { version = "0.3.0", default-features = false, features = ["tailwind"] }
+topcoat = { version = "0.4.0", default-features = false, features = ["tailwind"] }

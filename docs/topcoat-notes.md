@@ -1,19 +1,21 @@
-# Topcoat 0.3.0 crib sheet
+# Topcoat 0.4.0 crib sheet
 
-(Written against 0.1.3; verified still accurate on 0.3.0 — the 0.2.0
-"breaking" changes were server behavior, not API: response compression on by
-default via a new `compression` feature, plus graceful shutdown. Examples are
-byte-identical between the two tags.)
+(Written against 0.1.3; verified still accurate on 0.4.0 — nothing in this
+sheet's API has changed across 0.2/0.3/0.4. The releases have been server and
+render behavior, not signatures: 0.2.0 added default response compression and
+graceful shutdown, 0.3.1 escaped signal hydration comments, 0.4.0 swapped the
+float formatter and taught the dev watcher the whole package directory. Both
+render changes are noted where they bite, below.)
 
 Ground truth (read these, don't guess APIs):
 
-- Vendored crate sources: `~/.cargo/registry/src/index.crates.io-*/topcoat-*-0.3.0/`
+- Vendored crate sources: `~/.cargo/registry/src/index.crates.io-*/topcoat-*-0.4.0/`
 - Repo (examples!): `https://github.com/tokio-rs/topcoat` — tags are now
-  per-crate (`topcoat-v0.3.0`, not `v0.3.0`); clone into a scratch dir:
-  `git clone --depth 1 --branch topcoat-v0.3.0 https://github.com/tokio-rs/topcoat`
-  — `examples/{hello-world,module-router,path-query-params,runtime,shard,tailwind,font,asset,htmx,session,ui,toasty-todo}`
+  per-crate (`topcoat-v0.4.0`, not `v0.4.0`); clone into a scratch dir:
+  `git clone --depth 1 --branch topcoat-v0.4.0 https://github.com/tokio-rs/topcoat`
+  — `examples/{hello-world,module-router,path-query-params,runtime,shard,tailwind,font,asset,htmx,alpine-ajax,session,ui,toasty-todo}`
 - Changelogs: `crates/<crate>/CHANGELOG.md` in the repo (no GitHub releases)
-- docs.rs: https://docs.rs/topcoat/0.3.0
+- docs.rs: https://docs.rs/topcoat/0.4.0
 
 ## Pages, layouts, routes (explicit paths + discover)
 
@@ -74,6 +76,13 @@ async fn planes(cx: &Cx) -> Result {
   (e.g. `ViewBox`).
 - A `View` value (what components return inside `Result`) interpolates
   unescaped — that's how `(slot.await?)` works.
+- An interpolated `f64` renders through std's `Display` (0.4.0 dropped the
+  zmij formatter), so whole numbers lose their `.0`: `cy=(20.0)` emits
+  `cy="20"`, and huge/tiny values expand instead of going exponential
+  (`1e21` → `1000000000000000000000`). Harmless in SVG, but it means raw
+  float interpolation is not byte-stable across topcoat versions — anything
+  whose exact text matters goes through a formatter (`f2()` in
+  `planes/instruments.rs`, the Intl-mirroring helpers elsewhere).
 
 ## Client interactivity (runtime feature)
 
@@ -91,6 +100,13 @@ view! {
 `$(…)` is real Rust, type-checked, transpiled to JS — keep it simple
 (signal get/set, string ops, arithmetic, if/else). `e: topcoat::runtime::Event`
 has `e.target.value`.
+
+Each signal's initial value ships as an HTML comment
+(`<!-- ::topcoat::signal({…}) -->`) for the client to hydrate. Those payloads
+went unescaped until 0.3.1, so a signal seeded from untrusted input could
+close the comment and inject markup. This site was never exposed — every
+signal starts from a literal, an allowlisted string, or a server-computed
+number — and should stay that way.
 
 ## Shards (server re-render on client change)
 
@@ -117,7 +133,7 @@ stay server-computed.
 
 ## Tailwind
 
-- `build.rs` (build-dep: `topcoat = { version = "0.3.0", default-features = false, features = ["tailwind"] }`):
+- `build.rs` (build-dep: `topcoat = { version = "0.4.0", default-features = false, features = ["tailwind"] }`):
   ```rust
   fn main() {
       println!("cargo:rerun-if-changed=styles/input.css");
@@ -163,8 +179,13 @@ grew a second binary (spire_sync) — the bundler refuses to guess. Release:
 `PORT=4670 topcoat dev` — app keeps the PORT; the reload broadcast
 server takes its own ephemeral port (TOPCOAT_DEV_URL). Verified: save a
 src file → rebuild → open tabs reload themselves in a few seconds.
-CAVEAT: the watcher covers each package's `src/` ONLY — edits under
-`styles/` (or `data/`) don't trigger it; touch a src file or restart.
+Since 0.3.1 the watcher covers the whole package directory minus
+`.gitignore`d paths, hidden entries, and `target/` — `styles/`, `data/`,
+`build.rs`, and `Cargo.toml` all trigger a rebuild now (verified on 0.4.0
+by appending a comment to `styles/site.css`). The CLI is installed
+separately from the crate, so `cargo install topcoat-cli --version <v>
+--locked` and restart `topcoat dev` after bumping the dependency —
+`deploy/Dockerfile` pins the same version for the release build.
 
 ## Gotchas (several LEARNED THE HARD WAY here)
 

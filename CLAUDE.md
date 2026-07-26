@@ -1,6 +1,6 @@
 # benjisponge.com
 
-Rust SSR personal site on topcoat 0.3.0 — a niche framework; read
+Rust SSR personal site on topcoat 0.4.0 — a niche framework; read
 `docs/topcoat-notes.md` before writing any topcoat code, don't guess APIs.
 
 ## Commands
