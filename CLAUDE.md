@@ -2,6 +2,8 @@
 
 Rust SSR personal site on topcoat 0.4.0 — a niche framework; read
 `docs/topcoat-notes.md` before writing any topcoat code, don't guess APIs.
+Same rule for the data layer: read `docs/toasty-notes.md` before touching
+toasty models, queries, or migrations (0.9.0, pre-1.0, no joins/aggregates).
 
 ## Commands
 

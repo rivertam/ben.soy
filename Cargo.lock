@@ -206,9 +206,9 @@ dependencies = [
 
 [[package]]
 name = "bit-set"
-version = "0.10.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
+checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
 dependencies = [
  "bit-vec",
  "serde",
@@ -216,10 +216,11 @@ dependencies = [
 
 [[package]]
 name = "bit-vec"
-version = "0.9.1"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+checksum = "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269"
 dependencies = [
+ "borsh",
  "serde",
 ]
 
@@ -251,6 +252,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "borsh"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a88b7ea17d208c4193f2c1e6de3c35fe71f98c96982d5ced308bdcc749ff6e1f"
+dependencies = [
+ "borsh-derive",
+ "bytes",
+ "cfg_aliases",
+]
+
+[[package]]
+name = "borsh-derive"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8f347189c62a579b8cd5f80714efa178f52e461dc2e6d701d264f5ff22e566c"
+dependencies = [
+ "once_cell",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2494,9 +2519,9 @@ dependencies = [
 
 [[package]]
 name = "toasty"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d370d56ee49884c7f32640d0eb5140f71cc390b26985c5d2eaa408442b709262"
+checksum = "b2abf272caf351f58e03758745b6185576fcfe7a513b007683c2f8eec698eed2"
 dependencies = [
  "async-trait",
  "bit-set",
@@ -2521,9 +2546,9 @@ dependencies = [
 
 [[package]]
 name = "toasty-cli"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25241e5c874f5116e70ee01820a15018b451512bc63539f3821e6874b3bba68e"
+checksum = "81a49aa74c23053c0e0e526214a5f060f86c1e8261f0170516c11ab63dc55487"
 dependencies = [
  "anyhow",
  "clap",
@@ -2540,9 +2565,9 @@ dependencies = [
 
 [[package]]
 name = "toasty-core"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "083e6bd49ce1055b2f27f70a9261f56ac723bf76f7f3844aa33b88fbd3bd09ed"
+checksum = "fc1650657e3784097859a1c31cf91b48e337f85684757e0c6ad44e887f0e009f"
 dependencies = [
  "async-trait",
  "bit-set",
@@ -2557,9 +2582,9 @@ dependencies = [
 
 [[package]]
 name = "toasty-driver-postgresql"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a4984aefd9871a4d3896ab80cc3123c80e4ff4a9620614801755f2c66857b91"
+checksum = "7bc49e29cd2521b4835aa342adb99fe362a0b38083dda31112218c2762dfe09b"
 dependencies = [
  "async-trait",
  "fallible-iterator",
@@ -2584,25 +2609,26 @@ dependencies = [
 
 [[package]]
 name = "toasty-macros"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32d765330a53132dd60deb210346536ca6fb4a84c934bf1c346104ca974150c1"
+checksum = "16966e54a422be54959b0ad12bdbdcffc101c77aeca7d49fefff33142c709a29"
 dependencies = [
  "hashbrown",
  "heck",
  "pluralizer",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "toasty-core",
 ]
 
 [[package]]
 name = "toasty-sql"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aee2a875a979972ffb16dedef62dae352365e01ddc3866f6b7cf0a1c5404276"
+checksum = "b19948205b682d1750a8cf331b0b7fa666baffe2a3a2c0a05d5e94103c0fcc08"
 dependencies = [
+ "serde",
  "serde_json",
  "toasty-core",
 ]
