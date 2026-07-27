@@ -20,7 +20,7 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 - Interest: `src/app/interests/<name>.rs` (copy one; it pulls its copy via `interest("<name>")`) + `mod <name>;` in `interests.rs` + entry in `src/content/interests.rs`
 - Other fixed page: also add its route to `src/content/routes.rs::site_routes()`
 - Nav, indexes, and 404 all derive from these registries — touch nothing else
-- Login-gated hidden page: copy `src/app/motorcycles.rs` + display entry in `access.rs::HIDDEN_PAGES` (its only listing — the shell shows it to allowlisted viewers); allowlist via `HIDDEN_PAGE_ACCESS` env, never committed (public repo); keep it OUT of the registries above; read `docs/auth.md` first
+- Login-gated hidden page: copy `src/app/motorcycles.rs` + display entry in `access.rs::HIDDEN_PAGES` (its only listing — the shell and `/admin/permissions` both derive from it); allowlist = `hidden_page_grants` DB rows managed at `/admin/permissions`, never committed (public repo); keep it OUT of the registries above; read `docs/auth.md` first
 
 ## Gotchas
 

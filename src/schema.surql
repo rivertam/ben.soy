@@ -87,6 +87,30 @@ DEFINE FIELD OVERWRITE id ON fitness_meta TYPE string;
 DEFINE FIELD OVERWRITE k ON fitness_meta TYPE string;
 DEFINE FIELD OVERWRITE v ON fitness_meta TYPE int;
 
+-- Hidden-page allowlists (docs/auth.md). One row grants one email one page;
+-- the record key is content::access::grant_id(page_path, email), so the pair
+-- is the identity and re-granting is an UPSERT of the same record. Emails are
+-- stored lowercased; the asserts mirror content::access::normalize_email and
+-- plausible_grant_path.
+DEFINE TABLE OVERWRITE hidden_page_grants SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON hidden_page_grants TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE page_path ON hidden_page_grants TYPE string
+    ASSERT string::len($value) >= 2
+        AND string::len($value) <= 120
+        AND string::starts_with($value, '/')
+        AND !string::starts_with($value, '//')
+        AND string::matches($value, '^[\\x21-\\x7e]+$');
+DEFINE FIELD OVERWRITE email ON hidden_page_grants TYPE string
+    ASSERT string::len($value) >= 6
+        AND string::len($value) <= 254
+        AND $value = string::lowercase($value)
+        AND string::matches($value, '^[!-?A-~]+@[!-?A-~]+\\.[!-?A-~]+$');
+DEFINE FIELD OVERWRITE granted_at ON hidden_page_grants TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE INDEX OVERWRITE hidden_page_grants_identity
+    ON hidden_page_grants FIELDS page_path, email UNIQUE;
+
 DEFINE TABLE OVERWRITE analytics_events SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON analytics_events TYPE string
     ASSERT string::matches(record::id($value), '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');

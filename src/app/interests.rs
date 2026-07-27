@@ -10,7 +10,13 @@ mod simulation;
 pub(crate) mod spire;
 mod swing;
 
-use topcoat::{Result, context::Cx, router::page, view::view};
+use benjisponge::data::Data;
+use topcoat::{
+    Result,
+    context::{Cx, app_context},
+    router::page,
+    view::view,
+};
 
 use super::login::viewer;
 use crate::{
@@ -22,9 +28,10 @@ use crate::{
 async fn interests(cx: &Cx) -> Result {
     // Allowlisted hidden pages join the index for their viewers only; the
     // viewer layer keeps those personalized renders out of the CDN.
-    let hidden: Vec<&access::HiddenPage> = viewer(cx)
-        .map(|current| access::visible_pages(&current.email).collect())
-        .unwrap_or_default();
+    let hidden: Vec<&access::HiddenPage> = match viewer(cx) {
+        Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
+        None => Vec::new(),
+    };
     view! {
         shell(
             title: "Interests",

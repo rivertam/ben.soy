@@ -227,8 +227,7 @@ the matching `FITNESS_SYNC_TOKEN` secret is covered in
 `docs/railway-deploy.md#database-and-secrets`.
 
 The browser write is separate from that API and is authorized only by
-`content::access::ADMIN_EMAIL`; `HIDDEN_PAGE_ACCESS` grants never authorize
-it. Pasted writes are create-only: an exact repeat redirects to the existing
+`content::access::ADMIN_EMAIL`; hidden-page grants never authorize it. Pasted writes are create-only: an exact repeat redirects to the existing
 permanent workout, while the same deterministic timestamp ID with different
 workout content returns 409. Existing exercise taxonomy is preserved;
 taxonomy is inserted only for a new exercise. The JSON sync endpoint

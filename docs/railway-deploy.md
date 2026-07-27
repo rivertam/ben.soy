@@ -59,8 +59,9 @@ duplicating the secret.
 
 Also set on the web service: `SPIRE_SYNC_TOKEN`, `FITNESS_SYNC_TOKEN`,
 `SITE_ORIGIN=https://benjisponge.com`, and, for sign-in
-([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
-`GOOGLE_OAUTH_CLIENT_SECRET`, and `HIDDEN_PAGE_ACCESS`.
+([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, and
+`GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows
+managed at `/admin/permissions`, not environment variables.
 
 `HOST=0.0.0.0` is baked into the web image; Railway injects `PORT`. Pin it to
 `8080` so the Tunnel origin stays stable.

@@ -7,9 +7,10 @@
 //! belt for the viewer layer's suspenders, and the reason a future cookieless
 //! variant of this page could never be edge-cached for a day.
 
+use benjisponge::data::Data;
 use topcoat::{
     Result,
-    context::Cx,
+    context::{Cx, app_context},
     router::{HeaderValue, header, page, redirect},
     view::view,
 };
@@ -25,7 +26,7 @@ async fn motorcycles(cx: &Cx) -> Result {
     let Some(viewer) = viewer(cx) else {
         return Err(redirect("/login?next=%2Fmotorcycles").into());
     };
-    if !may_view(&viewer.email, "/motorcycles") {
+    if !may_view(app_context::<Data>(cx), &viewer.email, "/motorcycles").await {
         return view! {
             ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
             not_found_page(requested: "/motorcycles")

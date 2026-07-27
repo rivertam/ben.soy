@@ -62,5 +62,4 @@ SURREALDB_ENDPOINT="${surreal_endpoint}" \
     SITE_ORIGIN="http://localhost:${site_port}" \
     GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}" \
     GOOGLE_OAUTH_CLIENT_SECRET="${GOOGLE_OAUTH_CLIENT_SECRET:-}" \
-    HIDDEN_PAGE_ACCESS="${HIDDEN_PAGE_ACCESS:-}" \
     PORT="${site_port}" topcoat dev --bin benjisponge

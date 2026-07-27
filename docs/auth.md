@@ -7,31 +7,53 @@ admin-only controls on public pages. Identity is a 30-day encrypted
 
 ## Allowlisting someone
 
-Edit the `HIDDEN_PAGE_ACCESS` variable on the Railway web service (which
-redeploys) — entries `;`-separated, emails `,`-separated:
+Sign in as the admin and use `/admin/permissions`: one form set per hidden
+page — add an email to grant, a revoke button beside each grant. Grants are
+rows in the `hidden_page_grants` table, checked on the request that needs
+them, so granting and revoking apply on the target's very next request — no
+redeploy, no session state to invalidate.
 
-```text
-HIDDEN_PAGE_ACCESS=/motorcycles:alice@gmail.com,bob@gmail.com;/garage:carol@example.com
-```
-
-Allowlists are env-only, NEVER committed: the repo is public, so a
+Allowlists are database-only, NEVER committed: the repo is public, so a
 friend's grant in `src/content/access.rs` would publish their email to git
 history forever. `ADMIN_EMAIL` is the deliberately committed, app-wide
-administrator and sees every hidden page without being listed. The login
-callback refuses to mint a cookie for emails appearing nowhere, so
-strangers who find `/login` end up holding nothing.
+administrator: it sees every hidden page without being granted, and it is
+the only identity `/admin/permissions` opens for. The login callback
+refuses to mint a cookie for emails holding no grants, so strangers who
+find `/login` end up holding nothing.
 
-`HIDDEN_PAGE_ACCESS` grants access only to the named hidden page. It never
-grants admin capabilities. For example, `/lifting` renders its "upload lift"
-dialog only when the signed-in email matches `ADMIN_EMAIL`, and
-`POST /lifting/upload` independently repeats that exact check before reading
-the request body.
+When the database is unreachable, grant checks fail closed: hidden pages
+404 for signed-in non-admins, the login callback reports "no access", and
+the admin page says the store is unreachable instead of rendering every
+list empty. The admin rule is a constant comparison and survives outages.
+
+A grant opens only the named hidden page. It never grants admin
+capabilities. For example, `/lifting` renders its "upload lift" dialog only
+when the signed-in email matches `ADMIN_EMAIL`, and `POST /lifting/upload`
+independently repeats that exact check before reading the request body.
+
+## Admin pages (`/admin`, `/admin/permissions`)
+
+`/admin` is the tool index — a rail of cards like `/interests`, fed by
+`ADMIN_TOOLS` in `src/app/admin.rs`; the "admin" link the shell adds to the
+admin's own footer line is its one listing. Admin pages are tooling, not
+hidden pages: they stay out of every registry including `HIDDEN_PAGES`, and
+follow the hidden-page invariants below (`no-store` before `shell()`,
+`analytics: false`, signed-out → login redirect, signed-in non-admin → the
+real 404). `/admin/permissions` manages the grants; its grant/revoke POSTs repeat the
+admin check, require positive same-origin evidence, and bound the body
+before parsing. Grants must target a registered `HIDDEN_PAGES` path;
+revokes also accept de-registered paths, which the page lists in a
+"no longer registered" section so removing a page never strands its grant
+rows invisibly. Emails are stored trimmed and lowercased
+(`access::normalize_email`); the schema ASSERTs in `src/schema.surql`
+mirror that validation as a backstop.
 
 ## Adding a hidden page
 
 Copy the `src/app/motorcycles.rs` pattern (+ `mod` in `app.rs`), add a
 display entry to `HIDDEN_PAGES` in `src/content/access.rs`, grant access
-via `HIDDEN_PAGE_ACCESS`. Hidden pages deliberately stay OUT of
+at `/admin/permissions` (the new entry's form set appears there
+automatically). Hidden pages deliberately stay OUT of
 `INTERESTS`/`POSTS`/`site_routes()` — that's what keeps the nav, indexes,
 feed, 404, and analytics trackability silent about them. The
 `HIDDEN_PAGES` entry is the page's only listing: the shell's interests
@@ -65,7 +87,8 @@ Invariants:
 
 The shell personalizes for viewers: allowlisted hidden pages join the
 interests dropdown and `/interests`, and a quiet "signed in as … · sign
-out" line sits at the footer's bottom right of every page. Personalized
+out" line sits at the footer's bottom right of every page — for the admin
+it also carries the `/admin` link. Personalized
 HTML must never be edge-cached, so the site-wide response layer
 (`src/app/response_layer.rs`) forces `Cache-Control: private, no-store`
 on any request carrying a `__Host-viewer` cookie — keyed on presence,
@@ -108,8 +131,9 @@ after the eligible-for-cache rule (later cache rules win).
   the "log everyone out now" lever.
 - `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` — unset:
   `/login` reports sign-in unconfigured; hidden pages still 404/redirect.
-- `HIDDEN_PAGE_ACCESS` — the hidden-page allowlists (format above). Unset:
-  hidden pages are admin-only. It does not grant admin-only controls.
+- Hidden-page allowlists are `hidden_page_grants` rows behind the
+  `SURREALDB_*` variables (railway-deploy.md), not an env var. Database
+  unreachable: hidden pages are admin-only.
 - `SITE_ORIGIN` — already set in prod; the callback redirect URI is
   `$SITE_ORIGIN/auth/google/callback`.
 

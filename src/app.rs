@@ -1,3 +1,4 @@
+mod admin;
 mod analytics;
 mod feed;
 mod interests;

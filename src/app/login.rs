@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use topcoat::{
     Result,
-    context::Cx,
+    context::{Cx, app_context},
     cookie::{Cookie, Cookies, SameSite, private_cookies, time},
     router::{
         Body, HeaderMap, HeaderValue, Response, StatusCode, header, headers, page, query_params,
@@ -31,6 +31,7 @@ use topcoat::{
 };
 
 use benjisponge::auth::secrets_match;
+use benjisponge::data::Data;
 
 use crate::components::shell;
 use crate::content::access::known_viewer;
@@ -251,7 +252,7 @@ async fn google_callback(cx: &Cx) -> Result<Response> {
         }
     };
     let email = claims.email.to_ascii_lowercase();
-    if !known_viewer(&email) {
+    if !known_viewer(app_context::<Data>(cx), &email).await {
         return Ok(see_other("/login?error=noaccess"));
     }
     let viewer_value = serde_json::to_string(&ViewerClaims {

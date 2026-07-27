@@ -1,10 +1,11 @@
 //! The document shell: fonts, head, nav, footer. Every page renders through
 //! this.
 
+use benjisponge::data::Data;
 use topcoat::{
     Result,
     asset::{Asset, asset},
-    context::Cx,
+    context::{Cx, app_context},
     font::{Font, fontsource::fontsource_font},
     router::{HeaderValue, header},
     view::{View, component, view},
@@ -67,6 +68,12 @@ pub async fn shell(
     };
     let nav_hidden = if hide_nav { "true" } else { "false" };
     let signed_in = viewer(cx);
+    // One tiny grants query per signed-in render; anonymous renders (the
+    // cacheable majority) never touch the database.
+    let hidden_pages = match signed_in.as_ref() {
+        Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
+        None => Vec::new(),
+    };
     view! {
         // Default edge TTL for HTML that does not set Cache-Control itself.
         // First mention wins: pages that emit their own header before shell()
@@ -125,10 +132,8 @@ pub async fn shell(
                                             href=(format!("/{}", interest.slug))
                                         >(interest.slug)</a>
                                     }
-                                    if let Some(current) = signed_in.as_ref() {
-                                        for hidden in access::visible_pages(&current.email) {
-                                            <a class="quiet-link" href=(hidden.path)>(hidden.stamp)</a>
-                                        }
+                                    for hidden in hidden_pages.iter() {
+                                        <a class="quiet-link" href=(hidden.path)>(hidden.stamp)</a>
                                     }
                                 </div>
                             </details>
@@ -165,6 +170,10 @@ pub async fn shell(
                             "signed in as "
                             (current.email.as_str())
                             " · "
+                            if access::is_admin(&current.email) {
+                                <a class="quiet-link" href="/admin">"admin"</a>
+                                " · "
+                            }
                             <button type="submit" class="quiet-link cursor-pointer">"sign out"</button>
                         </form>
                     }
