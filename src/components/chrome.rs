@@ -4,13 +4,15 @@
 use topcoat::{
     Result,
     asset::{Asset, asset},
+    context::Cx,
     font::{Font, fontsource::fontsource_font},
     router::{HeaderValue, header},
     view::{View, component, view},
 };
 
+use crate::app::login::viewer;
 use crate::components::link_label;
-use crate::content::{interests::INTERESTS, logbook::LOG};
+use crate::content::{access, interests::INTERESTS, logbook::LOG};
 
 pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
 pub const FIRA_SANS: Font = fontsource_font!(FIRA_SANS, host: Asset);
@@ -34,8 +36,15 @@ const ANALYTICS_JS: Asset = asset!("./analytics.js");
 ///
 /// `analytics` controls the first-party tracker. It is disabled on the 404 so
 /// arbitrary requested paths can never become public dashboard entries.
+///
+/// Signed-in viewers get two quiet extras: their allowlisted hidden pages
+/// join the interests dropdown, and a barely-there "signed in" line sits at
+/// the footer's bottom right. Both personalize the HTML, which is why
+/// `response_layer.rs` forces `private, no-store` whenever the viewer cookie
+/// rides the request — the header below only governs anonymous renders.
 #[component]
 pub async fn shell(
+    cx: &Cx,
     title: &str,
     active: &str,
     #[default(false)] hide_nav: bool,
@@ -57,6 +66,7 @@ pub async fn shell(
         }
     };
     let nav_hidden = if hide_nav { "true" } else { "false" };
+    let signed_in = viewer(cx);
     view! {
         // Default edge TTL for HTML that does not set Cache-Control itself.
         // First mention wins: pages that emit their own header before shell()
@@ -115,6 +125,11 @@ pub async fn shell(
                                             href=(format!("/{}", interest.slug))
                                         >(interest.slug)</a>
                                     }
+                                    if let Some(current) = signed_in.as_ref() {
+                                        for hidden in access::visible_pages(&current.email) {
+                                            <a class="quiet-link" href=(hidden.path)>(hidden.stamp)</a>
+                                        }
+                                    }
                                 </div>
                             </details>
                         </nav>
@@ -141,6 +156,18 @@ pub async fn shell(
                             <a href="https://github.com/tokio-rs/topcoat" class="quiet-link">"topcoat"</a>
                         </span>
                     </div>
+                    if let Some(current) = signed_in.as_ref() {
+                        <form
+                            method="post"
+                            action="/logout"
+                            class="mt-2 text-right font-meta text-[11px] text-muted opacity-60 transition-opacity hover:opacity-100"
+                        >
+                            "signed in as "
+                            (current.email.as_str())
+                            " · "
+                            <button type="submit" class="quiet-link cursor-pointer">"sign out"</button>
+                        </form>
+                    }
                 </footer>
             </body>
         </html>

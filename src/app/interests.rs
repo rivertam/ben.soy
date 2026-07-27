@@ -10,15 +10,21 @@ mod simulation;
 pub(crate) mod spire;
 mod swing;
 
-use topcoat::{Result, router::page, view::view};
+use topcoat::{Result, context::Cx, router::page, view::view};
 
+use super::login::viewer;
 use crate::{
     components::{index_card, page_head, shell},
-    content::interests::INTERESTS,
+    content::{access, interests::INTERESTS},
 };
 
 #[page("/interests")]
-async fn interests() -> Result {
+async fn interests(cx: &Cx) -> Result {
+    // Allowlisted hidden pages join the index for their viewers only; the
+    // viewer layer keeps those personalized renders out of the CDN.
+    let hidden: Vec<&access::HiddenPage> = viewer(cx)
+        .map(|current| access::visible_pages(&current.email).collect())
+        .unwrap_or_default();
     view! {
         shell(
             title: "Interests",
@@ -31,6 +37,14 @@ async fn interests() -> Result {
                         href: format!("/{}", interest.slug),
                         title: interest.title,
                         teaser: interest.teaser
+                    )
+                }
+                for page in hidden.iter() {
+                    index_card(
+                        stamp: page.stamp,
+                        href: page.path.to_string(),
+                        title: page.title,
+                        teaser: page.teaser
                     )
                 }
             </section>

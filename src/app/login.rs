@@ -1,0 +1,596 @@
+//! Google sign-in for hidden pages.
+//!
+//! Authorization-code flow with PKCE and a `state` check, both stashed in a
+//! short-lived encrypted cookie while the browser round-trips through Google.
+//! The callback exchanges the code server-side and trusts the resulting
+//! `id_token`'s claims without checking its signature — it arrived directly
+//! from Google's token endpoint over TLS, which OIDC permits — but still
+//! validates issuer, audience, expiry, and `email_verified`. Identity then
+//! lives in an encrypted `__Host-viewer` cookie; what that identity may see
+//! is decided per request by `content::access`, so revoking someone is an
+//! allowlist edit, not a session hunt.
+//!
+//! Every route here that touches the cookie jar returns a hand-built
+//! `Ok(Response)`: the cookie layer only flushes `Set-Cookie` on `Ok`, so the
+//! `Err(redirect(…))` idiom would silently drop the jar delta.
+
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use topcoat::{
+    Result,
+    context::Cx,
+    cookie::{Cookie, Cookies, SameSite, private_cookies, time},
+    router::{
+        Body, HeaderMap, HeaderValue, Response, StatusCode, header, headers, page, query_params,
+        route, uri,
+    },
+    view::view,
+};
+
+use benjisponge::auth::secrets_match;
+
+use crate::components::shell;
+use crate::content::access::known_viewer;
+use crate::util::urlencode;
+
+const VIEWER_COOKIE: &str = "viewer";
+/// What the browser calls the viewer cookie: `jar()`'s `override_prefix_host`
+/// prepends `__Host-`. The response layer greps raw `Cookie` headers for
+/// this name to decide cacheability before any decryption happens.
+pub(crate) const VIEWER_COOKIE_BROWSER_NAME: &str = "__Host-viewer";
+const FLIGHT_COOKIE: &str = "google-flight";
+const VIEWER_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
+const FLIGHT_TTL_SECONDS: i64 = 10 * 60;
+const NO_STORE: &str = "no-store";
+
+/// The signed-in identity, decrypted from the viewer cookie. Holding one
+/// proves who the visitor is, never what they may see — pages check
+/// `content::access` on every request. (The cookie also carries Google's
+/// stable `sub`, unused today, so authorization could pin ids over emails
+/// without re-issuing sessions.)
+pub struct Viewer {
+    pub email: String,
+}
+
+/// The current request's verified viewer, if any. Any parse or expiry
+/// failure reads as signed-out.
+pub fn viewer(cx: &Cx) -> Option<Viewer> {
+    let cookie = jar(cx).get(VIEWER_COOKIE)?;
+    parse_viewer(cookie.value(), Timestamp::now().as_second())
+}
+
+/// The cookie adapter stack shared by every read and write, so names,
+/// encryption, and attributes always line up: encrypted, `__Host-` prefixed
+/// (forces `Secure` + `Path=/`), `HttpOnly`, `SameSite=Lax` (the Google
+/// callback is a top-level cross-site navigation, which Lax permits).
+fn jar(cx: &Cx) -> impl Cookies + '_ {
+    private_cookies(cx)
+        .override_prefix_host()
+        .default_http_only(true)
+        .default_same_site(SameSite::Lax)
+}
+
+#[derive(Serialize, Deserialize)]
+struct ViewerClaims {
+    sub: String,
+    email: String,
+    exp: i64,
+}
+
+fn parse_viewer(value: &str, now: i64) -> Option<Viewer> {
+    let claims: ViewerClaims = serde_json::from_str(value).ok()?;
+    (claims.exp > now).then_some(Viewer {
+        email: claims.email,
+    })
+}
+
+/// State parked in a cookie while the browser visits Google.
+#[derive(Serialize, Deserialize)]
+struct Flight {
+    state: String,
+    verifier: String,
+    next: String,
+    exp: i64,
+}
+
+fn parse_flight(value: &str, now: i64) -> Option<Flight> {
+    let flight: Flight = serde_json::from_str(value).ok()?;
+    (flight.exp > now).then_some(flight)
+}
+
+#[query_params(error = redirect("?"))]
+struct LoginQuery {
+    next: Option<String>,
+    error: Option<String>,
+}
+
+#[page("/login")]
+async fn login(cx: &Cx) -> Result {
+    let query = query_params::<LoginQuery>(cx)?;
+    let next = sanitize_next(query.next.as_deref());
+    let google_href = format!("/auth/google?next={}", urlencode(&next));
+    let notice = query.error.as_deref().map(|code| match code {
+        "denied" => "Google sign-in was cancelled.",
+        "noaccess" => "That Google account doesn't have access to anything here.",
+        "expired" => "That sign-in attempt expired — try again.",
+        _ => "Sign-in failed — try again.",
+    });
+    let current = viewer(cx);
+    let configured = google_env().is_some();
+    view! {
+        ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
+        shell(
+            title: "Sign in",
+            active: "",
+            runtime: false,
+            analytics: false,
+            <section class="mt-16 sm:mt-24">
+                <header class="rail-row">
+                    <p class="rail-stamp">"sign in"</p>
+                    <div class="min-w-0">
+                        <h1 class="font-display text-4xl font-bold tracking-tight">
+                            "Sign in."
+                        </h1>
+                        if let Some(message) = notice {
+                            <p class="mt-4 max-w-prose text-ink2">(message)</p>
+                        }
+                        if let Some(current) = current.as_ref() {
+                            <p class="mt-4 max-w-prose text-ink2">
+                                "Signed in as "
+                                <span class="font-meta">(current.email.as_str())</span>
+                                "."
+                            </p>
+                            <form method="post" action="/logout" class="mt-6">
+                                <button type="submit" class="oxlink cursor-pointer font-meta text-sm">
+                                    "sign out"
+                                </button>
+                            </form>
+                        } else if configured {
+                            <p class="mt-4 max-w-prose text-ink2">
+                                "A few pages here are shared with particular people. If "
+                                "you're one of them, this is the door."
+                            </p>
+                            <p class="mt-6">
+                                <a class="oxlink font-meta" href=(google_href.as_str())>
+                                    "continue with Google →"
+                                </a>
+                            </p>
+                        } else {
+                            <p class="mt-4 max-w-prose text-ink2">
+                                "Sign-in isn't configured in this environment."
+                            </p>
+                        }
+                    </div>
+                </header>
+            </section>
+        )
+    }
+}
+
+#[route(GET "/auth/google")]
+async fn google_start(cx: &Cx) -> Result<Response> {
+    let Some((client_id, _)) = google_env() else {
+        return Ok(plain(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sign-in is not configured",
+        ));
+    };
+    let next = sanitize_next(query_value(cx, "next").as_deref());
+    let state = random_token();
+    let verifier = random_token();
+    let flight = serde_json::to_string(&Flight {
+        state: state.clone(),
+        verifier: verifier.clone(),
+        next,
+        exp: Timestamp::now().as_second() + FLIGHT_TTL_SECONDS,
+    })
+    .expect("flight serializes");
+    jar(cx).add(
+        Cookie::build((FLIGHT_COOKIE, flight))
+            .max_age(time::Duration::seconds(FLIGHT_TTL_SECONDS))
+            .build(),
+    );
+    let auth_url = format!(
+        "https://accounts.google.com/o/oauth2/v2/auth\
+         ?client_id={}&redirect_uri={}&response_type=code&scope=openid%20email\
+         &state={}&code_challenge={}&code_challenge_method=S256&prompt=select_account",
+        urlencode(&client_id),
+        urlencode(&redirect_uri()),
+        urlencode(&state),
+        pkce_challenge(&verifier),
+    );
+    Ok(see_other(&auth_url))
+}
+
+#[route(GET "/auth/google/callback")]
+async fn google_callback(cx: &Cx) -> Result<Response> {
+    let Some((client_id, client_secret)) = google_env() else {
+        return Ok(plain(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sign-in is not configured",
+        ));
+    };
+    let now = Timestamp::now().as_second();
+    let flight = jar(cx)
+        .get(FLIGHT_COOKIE)
+        .and_then(|cookie| parse_flight(cookie.value(), now));
+    let Some(flight) = flight else {
+        return Ok(see_other("/login?error=expired"));
+    };
+    // Consume the flight cookie only after this callback proves ownership via
+    // `state`. A second tab's sign-in overwrites the cookie, so the first
+    // tab's stale callback — or any forged cross-site GET here — must not
+    // destroy the flow that now owns it. Unconsumed flights expire by TTL.
+    let state_ok =
+        query_value(cx, "state").is_some_and(|state| secrets_match(&state, &flight.state));
+    if !state_ok {
+        return Ok(see_other("/login?error=expired"));
+    }
+    jar(cx).remove((FLIGHT_COOKIE, ""));
+    if query_value(cx, "error").is_some() {
+        return Ok(see_other("/login?error=denied"));
+    }
+    let Some(code) = query_value(cx, "code") else {
+        return Ok(see_other("/login?error=failed"));
+    };
+    let id_token = match exchange_code(&code, &client_id, &client_secret, &flight.verifier).await {
+        Ok(token) => token,
+        Err(error) => {
+            log_failure("token exchange", &error.to_string());
+            return Ok(see_other("/login?error=failed"));
+        }
+    };
+    let claims = match validate_id_token(&id_token, &client_id, now) {
+        Ok(claims) => claims,
+        Err(reason) => {
+            log_failure("id_token validation", reason);
+            return Ok(see_other("/login?error=failed"));
+        }
+    };
+    let email = claims.email.to_ascii_lowercase();
+    if !known_viewer(&email) {
+        return Ok(see_other("/login?error=noaccess"));
+    }
+    let viewer_value = serde_json::to_string(&ViewerClaims {
+        sub: claims.sub,
+        email,
+        exp: now + VIEWER_TTL_SECONDS,
+    })
+    .expect("viewer serializes");
+    jar(cx).add(
+        Cookie::build((VIEWER_COOKIE, viewer_value))
+            .max_age(time::Duration::seconds(VIEWER_TTL_SECONDS))
+            .build(),
+    );
+    Ok(see_other(&sanitize_next(Some(&flight.next))))
+}
+
+#[route(POST "/logout")]
+async fn logout(cx: &Cx) -> Result<Response> {
+    if cross_site(headers(cx)) {
+        return Ok(plain(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    jar(cx).remove((VIEWER_COOKIE, ""));
+    Ok(see_other("/login"))
+}
+
+/// A logout POST forged from another site is only a nuisance, but the header
+/// check is one line: reject when the browser says the request is cross-site.
+fn cross_site(headers: &HeaderMap) -> bool {
+    matches!(
+        headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()),
+        Some(site) if site != "same-origin" && site != "none"
+    )
+}
+
+/// Only ever redirect back to a local path: anything absolute, scheme-ful,
+/// protocol-relative, or containing oddball bytes collapses to `/`.
+fn sanitize_next(raw: Option<&str>) -> String {
+    let fallback = || "/".to_string();
+    let Some(raw) = raw else { return fallback() };
+    let ok = raw.starts_with('/')
+        && !raw.starts_with("//")
+        && !raw.contains('\\')
+        && raw.len() <= 512
+        && raw.bytes().all(|b| (0x21..0x7f).contains(&b));
+    if ok { raw.to_string() } else { fallback() }
+}
+
+fn google_env() -> Option<(String, String)> {
+    let id = std::env::var("GOOGLE_OAUTH_CLIENT_ID")
+        .ok()
+        .filter(|v| !v.is_empty())?;
+    let secret = std::env::var("GOOGLE_OAUTH_CLIENT_SECRET")
+        .ok()
+        .filter(|v| !v.is_empty())?;
+    Some((id, secret))
+}
+
+/// Mirrors `feed::origin`: prod sets `SITE_ORIGIN`, dev gets it from
+/// `scripts/dev.sh`, and the fallback keeps release builds sane.
+fn origin() -> String {
+    std::env::var("SITE_ORIGIN").unwrap_or_else(|_| "https://benjisponge.com".to_string())
+}
+
+fn redirect_uri() -> String {
+    format!("{}/auth/google/callback", origin())
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// Two v4 UUIDs, hex-concatenated: 244 bits of entropy and 64 chars, which
+/// also satisfies the PKCE verifier's 43–128 char, unreserved-charset rules.
+fn random_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+fn query_value(cx: &Cx, key: &str) -> Option<String> {
+    let query = uri(cx).query()?;
+    form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
+}
+
+async fn exchange_code(
+    code: &str,
+    client_id: &str,
+    client_secret: &str,
+    verifier: &str,
+) -> anyhow::Result<String> {
+    let body = form_urlencoded::Serializer::new(String::new())
+        .append_pair("code", code)
+        .append_pair("client_id", client_id)
+        .append_pair("client_secret", client_secret)
+        .append_pair("redirect_uri", &redirect_uri())
+        .append_pair("grant_type", "authorization_code")
+        .append_pair("code_verifier", verifier)
+        .finish();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let response = client
+        .post("https://oauth2.googleapis.com/token")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        anyhow::bail!("token endpoint returned {}", response.status());
+    }
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        id_token: String,
+    }
+    Ok(response.json::<TokenResponse>().await?.id_token)
+}
+
+#[derive(Deserialize)]
+struct GoogleClaims {
+    iss: String,
+    aud: String,
+    exp: i64,
+    sub: String,
+    email: String,
+    #[serde(default)]
+    email_verified: bool,
+}
+
+fn validate_id_token(
+    id_token: &str,
+    client_id: &str,
+    now: i64,
+) -> std::result::Result<GoogleClaims, &'static str> {
+    let mut segments = id_token.split('.');
+    let (Some(_), Some(payload), Some(_), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return Err("malformed id_token");
+    };
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| "undecodable payload")?;
+    let claims: GoogleClaims =
+        serde_json::from_slice(&payload).map_err(|_| "unparseable claims")?;
+    if claims.iss != "https://accounts.google.com" && claims.iss != "accounts.google.com" {
+        return Err("wrong issuer");
+    }
+    if !secrets_match(&claims.aud, client_id) {
+        return Err("wrong audience");
+    }
+    if claims.exp <= now {
+        return Err("expired id_token");
+    }
+    if !claims.email_verified {
+        return Err("unverified email");
+    }
+    if claims.email.is_empty() || claims.sub.is_empty() {
+        return Err("missing identity claims");
+    }
+    Ok(claims)
+}
+
+fn see_other(location: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, location)
+        .header(header::CACHE_CONTROL, NO_STORE)
+        .body(Body::from("see other"))
+        .expect("sanitized location is a valid header")
+}
+
+fn plain(status: StatusCode, message: &'static str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CACHE_CONTROL, NO_STORE)
+        .body(Body::from(message))
+        .expect("static headers")
+}
+
+fn log_failure(step: &str, error: &str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "message": "google sign-in failed",
+            "step": step,
+            "error": error,
+        })
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_cookie_name_matches_the_jar_prefix() {
+        assert_eq!(
+            VIEWER_COOKIE_BROWSER_NAME,
+            format!("__Host-{VIEWER_COOKIE}")
+        );
+    }
+
+    #[test]
+    fn sanitize_next_keeps_local_paths_only() {
+        assert_eq!(sanitize_next(Some("/motorcycles")), "/motorcycles");
+        assert_eq!(sanitize_next(Some("/a/b?c=d")), "/a/b?c=d");
+        assert_eq!(sanitize_next(None), "/");
+        assert_eq!(sanitize_next(Some("")), "/");
+        assert_eq!(sanitize_next(Some("https://evil.example")), "/");
+        assert_eq!(sanitize_next(Some("//evil.example")), "/");
+        assert_eq!(sanitize_next(Some("/\\evil.example")), "/");
+        assert_eq!(sanitize_next(Some("/a\r\nSet-Cookie: x")), "/");
+        assert_eq!(sanitize_next(Some(&format!("/{}", "a".repeat(600)))), "/");
+    }
+
+    #[test]
+    fn pkce_challenge_matches_rfc_7636_vector() {
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn random_token_is_a_valid_pkce_verifier() {
+        let token = random_token();
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn viewer_claims_round_trip_and_expire() {
+        let value = serde_json::to_string(&ViewerClaims {
+            sub: "google-sub-1".into(),
+            email: "friend@example.com".into(),
+            exp: 1_000,
+        })
+        .unwrap();
+        let viewer = parse_viewer(&value, 999).expect("not yet expired");
+        assert_eq!(viewer.email, "friend@example.com");
+        assert!(parse_viewer(&value, 1_000).is_none());
+        assert!(parse_viewer("not json", 0).is_none());
+    }
+
+    #[test]
+    fn flight_round_trips_and_expires() {
+        let value = serde_json::to_string(&Flight {
+            state: "s".into(),
+            verifier: "v".into(),
+            next: "/motorcycles".into(),
+            exp: 500,
+        })
+        .unwrap();
+        assert_eq!(parse_flight(&value, 499).unwrap().next, "/motorcycles");
+        assert!(parse_flight(&value, 500).is_none());
+    }
+
+    fn token_with(claims: &serde_json::Value) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
+        format!("header.{payload}.signature")
+    }
+
+    fn good_claims() -> serde_json::Value {
+        serde_json::json!({
+            "iss": "https://accounts.google.com",
+            "aud": "client-123",
+            "exp": 2_000,
+            "sub": "google-sub-1",
+            "email": "Friend@Example.com",
+            "email_verified": true,
+        })
+    }
+
+    #[test]
+    fn id_token_validation_accepts_the_good_case() {
+        let claims = validate_id_token(&token_with(&good_claims()), "client-123", 1_000).unwrap();
+        assert_eq!(claims.sub, "google-sub-1");
+        assert_eq!(claims.email, "Friend@Example.com");
+    }
+
+    #[test]
+    fn id_token_validation_rejects_each_bad_claim() {
+        let cases: [(&str, serde_json::Value); 5] = [
+            ("wrong issuer", {
+                let mut c = good_claims();
+                c["iss"] = "https://evil.example".into();
+                c
+            }),
+            ("wrong audience", {
+                let mut c = good_claims();
+                c["aud"] = "other-client".into();
+                c
+            }),
+            ("expired id_token", {
+                let mut c = good_claims();
+                c["exp"] = 999.into();
+                c
+            }),
+            ("unverified email", {
+                let mut c = good_claims();
+                c["email_verified"] = false.into();
+                c
+            }),
+            ("unverified email", {
+                let mut c = good_claims();
+                c.as_object_mut().unwrap().remove("email_verified");
+                c
+            }),
+        ];
+        for (expected, claims) in cases {
+            assert_eq!(
+                validate_id_token(&token_with(&claims), "client-123", 1_000).err(),
+                Some(expected),
+                "claims: {claims}"
+            );
+        }
+        assert!(validate_id_token("nonsense", "client-123", 1_000).is_err());
+        assert!(validate_id_token("a.b.c.d", "client-123", 1_000).is_err());
+    }
+
+    #[test]
+    fn cross_site_flags_only_cross_site_requests() {
+        let mut headers = HeaderMap::new();
+        assert!(!cross_site(&headers));
+        headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(!cross_site(&headers));
+        headers.insert("sec-fetch-site", HeaderValue::from_static("none"));
+        assert!(!cross_site(&headers));
+        headers.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+        assert!(cross_site(&headers));
+        headers.insert("sec-fetch-site", HeaderValue::from_static("same-site"));
+        assert!(cross_site(&headers));
+    }
+}

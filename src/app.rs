@@ -1,9 +1,11 @@
 mod analytics;
-mod emdash_layer;
 mod feed;
 mod interests;
 mod llms;
+pub(crate) mod login;
+mod motorcycles;
 mod not_found;
+mod response_layer;
 mod resume;
 mod thoughts;
 
@@ -15,7 +17,7 @@ use topcoat::{
     Result,
     asset::{AssetBundle, RouterBuilderAssetExt},
     context::{Cx, app_context},
-    cookie::RouterBuilderCookieExt,
+    cookie::{Key, RouterBuilderCookieExt},
     router::{HeaderValue, Router, RouterBuilderDiscoverExt, header, page, query_params},
     session::{Config, RouterBuilderSessionExt, cookie::CookieTokenStore},
     view::view,
@@ -45,7 +47,28 @@ pub fn router() -> Router {
         .app_context(data.clone())
         .app_context(FitnessStore::new(data))
         .app_context(analytics::guard::AnalyticsGuard::default())
+        .app_context(cookie_key())
         .build()
+}
+
+/// The key behind `private_cookies` (the login module's viewer cookie).
+/// `COOKIE_KEY` is any secret string of 32+ bytes; without it, a fresh key
+/// per boot means viewer sessions silently reset on every restart — fine to
+/// ignore until sign-in matters, wrong to ship once it does.
+fn cookie_key() -> Key {
+    match std::env::var("COOKIE_KEY") {
+        Ok(master) if master.len() >= 32 => Key::derive_from(master.as_bytes()),
+        Ok(_) => panic!("COOKIE_KEY must be at least 32 bytes"),
+        Err(_) => {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "message": "COOKIE_KEY unset; viewer sessions will not survive restarts",
+                })
+            );
+            Key::generate()
+        }
+    }
 }
 
 #[query_params(error = redirect("?"))]

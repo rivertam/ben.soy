@@ -187,8 +187,10 @@ name = "benjisponge"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "csv",
  "form_urlencoded",
+ "http",
  "jiff",
  "qrcode",
  "reqwest",

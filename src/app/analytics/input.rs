@@ -394,10 +394,17 @@ fn classify_referrer(
     }
     let host = normalized_host(&url).ok_or("bad referrer")?;
     if own_host == Some(host.as_str()) {
-        return Ok(Referrer {
-            kind: "internal",
-            host: None,
-            path: Some(clean_path(url.path()).ok_or("bad referrer path")?),
+        // A same-host referrer that isn't a trackable route (a hidden page,
+        // a 404) must never be stored by name — but the destination pageview
+        // is still real data, so degrade to "direct" instead of rejecting
+        // the whole event.
+        return Ok(match clean_path(url.path()) {
+            Some(path) => Referrer {
+                kind: "internal",
+                host: None,
+                path: Some(path),
+            },
+            None => direct_referrer(),
         });
     };
     if url.path() != "/" {
@@ -748,6 +755,15 @@ mod tests {
                 .unwrap_err(),
             "bad referrer"
         );
+
+        // A same-host referrer off the trackable map (hidden page, 404)
+        // degrades to direct: the pageview survives, the path is never stored.
+        let mut hidden = payload();
+        hidden.referrer = Some("https://benjisponge.com/motorcycles".to_string());
+        let event = hidden.validate(&headers(), 1_769_958_000).unwrap();
+        assert_eq!(event.referrer_kind, "direct");
+        assert_eq!(event.referrer_host, None);
+        assert_eq!(event.referrer_path, None);
     }
 
     #[test]

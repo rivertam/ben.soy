@@ -20,6 +20,7 @@ toasty models, queries, or migrations (0.9.0, pre-1.0, no joins/aggregates).
 - Interest: `src/app/interests/<name>.rs` (copy one; it pulls its copy via `interest("<name>")`) + `mod <name>;` in `interests.rs` + entry in `src/content/interests.rs`
 - Other fixed page: also add its route to `src/content/routes.rs::site_routes()`
 - Nav, indexes, and 404 all derive from these registries — touch nothing else
+- Login-gated hidden page: copy `src/app/motorcycles.rs` + display entry in `access.rs::HIDDEN_PAGES` (its only listing — the shell shows it to allowlisted viewers); allowlist via `HIDDEN_PAGE_ACCESS` env, never committed (public repo); keep it OUT of the registries above; read `docs/auth.md` first
 
 ## Gotchas
 
@@ -36,3 +37,6 @@ toasty models, queries, or migrations (0.9.0, pre-1.0, no joins/aggregates).
 - Fitness sets are database data, not content: never hardcode the CSV; changes spanning `/lifting`, import, API, schema, tags, or local startup must preserve `docs/fitness.md` invariants
 - Records (`/lifting` badges) are derived from set history at snapshot build (`src/app/interests/lifting/archive/records.rs`), never stored or imported — there is deliberately no records table
 - Muscle-map primary/secondary (`lifting/muscles.rs`) is likewise derived at render — no rank column; a taxonomy change in `exercise_tags()` must keep `PRIMARY_BY_MOVEMENT` aligned
+- The cookie layer drops `Set-Cookie` on `Err` responses — auth routes build `Ok(303)`s by hand; gated pages emit `no-store` before `shell()` or the edge caches one viewer's HTML for a day (`docs/auth.md`)
+- Topcoat discovery allows ONE `#[layer]` per path — a second `#[layer("/")]` panics at router build, and `just check` doesn't boot the router; whole-site response behavior (viewer no-store, em-dash links) all lives in `src/app/response_layer.rs`
+- Signed-in HTML is personalized (shell nav/footer), so `response_layer.rs` forces `private, no-store` when the `__Host-viewer` cookie is present, and prod needs the Cloudflare bypass-on-cookie Cache Rule (`docs/auth.md`) — without it signed-in visitors see the cached anonymous page

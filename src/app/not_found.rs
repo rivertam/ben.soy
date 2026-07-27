@@ -7,7 +7,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{StatusCode, page, uri},
-    view::view,
+    view::{component, view},
 };
 
 use crate::{components::shell, content::routes::site_routes};
@@ -32,7 +32,14 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 #[page("/{*rest}")]
 async fn not_found(cx: &Cx) -> Result {
-    let requested = uri(cx).path().to_owned();
+    view! { not_found_page(requested: uri(cx).path()) }
+}
+
+/// The full 404 document. Also rendered by hidden pages for signed-in
+/// visitors who aren't on the page's allowlist, so denial is
+/// indistinguishable from absence.
+#[component]
+pub async fn not_found_page(requested: &str) -> Result {
     let routes = site_routes();
 
     let (distance, nearest) = routes

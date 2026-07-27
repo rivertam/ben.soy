@@ -37,7 +37,23 @@ printf 'dev: applying migrations\n'
 
 printf 'dev: starting Topcoat on port %s\n' "${site_port}"
 cd "${repo_root}"
+# Optional local secrets (mainly Google OAuth). See .env.dev.example /
+# docs/auth.md. Loaded before the pinned locals below so a misplaced
+# POSTGRES_URL in .env.dev cannot point the app at production.
+if [[ -f "${repo_root}/.env.dev" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "${repo_root}/.env.dev"
+    set +a
+fi
+# COOKIE_KEY is a fixed non-secret so viewer logins survive rebuilds;
+# Google credentials come from .env.dev or the shell environment.
 POSTGRES_URL="${pg_url}" \
     SPIRE_SYNC_TOKEN=local-development \
     FITNESS_SYNC_TOKEN=local-development \
+    COOKIE_KEY=local-development-cookie-key-not-a-secret \
+    SITE_ORIGIN="http://localhost:${site_port}" \
+    GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}" \
+    GOOGLE_OAUTH_CLIENT_SECRET="${GOOGLE_OAUTH_CLIENT_SECRET:-}" \
+    HIDDEN_PAGE_ACCESS="${HIDDEN_PAGE_ACCESS:-}" \
     PORT="${site_port}" topcoat dev --bin benjisponge

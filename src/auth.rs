@@ -21,7 +21,16 @@ pub fn bearer_authorized(authorization: Option<&str>, expected: Option<&str>) ->
     if token.is_empty() || token.contains(|c: char| c.is_whitespace()) {
         return false;
     }
-    let provided_hash = Sha256::digest(token.as_bytes());
+    secrets_match(token, expected)
+}
+
+/// Constant-time equality for short secrets (bearer tokens, OAuth `state`
+/// values, token audiences). An empty expectation never matches.
+pub fn secrets_match(provided: &str, expected: &str) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
+    let provided_hash = Sha256::digest(provided.as_bytes());
     let expected_hash = Sha256::digest(expected.as_bytes());
     provided_hash.ct_eq(&expected_hash).into()
 }

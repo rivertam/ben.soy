@@ -15,7 +15,9 @@ Tunnel. Cloudflare keeps DNS/CDN only (no Worker/Containers).
   `http://benjispongecom.railway.internal:8080`.
 
 Also set on the web service: `SPIRE_SYNC_TOKEN`, `FITNESS_SYNC_TOKEN`,
-`SITE_ORIGIN=https://benjisponge.com`.
+`SITE_ORIGIN=https://benjisponge.com`, and — for sign-in
+([auth.md](auth.md)) — `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
+`GOOGLE_OAUTH_CLIENT_SECRET`, `HIDDEN_PAGE_ACCESS`.
 
 `HOST=0.0.0.0` is baked into the image; Railway injects `PORT` (pin `8080`
 so the tunnel origin stays stable).
@@ -28,6 +30,10 @@ codes bake Host).
 
 Cache Rule: Eligible for cache on the zone, edge TTL
 `respect_origin` / `bypass_by_default` so origin `Cache-Control` wins.
+A second rule — `http.cookie contains "__Host-viewer"` → Bypass cache,
+listed after the first (later cache rules win) — keeps signed-in
+visitors off the cached anonymous HTML so they actually see their
+personalized shell ([auth.md](auth.md)).
 Default HTML is `public, max-age=0, s-maxage=86400` from `shell`
 ([src/components/chrome.rs](../src/components/chrome.rs)); spire/home/feed
 set `s-maxage=60`; lifting/API set `no-store`. Hashed `/_topcoat/assets/*`
@@ -54,8 +60,9 @@ Empty DB: migrate, then `just sync-spire` / `just sync-fitness` against
 1. Tunnel connector healthy on Railway (`cloudflared` service Online).
 2. DNS (proxied CNAMEs) for `railway`, apex, and `www` →
    `ef6f5558-8eff-4d99-a113-03df63444810.cfargotunnel.com`.
-3. Cache Rule: Eligible for cache; edge TTL respect origin / bypass if no
-   `Cache-Control`.
+3. Cache Rules: Eligible for cache; edge TTL respect origin / bypass if no
+   `Cache-Control`. Then the `__Host-viewer` cookie → Bypass rule
+   ([auth.md](auth.md)).
 4. Redirect Rule: `www.benjisponge.com` → `https://benjisponge.com` 301.
 5. Migrate + sync (empty Postgres): `just migrate migration apply`, then
    `just sync-spire` / `just sync-fitness`.
