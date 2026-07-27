@@ -191,6 +191,12 @@ separately from the crate, so `cargo install topcoat-cli --version <v>
 
 ## Gotchas (several LEARNED THE HARD WAY here)
 
+- Path params arrive percent-DECODED (`RawPathParams::from_pairs` in
+  topcoat-router), and `redirect()`/`see_other()` build the `Location`
+  header with `HeaderValue::try_from(...).expect(...)` — a param containing
+  decoded control bytes (`/x/%0A`) PANICS the connection task. Never put a
+  raw path param in a redirect target: validate its exact shape first
+  (diary) or re-encode it (`workout_url` runs `urlencode`).
 - Component invocations (including `topcoat::dev::script()`,
   `topcoat::font::link(…)`) only work inside `view!` **within a
   `#[page]`/`#[component]`/`#[layout]`/`#[shard]` fn** — the expansion needs a

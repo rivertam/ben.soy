@@ -1,5 +1,6 @@
 mod admin;
 mod analytics;
+mod diary;
 mod feed;
 mod interests;
 mod llms;

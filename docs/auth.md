@@ -48,6 +48,13 @@ rows invisibly. Emails are stored trimmed and lowercased
 (`access::normalize_email`); the schema ASSERTs in `src/schema.surql`
 mirror that validation as a backstop.
 
+`/diary` (`src/app/diary.rs`) is admin-only in the same way but lives at
+its own path: the admin's private diary, database-backed
+(`diary_entries`), deliberately NOT a `HIDDEN_PAGES` entry — a registry
+entry would render a grant form for it here, and one mistyped grant would
+share a diary. Its `/admin` tool card is its one listing; entry permalinks
+reuse the lifting archive's Eastern public-path shape as record keys.
+
 ## Adding a hidden page
 
 Copy the `src/app/motorcycles.rs` pattern (+ `mod` in `app.rs`), add a

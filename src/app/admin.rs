@@ -37,6 +37,7 @@ use crate::components::{index_card, page_head, shell};
 use crate::content::access::{self, HIDDEN_PAGES, HiddenPage, HiddenPageGrant, is_admin};
 
 use super::analytics::is_same_origin;
+use super::diary;
 use super::login::viewer;
 use super::not_found::not_found_page;
 
@@ -56,13 +57,22 @@ struct AdminTool {
     teaser: &'static str,
 }
 
-static ADMIN_TOOLS: [AdminTool; 1] = [AdminTool {
-    stamp: "permissions",
-    href: PAGE_PATH,
-    title: "Permissions",
-    teaser: "Who may open which hidden page. Grants and revocations apply on \
-             the next request.",
-}];
+static ADMIN_TOOLS: [AdminTool; 2] = [
+    AdminTool {
+        stamp: "permissions",
+        href: PAGE_PATH,
+        title: "Permissions",
+        teaser: "Who may open which hidden page. Grants and revocations apply on \
+                 the next request.",
+    },
+    AdminTool {
+        stamp: "diary",
+        href: diary::PATH,
+        title: "Diary",
+        teaser: "Completely private, timestamped entries. Deliberately not a \
+                 hidden page, so it can never be granted.",
+    },
+];
 
 #[page("/admin")]
 async fn admin_index(cx: &Cx) -> Result {
@@ -485,11 +495,20 @@ mod tests {
             assert!(!crate::content::routes::is_trackable_route(path));
         }
         for tool in ADMIN_TOOLS.iter() {
+            // The diary is admin-only tooling at its own path; everything
+            // else lives under /admin/. Either way a tool must stay out of
+            // the public registries and off the analytics-trackable routes.
             assert!(
-                tool.href.starts_with("/admin/"),
+                tool.href.starts_with("/admin/") || tool.href == diary::PATH,
                 "{} points outside /admin/",
                 tool.href
             );
+            assert!(
+                !crate::content::routes::site_routes().contains(&tool.href.to_string()),
+                "{} leaked into site_routes()",
+                tool.href
+            );
+            assert!(!crate::content::routes::is_trackable_route(tool.href));
         }
         assert_eq!(ADMIN_TOOLS[0].href, PAGE_PATH);
         assert_eq!(

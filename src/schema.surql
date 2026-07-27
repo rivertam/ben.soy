@@ -111,6 +111,21 @@ DEFINE FIELD OVERWRITE granted_at ON hidden_page_grants TYPE int
 DEFINE INDEX OVERWRITE hidden_page_grants_identity
     ON hidden_page_grants FIELDS page_path, email UNIQUE;
 
+-- The admin's private diary (docs/auth.md). Admin-only and deliberately not
+-- grantable — there is no diary entry in HIDDEN_PAGES to grant. The record
+-- key is the entry's Eastern public path (src/app/diary.rs, same shape as
+-- /lifting/{path} permalinks), so keys sort chronologically and the
+-- permalink is the id; written_at is UTC epoch seconds, the key's source.
+DEFINE TABLE OVERWRITE diary_entries SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON diary_entries TYPE string
+    ASSERT string::matches(record::id($value),
+        '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$');
+DEFINE FIELD OVERWRITE written_at ON diary_entries TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE body ON diary_entries TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 65536;
+DEFINE INDEX OVERWRITE diary_entries_written_at ON diary_entries FIELDS written_at;
+
 DEFINE TABLE OVERWRITE analytics_events SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON analytics_events TYPE string
     ASSERT string::matches(record::id($value), '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
