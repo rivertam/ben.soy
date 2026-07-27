@@ -17,8 +17,9 @@ The site is available at <http://127.0.0.1:3000>. To use another port:
 just dev 4610
 ```
 
-`just dev` also starts the local Postgres container and applies migrations.
-Seed fitness data separately with `just reset-fitness-local [csv]` (default
+`just dev` also starts a persistent local SurrealDB container on port 5800;
+the application bootstraps its schema on connection. Seed fitness data
+separately with `just reset-fitness-local [csv]` (default
 `/home/benji/Downloads/WorkoutData.csv`). See `docs/fitness.md`.
 
 ## Commands
@@ -33,5 +34,6 @@ just check
 
 ## Deploy
 
-- Cloudflare (Worker + container): `just deploy` — see `docs/cloudflare-deploy.md`
-- Railway (same Dockerfile): `railway.toml` + `docs/railway-deploy.md`
+- Railway origin: `just deploy` — see `railway.toml` and
+  `docs/railway-deploy.md`
+- Cloudflare DNS, Tunnel, and CDN: see `docs/cloudflare-deploy.md`

@@ -6,7 +6,7 @@ install-hooks:
     proto install lefthook
     lefthook install
 
-# Start local Postgres and Topcoat with live reload
+# Start local SurrealDB and Topcoat with live reload
 dev port="3000":
     bash scripts/dev.sh "{{port}}"
 
@@ -41,16 +41,6 @@ deploy:
       -H "Content-Type: application/json" \
       -d '{"purge_everything":true}' \
       | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["success"], r'
-
-# Run the migrations CLI against PRODUCTION Postgres (POSTGRES_URL from .env)
-migrate *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    POSTGRES_URL="$(sed -n 's/^POSTGRES_URL=//p' .env)" cargo run --bin migrate -- {{args}}
-
-# Run the migrations CLI against the local dev Postgres (`just dev` starts it)
-migrate-local *args:
-    POSTGRES_URL="postgresql://postgres:dev@127.0.0.1:5490/benjisponge" cargo run --bin migrate -- {{args}}
 
 # Upload new Slay the Spire 2 runs to the site's database (see --help)
 sync-spire *args:

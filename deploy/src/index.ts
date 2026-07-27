@@ -1,11 +1,15 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { cacheKey, cacheable, fromCache, storeInCache } from "./cache";
 
-// Secrets are not part of the generated Env type. POSTGRES_URL and the sync
-// tokens exist so the constructor below can forward them into the container
-// process.
+// Secrets are not part of the generated Env type. Database settings and sync
+// tokens are forwarded verbatim into this retired container deployment; any
+// configured endpoint must be reachable from the container's own network.
 type ShellEnv = Env & {
-  POSTGRES_URL?: string;
+  SURREALDB_ENDPOINT?: string;
+  SURREALDB_NAMESPACE?: string;
+  SURREALDB_DATABASE?: string;
+  SURREALDB_USERNAME?: string;
+  SURREALDB_PASSWORD?: string;
   SPIRE_SYNC_TOKEN?: string;
   FITNESS_SYNC_TOKEN?: string;
 };
@@ -22,7 +26,11 @@ export class BenjispongeContainer extends Container<ShellEnv> {
     // "closed" (auth) or "unconfigured" (database).
     this.envVars = {
       SITE_ORIGIN: "https://benjisponge.com",
-      POSTGRES_URL: env.POSTGRES_URL ?? "",
+      SURREALDB_ENDPOINT: env.SURREALDB_ENDPOINT ?? "",
+      SURREALDB_NAMESPACE: env.SURREALDB_NAMESPACE ?? "",
+      SURREALDB_DATABASE: env.SURREALDB_DATABASE ?? "",
+      SURREALDB_USERNAME: env.SURREALDB_USERNAME ?? "",
+      SURREALDB_PASSWORD: env.SURREALDB_PASSWORD ?? "",
       SPIRE_SYNC_TOKEN: env.SPIRE_SYNC_TOKEN ?? "",
       FITNESS_SYNC_TOKEN: env.FITNESS_SYNC_TOKEN ?? "",
     };

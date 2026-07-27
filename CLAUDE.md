@@ -2,12 +2,12 @@
 
 Rust SSR personal site on topcoat 0.4.0 — a niche framework; read
 `docs/topcoat-notes.md` before writing any topcoat code, don't guess APIs.
-Same rule for the data layer: read `docs/toasty-notes.md` before touching
-toasty models, queries, or migrations (0.9.0, pre-1.0, no joins/aggregates).
+Same rule for the data layer: read `docs/surrealdb-notes.md` before touching
+SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 
 ## Commands
 
-- `just dev [port]` — start local Postgres (docker) + live-reload server (default 3000); run `just reset-fitness-local [csv]` separately to rebuild fitness data; details in `docs/fitness.md`
+- `just dev [port]` — start local SurrealDB (docker) + live-reload server (default 3000); run `just reset-fitness-local [csv]` separately to rebuild fitness data; details in `docs/fitness.md`
 - `just build` — cargo build + `topcoat asset bundle`; serving without the bundle step panics
 - `just check` — fmt + clippy -D warnings + tests; must pass before claiming done
 - `just deploy` — optional Railway redeploy + Cloudflare cache purge (Railway GitHub App deploys on push to main; CI only runs `just check`). Prod path: `docs/railway-deploy.md` (Dockerfile only — not Railpack); DNS/Tunnel/CDN: `docs/cloudflare-deploy.md`

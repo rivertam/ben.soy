@@ -1,8 +1,9 @@
 # Analytics
 
 `/analytics` is a public, server-rendered instrument panel backed entirely by
-Postgres and Toasty. Collection and identity writes terminate in the Topcoat
-application; there is no analytics Worker or third-party collector.
+SurrealDB through its Rust SDK. Collection and identity writes terminate in
+the Topcoat application; there is no analytics Worker or third-party
+collector.
 
 ## Request flow
 
@@ -20,7 +21,7 @@ The sensor emits three event kinds:
   Vitals session-window CLS, and navigation duration
 - `outbound` — destination hostname
 
-Postgres atomically rotates the session after 30 minutes without received
+The database atomically rotates the session after 30 minutes without received
 activity. Topcoat issues a 400-day `Secure`, `HttpOnly`, `SameSite=Lax`,
 `__Host-` visitor cookie. Only its SHA-256 token hash is stored. A per-tab
 random bootstrap nonce and small alias table make simultaneous first-load
@@ -30,8 +31,8 @@ storage after a successful response; the nonce is not stored on event rows and
 never defines a session or a fallback identity when cookies are unavailable.
 
 One document reuses its engagement event id. Visibility changes and BFCache
-cycles can safely flush a newer cumulative snapshot; PostgreSQL only raises the
-stored measurements, so reading time and sample counts are not duplicated.
+cycles can safely flush a newer cumulative snapshot; each write only raises
+the stored measurements, so reading time and sample counts are not duplicated.
 
 ## Data boundaries
 
@@ -77,14 +78,18 @@ label—not authentication.
 
 ## Database behavior
 
-The schema lives in `src/app/analytics/models.rs`; migrations add bounded
-database checks and query-specific indexes on top of the Toasty models.
+The committed schema lives in `src/schema.surql`, including bounded field
+assertions and query-specific indexes. Rust row shapes live in
+`src/app/analytics/models.rs`.
 
-Dashboard windows are 7, 30, 90, or 365 UTC days. Each render uses one
-read-only, repeatable-read transaction and a three-second PostgreSQL statement
-timeout, so every panel is from one coherent snapshot and an unhealthy database
-falls back to the standby card. Only canonical range URLs execute the query
-suite, preventing arbitrary query strings from bypassing shared caching.
+Dashboard windows are 7, 30, 90, or 365 UTC days. Each render performs one
+database statement with a three-second application-side timeout. It returns
+the bounded event rows plus scalar markers for matching sessions whose first
+pageview predates the window, then aggregates every panel in Rust. The markers
+keep acquisition cohorts from counting a session again when it straddles a
+window boundary. An unhealthy database falls back to the standby card. Only
+canonical range URLs execute the query, preventing arbitrary query strings
+from bypassing shared caching.
 
 Raw anonymous events, current session cursors, cookie aliases, and voluntary
 identities are retained until deliberately removed. Public reads are bounded to
@@ -106,9 +111,15 @@ is defense in depth rather than a distributed rate limiter; idempotency,
 constraints, cohort suppression, bounded queries, and short database timeouts
 remain authoritative when the app has multiple containers.
 
+Alias resolution, session rotation, and identity writes each use one atomic
+upsert. Engagement updates use an explicit transaction so the cumulative event
+maximum and its matching session activity cursor advance together. Preserve
+those atomicity boundaries when changing analytics storage.
+
 ## Local verification
 
-`just dev` applies all migrations before starting Topcoat. After schema or
+`just dev` starts local SurrealDB before Topcoat; the app applies
+`src/schema.surql` on its first data-backed connection. After schema or
 analytics changes:
 
 ```sh

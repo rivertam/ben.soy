@@ -1,9 +1,7 @@
 //! Shared data-layer library.
 //!
 //! The site binary (`src/main.rs`) keeps its rendering modules private; this
-//! crate holds the logic that must be shared across the server, the sync
-//! CLIs, and the migrations CLI as the data layer moves in-process
-//! (TypeScript Worker + D1 -> toasty + Postgres).
+//! crate holds the logic shared across the server and the sync CLIs.
 
 pub mod auth;
 pub mod data;

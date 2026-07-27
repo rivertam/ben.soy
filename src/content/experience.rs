@@ -89,7 +89,7 @@ pub static ROLES: [Role; 6] = [
             library("React Router").at("https://reactrouter.com"),
             library("Prisma").at("https://www.prisma.io"),
             library("DBOS").at("https://www.dbos.dev"),
-            tool("Postgres"),
+            tool("SQL"),
             tool("Railway").at("https://railway.com"),
             tool("AWS"),
             tool("GitHub Actions"),

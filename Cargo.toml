@@ -2,7 +2,7 @@
 name = "benjisponge"
 version = "0.1.0"
 edition = "2024"
-# Four bins live here (the site, two sync CLIs, migrations); plain
+# Three bins live here (the site and two sync CLIs); plain
 # `cargo run` and `topcoat dev` need to keep resolving to the site.
 default-run = "benjisponge"
 
@@ -35,9 +35,11 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.11.0"
 subtle = "2.6.1"
-toasty = { version = "0.9.0", features = ["postgresql"] }
-toasty-cli = "0.9.0"
-tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync"] }
+surrealdb = { version = "=3.2.3", default-features = false, features = [
+    "protocol-ws",
+    "rustls",
+] }
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 topcoat = { version = "0.4.0", features = ["tailwind", "font-fontsource"] }
 url = "2.5.8"
 uuid = { version = "1.19.0", features = ["v4"] }

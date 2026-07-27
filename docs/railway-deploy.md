@@ -1,88 +1,135 @@
 # Railway deployment
 
-Production runs on Railway: topcoat container + Postgres + cloudflared
-Tunnel. Cloudflare keeps DNS/CDN only (no Worker/Containers).
+Production runs on Railway: the Topcoat web container, one SurrealDB service,
+and a `cloudflared` Tunnel connector. Cloudflare keeps DNS and CDN duties only.
+The database is private Railway infrastructure and is never a Tunnel ingress.
 
 ## Services
 
-- **benjisponge.com** — [deploy/Dockerfile](../deploy/Dockerfile) (not
-  Railpack: Railpack skips `topcoat asset bundle` and the binary panics
-  without `assets/manifest.toml`). Private only; `PORT=8080`.
-- **Postgres** — `POSTGRES_URL=${{Postgres.DATABASE_URL}}` on the web
-  service (app reads `POSTGRES_URL`, not `DATABASE_URL`).
-- **cloudflared** — [deploy/cloudflared.Dockerfile](../deploy/cloudflared.Dockerfile);
-  `TUNNEL_TOKEN` from a Cloudflare Tunnel whose public hostnames point at
+- **benjisponge.com** — build from
+  [deploy/Dockerfile](../deploy/Dockerfile), not Railpack. Railpack skips
+  `topcoat asset bundle`, and the binary panics without
+  `assets/manifest.toml`. Keep the service private with `PORT=8080`.
+- **surrealdb** — build from
+  [deploy/surrealdb.railway.toml](../deploy/surrealdb.railway.toml), which
+  selects [deploy/surrealdb.Dockerfile](../deploy/surrealdb.Dockerfile). The
+  image pins server `v3.2.3`, listens on private port `8000`, and stores
+  RocksDB at `/home/nonroot/data.db`.
+- **cloudflared** — build from
+  [deploy/cloudflared.Dockerfile](../deploy/cloudflared.Dockerfile). Set
+  `TUNNEL_TOKEN`; public hostnames point to
   `http://benjispongecom.railway.internal:8080`.
 
-Also set on the web service: `SPIRE_SYNC_TOKEN`, `FITNESS_SYNC_TOKEN`,
-`SITE_ORIGIN=https://benjisponge.com`, and — for sign-in
-([auth.md](auth.md)) — `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
-`GOOGLE_OAUTH_CLIENT_SECRET`, `HIDDEN_PAGE_ACCESS`.
+The database service must have exactly one replica. Its RocksDB files live on
+one attached volume and cannot be shared safely by multiple service replicas.
+Attach a persistent Railway volume at `/home/nonroot`, schedule Railway volume
+backups, and do not expose a public domain or TCP proxy.
 
-`HOST=0.0.0.0` is baked into the image; Railway injects `PORT` (pin `8080`
-so the tunnel origin stays stable).
+## Database and secrets
+
+Set these on the `surrealdb` service before its first start:
+
+```text
+RAILWAY_RUN_UID=0
+PORT=8000
+SURREAL_USER=root
+SURREAL_PASS=<strong generated secret>
+```
+
+Those values establish the root credentials on an empty volume. Changing the
+variables later does not rotate credentials already stored in the database;
+perform an intentional credential rotation instead. Railway mounts volumes as
+root; `RAILWAY_RUN_UID=0` matches the derived image's `USER root` and lets
+RocksDB write the attached volume. `PORT=8000` aligns Railway's `/health`
+deployment check with the server's private listener.
+
+Set all five connection variables on the web service:
+
+```text
+SURREALDB_ENDPOINT=ws://surrealdb.railway.internal:8000
+SURREALDB_NAMESPACE=benjisponge
+SURREALDB_DATABASE=benjisponge
+SURREALDB_USERNAME=${{surrealdb.SURREAL_USER}}
+SURREALDB_PASSWORD=${{surrealdb.SURREAL_PASS}}
+```
+
+The endpoint assumes the Railway service is named `surrealdb`. The two
+credential references keep the web and database services aligned without
+duplicating the secret.
+
+Also set on the web service: `SPIRE_SYNC_TOKEN`, `FITNESS_SYNC_TOKEN`,
+`SITE_ORIGIN=https://benjisponge.com`, and, for sign-in
+([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
+`GOOGLE_OAUTH_CLIENT_SECRET`, and `HIDDEN_PAGE_ACCESS`.
+
+`HOST=0.0.0.0` is baked into the web image; Railway injects `PORT`. Pin it to
+`8080` so the Tunnel origin stays stable.
+
+## Clean database bootstrap
+
+There is no migration command or migration history. The application applies
+the complete `src/schema.surql` definition on its first data-backed database
+connection and checks every statement result.
+
+For a new production database:
+
+1. Create the single-replica `surrealdb` service, credentials, and
+   `/home/nonroot` volume.
+2. Configure all five connection variables on the web service.
+3. Deploy the web service and request a data-backed route such as
+   `/api/spire/runs`; this connects and installs the schema.
+4. Run `just sync-spire`, then `just sync-fitness <csv>` from the machines
+   holding the source files.
+
+This project deliberately starts clean; there is no legacy import or
+compatibility step. Upgrade the pinned database image deliberately and take a
+volume backup first.
 
 ## Cloudflare edge
 
-DNS (proxied) CNAMEs apex/`www`/`railway` →
-`<tunnel-id>.cfargotunnel.com`. Redirect Rule: `www` → apex 301 (planes QR
-codes bake Host).
+Proxied CNAMEs for the apex, `www`, and `railway` point to
+`<tunnel-id>.cfargotunnel.com`. A Redirect Rule sends `www` to the apex with
+301 because planes QR codes bake the host.
 
-Cache Rule: Eligible for cache on the zone, edge TTL
-`respect_origin` / `bypass_by_default` so origin `Cache-Control` wins.
-A second rule — `http.cookie contains "__Host-viewer"` → Bypass cache,
-listed after the first (later cache rules win) — keeps signed-in
-visitors off the cached anonymous HTML so they actually see their
+Use a Cache Rule with edge TTL `respect_origin` / `bypass_by_default` so
+origin `Cache-Control` wins. A later rule matching
+`http.cookie contains "__Host-viewer"` must bypass cache; signed-in HTML has a
 personalized shell ([auth.md](auth.md)).
-Default HTML is `public, max-age=0, s-maxage=86400` from `shell`
-([src/components/chrome.rs](../src/components/chrome.rs)); spire/home/feed
-set `s-maxage=60`; lifting/API set `no-store`. Hashed `/_topcoat/assets/*`
-are immutable from the container. Pages expire via origin `s-maxage`;
-`just deploy` can purge the zone when a change must show immediately.
 
-## Migrations
-
-Schema in `toasty/migrations/`. Runtime image has no `migrate` binary —
-apply from a machine with the repo:
-
-```sh
-POSTGRES_URL='postgresql://…' just migrate migration apply
-```
-
-Or put Railway's public `POSTGRES_URL` in `.env` and run the same. `just
-dev` only migrates local Docker Postgres.
-
-Empty DB: migrate, then `just sync-spire` / `just sync-fitness` against
-`https://benjisponge.com` (tokens must match the web service).
+Default HTML is `public, max-age=0, s-maxage=86400` from `shell`;
+Spire/home/feed use `s-maxage=60`; lifting and API responses use `no-store`.
+Hashed `/_topcoat/assets/*` files are immutable. `just deploy` can purge the
+zone when a change must appear immediately.
 
 ## Cutover checklist
 
-1. Tunnel connector healthy on Railway (`cloudflared` service Online).
-2. DNS (proxied CNAMEs) for `railway`, apex, and `www` →
+1. Confirm the database is one replica, its `/home/nonroot` volume is mounted,
+   its health check passes, and backups are scheduled.
+2. Confirm the database service has `RAILWAY_RUN_UID=0`, then confirm the web
+   service has all five database variables plus sync and auth secrets.
+3. Deploy the web app, exercise a data-backed route to bootstrap the schema,
+   then sync Spire and fitness into the clean database.
+4. Confirm the Railway `cloudflared` connector is healthy.
+5. Confirm proxied CNAMEs for `railway`, apex, and `www` target
    `ef6f5558-8eff-4d99-a113-03df63444810.cfargotunnel.com`.
-3. Cache Rules: Eligible for cache; edge TTL respect origin / bypass if no
-   `Cache-Control`. Then the `__Host-viewer` cookie → Bypass rule
-   ([auth.md](auth.md)).
-4. Redirect Rule: `www.benjisponge.com` → `https://benjisponge.com` 301.
-5. Migrate + sync (empty Postgres): `just migrate migration apply`, then
-   `just sync-spire` / `just sync-fitness`.
-6. Verify on `https://railway.benjisponge.com`, then apex; remove Worker
-   custom domains / Containers when apex is live.
-7. Optional: delete the Railway `*.up.railway.app` service domain so the
-   origin stays private-only.
+6. Confirm the origin-respecting Cache Rule, then the later
+   `__Host-viewer` bypass rule, and the `www` → apex Redirect Rule.
+7. Verify `https://railway.benjisponge.com`, then the apex. Remove any public
+   Railway web domain so the origin stays private-only.
 
 ## Deploy
 
-Railway's GitHub App builds `deploy/Dockerfile` and deploys the web service
-on push to `main`. CI only runs `just check`. CDN pages expire via
-`s-maxage`; purge manually when a deploy must show immediately:
+Railway's GitHub App builds `deploy/Dockerfile` and deploys the web service on
+push to `main`; CI only runs `just check`. Set the database service's Railway
+config-file path to `/deploy/surrealdb.railway.toml`.
 
 ```sh
-just deploy   # optional: railway up + Cloudflare purge
+just deploy
 ```
 
-`just deploy` needs a logged-in Railway CLI (or `RAILWAY_TOKEN`) and
+That command explicitly links and uploads only the web service, then purges
+the Cloudflare zone. It needs a logged-in Railway CLI (or `RAILWAY_TOKEN`) and
 `CLOUDFLARE_API_TOKEN`.
 
-Touching Tunnel/DNS/cache rules? This doc. Old Worker notes:
+For Tunnel, DNS, and cache details, see
 [cloudflare-deploy.md](cloudflare-deploy.md).

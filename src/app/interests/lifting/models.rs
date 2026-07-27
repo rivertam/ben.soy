@@ -1,26 +1,20 @@
-//! Fitness toasty models — the schema source of truth for the archive.
+//! Stored fitness documents.
 //!
-//! This file lives with its interest but is compiled as part of the LIB
-//! crate: `src/data.rs` pulls it in via `#[path]` as
-//! `benjisponge::data::fitness_models`, because the migrations CLI
-//! (`src/bin/migrate.rs`) and `toasty::models!` registration need every
-//! model in the shared lib. Schema changes go through
-//! `cargo run --bin migrate -- migration generate/apply`.
-//!
-//! D1's STRICT/CHECK constraints have no equivalent here: the import
-//! validation in `archive/validate.rs` is the only line of defense.
+//! The committed database definitions live in `src/schema.surql`. These plain
+//! data types stay separate from the public API types and retain string IDs so
+//! archive/snapshot code does not depend on SurrealDB record-ID formatting.
+
+use serde::{Deserialize, Serialize};
+use surrealdb::types::SurrealValue;
 
 /// A lifting workout. `started_at_utc` is the Strong-export source instant
 /// and the identity anchor; `started_at_local`/`eastern_offset_minutes` are
 /// its America/New_York projection, derived server-side at import.
-#[derive(Debug, toasty::Model)]
-#[table = "workouts"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct Workout {
-    #[key]
     pub id: String,
     pub title: String,
     pub raw_title: String,
-    #[index]
     pub started_at_utc: String,
     pub started_at_local: String,
     pub eastern_offset_minutes: i64,
@@ -32,17 +26,13 @@ pub struct Workout {
     pub imported_at: i64,
 }
 
-#[derive(Debug, toasty::Model)]
-#[table = "exercises"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct Exercise {
-    #[key]
     pub name: String,
 }
 
 /// One taxonomy tag on an exercise; an exercise carries several per facet.
-#[derive(Debug, toasty::Model)]
-#[table = "exercise_tags"]
-#[key(exercise_name, kind, value)]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct ExerciseTag {
     pub exercise_name: String,
     pub kind: String,
@@ -52,13 +42,9 @@ pub struct ExerciseTag {
 /// One performed set. There is deliberately no stored records table: badges
 /// are derived from the full set history (`archive/records.rs`), so this
 /// stays the only source of truth a future manual-logging write path needs.
-#[derive(Debug, toasty::Model)]
-#[table = "sets"]
-#[unique(workout_id, ordinal)]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct LiftSet {
-    #[key]
     pub id: String,
-    #[index]
     pub workout_id: String,
     pub exercise_name: String,
     pub raw_exercise_name: String,
@@ -75,10 +61,8 @@ pub struct LiftSet {
     pub incomplete: bool,
 }
 
-#[derive(Debug, toasty::Model)]
-#[table = "fitness_meta"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct FitnessMeta {
-    #[key]
     pub k: String,
     pub v: i64,
 }

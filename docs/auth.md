@@ -117,7 +117,7 @@ after the eligible-for-cache rule (later cache rules win).
 3. Set the id/secret on the Railway web service; for local testing copy
    `.env.dev.example` → `.env.dev`, fill both in, then `just dev`
    (`scripts/dev.sh` sources `.env.dev` and pins a fixed dev
-   `COOKIE_KEY` / local Postgres).
+   `COOKIE_KEY` / local SurrealDB).
 
 Dev sign-in works in Chrome/Firefox only: the auth cookies are
 `__Host-`/`Secure`, which those browsers accept from `http://localhost`

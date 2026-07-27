@@ -67,7 +67,7 @@ struct MapMarker {
 #[page("/analytics")]
 async fn analytics(cx: &Cx) -> Result {
     // Accept only canonical cache keys. Unknown query strings redirect before
-    // touching Postgres, so nonce parameters cannot amplify dashboard work.
+    // touching the database, so nonce parameters cannot amplify dashboard work.
     let window = match uri(cx).query() {
         None => Window::Month,
         Some("range=7d") => Window::Week,
@@ -830,10 +830,8 @@ async fn record_event(cx: &Cx, body: Body) -> Result<Response> {
 
     let result = async {
         let db = app_context::<Data>(cx).db().await?;
-        let mut connection = db.connection().await?;
-        let visitor_hash =
-            db::resolve_visitor(&mut connection, &token_hash, Some(&bootstrap_id), now).await?;
-        db::insert_event(&mut connection, &visitor_hash, event, now).await?;
+        let visitor_hash = db::resolve_visitor(&db, &token_hash, Some(&bootstrap_id), now).await?;
+        db::insert_event(&db, &visitor_hash, event, now).await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;
@@ -896,23 +894,10 @@ async fn identify(cx: &Cx, body: Body) -> Result<Response> {
     };
     let result = async {
         let db = app_context::<Data>(cx).db().await?;
-        let mut connection = db.connection().await?;
         let now = epoch_seconds();
-        let visitor_hash = db::resolve_visitor(
-            &mut connection,
-            &token_hash,
-            input.bootstrap_id.as_deref(),
-            now,
-        )
-        .await?;
-        db::upsert_identity(
-            &mut connection,
-            &visitor_hash,
-            input.display_name,
-            input.note,
-            now,
-        )
-        .await?;
+        let visitor_hash =
+            db::resolve_visitor(&db, &token_hash, input.bootstrap_id.as_deref(), now).await?;
+        db::upsert_identity(&db, &visitor_hash, input.display_name, input.note, now).await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;

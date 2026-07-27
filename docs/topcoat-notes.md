@@ -13,7 +13,9 @@ Ground truth (read these, don't guess APIs):
 - Repo (examples!): `https://github.com/tokio-rs/topcoat` — tags are now
   per-crate (`topcoat-v0.4.0`, not `v0.4.0`); clone into a scratch dir:
   `git clone --depth 1 --branch topcoat-v0.4.0 https://github.com/tokio-rs/topcoat`
-  — `examples/{hello-world,module-router,path-query-params,runtime,shard,tailwind,font,asset,htmx,alpine-ajax,session,ui,toasty-todo}`
+  — examples include `hello-world`, `module-router`, `path-query-params`,
+  `runtime`, `shard`, `tailwind`, `font`, `asset`, `htmx`, `alpine-ajax`,
+  `session`, and `ui`
 - Changelogs: `crates/<crate>/CHANGELOG.md` in the repo (no GitHub releases)
 - docs.rs: https://docs.rs/topcoat/0.4.0
 

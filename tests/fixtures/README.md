@@ -1,4 +1,4 @@
-# Golden fixtures — Rust/toasty data-layer migration
+# Golden fixtures — Rust data-layer contract
 
 Captured from production 2026-07-23 by `capture.sh`, while the TypeScript
 Worker (`deploy/src/fitness.ts`, `deploy/src/spire.ts`) still owned the data
@@ -35,7 +35,7 @@ must diff clean, byte-for-byte where possible**:
    evaluates derived records, so `total_sets`/`total_workouts`/pagination
    and the returned workouts may all legitimately differ
    (`sets_has_record`, `sets_has_record_f`).
-3. **`version` fields** — the Postgres counter restarts on reseed; compare
+3. **`version` fields** — the database counter restarts on reseed; compare
    presence/type, not value. (`/api/fitness/ids` has no version field —
    that absence IS contract.)
 4. **Spire re-derived fields** — if prod spire data is replayed through
@@ -46,8 +46,8 @@ must diff clean, byte-for-byte where possible**:
    `cache-control: no-store`, `access-control-allow-origin: *` on public
    GET reads (absent on import/POST responses; spire responses never had
    CORS).
-6. **`/api/*/ids` array order** — `SELECT id FROM ...` with no ORDER BY;
-   storage order differs between D1 and Postgres. Compare as sets (the
+6. **`/api/*/ids` array order** — `SELECT id FROM ...` with no ordering;
+   storage order differs between D1 and the current store. Compare as sets (the
    sync CLIs already do).
 
 Statuses in `manifest.tsv` must match exactly, including the 400/401/404
@@ -57,6 +57,6 @@ parameter, both contract).
 
 ## Re-capturing
 
-Only meaningful while the old Worker path is live (before each cutover).
-`bash tests/fixtures/capture.sh` overwrites in place; commit the diff
-deliberately if production data changed since the last capture.
+These fixtures are frozen provenance from the retired Worker path.
+`capture.sh` remains only to document how they were collected; do not
+overwrite them from the current production service.

@@ -1,4 +1,4 @@
-//! The Slay the Spire 2 run log, queried in-process (toasty over Postgres).
+//! The Slay the Spire 2 run log, queried in-process from SurrealDB.
 //! The sync CLI (`src/bin/spire_sync.rs`) is the write path via
 //! `POST /api/spire/runs` and does all the prettifying, so a [`Run`] arrives
 //! display-ready. Results are cached in-process for a minute; a failed query

@@ -9,40 +9,45 @@
 use std::collections::HashSet;
 
 use serde_json::Value;
-use toasty::Db;
-use toasty::stmt::{List, Query};
 
-use benjisponge::data::spire_models::{SpireMeta, SpireRun, SpireRunRaw};
+use benjisponge::data::{
+    Db,
+    spire_models::{SpireRun, SpireRunRaw},
+};
 
 pub const MAX_RUNS_PER_CHUNK: usize = 50;
 
 /// All runs, newest first — mirrors `ORDER BY start_time DESC`.
-pub async fn list_runs(db: &Db) -> toasty::Result<Vec<SpireRun>> {
-    let mut db = db.clone();
-    SpireRun::all()
-        .order_by(SpireRun::fields().start_time().desc())
-        .exec(&mut db)
-        .await
+pub async fn list_runs(db: &Db) -> surrealdb::Result<Vec<SpireRun>> {
+    let mut response = db
+        .query(
+            "SELECT *, record::id(id) AS id
+             FROM spire_runs
+             ORDER BY start_time DESC",
+        )
+        .await?
+        .check()?;
+    response.take(0)
 }
 
 /// Stored run ids. Deliberately unordered, like `SELECT id FROM spire_runs`;
 /// the sync CLI treats the result as a set.
-pub async fn list_ids(db: &Db) -> toasty::Result<Vec<String>> {
-    let mut db = db.clone();
-    Query::<List<SpireRun>>::all()
-        .select(SpireRun::fields().id())
-        .exec(&mut db)
-        .await
+pub async fn list_ids(db: &Db) -> surrealdb::Result<Vec<String>> {
+    let mut response = db
+        .query("SELECT VALUE record::id(id) FROM spire_runs")
+        .await?
+        .check()?;
+    response.take(0)
 }
 
 /// The data version; 0 when the row does not exist yet.
-pub async fn current_version(db: &Db) -> toasty::Result<i64> {
-    let mut db = db.clone();
-    let row = SpireMeta::filter_by_k("version")
-        .first()
-        .exec(&mut db)
-        .await?;
-    Ok(row.map(|meta| meta.v).unwrap_or(0))
+pub async fn current_version(db: &Db) -> surrealdb::Result<i64> {
+    let mut response = db
+        .query("SELECT VALUE v FROM spire_meta:version")
+        .await?
+        .check()?;
+    let versions: Vec<i64> = response.take(0)?;
+    Ok(versions.into_iter().next().unwrap_or(0))
 }
 
 /// A validated incoming run: a stored row plus the original `.run` payload.
@@ -212,18 +217,19 @@ pub async fn insert_runs(
     db: &Db,
     incoming: &[IncomingRun],
     added_at_epoch: i64,
-) -> toasty::Result<ImportOutcome> {
-    let handle = db.clone();
+) -> surrealdb::Result<ImportOutcome> {
     let ids: Vec<String> = incoming.iter().map(|run| run.id.clone()).collect();
     let existing: HashSet<String> = {
-        let mut db = handle.clone();
-        Query::<List<SpireRun>>::all()
-            .filter(SpireRun::fields().id().in_list(ids))
-            .select(SpireRun::fields().id())
-            .exec(&mut db)
+        let mut response = db
+            .query(
+                "SELECT VALUE record::id(id)
+                 FROM spire_runs
+                 WHERE record::id(id) IN $ids",
+            )
+            .bind(("ids", ids))
             .await?
-            .into_iter()
-            .collect()
+            .check()?;
+        response.take::<Vec<String>>(0)?.into_iter().collect()
     };
 
     let candidates: Vec<&IncomingRun> = incoming
@@ -233,13 +239,9 @@ pub async fn insert_runs(
     let added = candidates.len();
 
     if added > 0 {
-        let mut db = handle.clone();
-        let mut tx = db.transaction().await?;
-
-        let mut runs = SpireRun::create_many();
-        let mut raws = SpireRunRaw::create_many();
-        for run in &candidates {
-            runs = runs.item(toasty::create!(SpireRun {
+        let runs: Vec<SpireRun> = candidates
+            .iter()
+            .map(|run| SpireRun {
                 id: run.id.clone(),
                 date: run.date.clone(),
                 start_time: run.start_time,
@@ -256,38 +258,52 @@ pub async fn insert_runs(
                 game_mode: run.game_mode.clone(),
                 build_id: run.build_id.clone(),
                 added_at: added_at_epoch,
-            }));
-            raws = raws.item(toasty::create!(SpireRunRaw {
+            })
+            .collect();
+        let raws: Vec<SpireRunRaw> = candidates
+            .iter()
+            .map(|run| SpireRunRaw {
                 id: run.id.clone(),
                 raw: run.raw.clone(),
-            }));
-        }
-        runs.exec(&mut tx).await?;
-        raws.exec(&mut tx).await?;
+            })
+            .collect();
 
-        match SpireMeta::filter_by_k("version")
-            .first()
-            .exec(&mut tx)
-            .await?
-        {
-            Some(meta) => {
-                let next = meta.v + 1;
-                let mut meta = meta;
-                toasty::update!(meta { v: next }).exec(&mut tx).await?;
-            }
-            None => {
-                toasty::create!(SpireMeta {
-                    k: "version",
-                    v: 1i64,
-                })
-                .exec(&mut tx)
-                .await?;
-            }
-        }
-        tx.commit().await?;
+        db.query(
+            "BEGIN TRANSACTION;
+             FOR $run IN $runs {
+                 CREATE ONLY type::record('spire_runs', $run.id)
+                     SET date = $run.date,
+                         start_time = $run.start_time,
+                         character = $run.character,
+                         win = $run.win,
+                         abandoned = $run.abandoned,
+                         ascension = $run.ascension,
+                         acts = $run.acts,
+                         floors = $run.floors,
+                         killed_by = $run.killed_by,
+                         kill_kind = $run.kill_kind,
+                         run_time = $run.run_time,
+                         seed = $run.seed,
+                         game_mode = $run.game_mode,
+                         build_id = $run.build_id,
+                         added_at = $run.added_at;
+             };
+             FOR $raw IN $raws {
+                 CREATE ONLY type::record('spire_run_raws', $raw.id)
+                     SET raw = $raw.raw;
+             };
+             UPSERT spire_meta:version
+                 SET k = 'version',
+                     v = (v ?? 0) + 1;
+             COMMIT TRANSACTION;",
+        )
+        .bind(("runs", runs))
+        .bind(("raws", raws))
+        .await?
+        .check()?;
     }
 
-    let version = current_version(&handle).await?;
+    let version = current_version(db).await?;
     Ok(ImportOutcome {
         received: incoming.len(),
         added,

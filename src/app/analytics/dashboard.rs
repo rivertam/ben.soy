@@ -1,11 +1,15 @@
-//! Public aggregate queries.
-//!
-//! Every query is fixed SQL with one bound cutoff. In particular, this module
-//! never touches the private identity ledger; that table has no public read
-//! path.
+//! Public aggregates built from a bounded analytics-event snapshot.
 
-use anyhow::{Context, anyhow};
-use toasty::{Db, Executor, stmt::Value};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::Context;
+use benjisponge::data::{Db, analytics_models::AnalyticsEvent};
+use serde::Deserialize;
+use surrealdb::types::SurrealValue;
+use tokio::time::timeout;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Window {
@@ -148,519 +152,544 @@ pub struct Campaign {
     pub visitors: i64,
 }
 
+#[derive(Deserialize, SurrealValue)]
+struct SnapshotRows {
+    events: Vec<AnalyticsEvent>,
+    prior_sessions: Vec<String>,
+}
+
 pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
-    // One repeatable-read transaction gives the entire public page a coherent
-    // snapshot while checking out (and pre-pinging) only one pooled
-    // connection. A slow query degrades to the dashboard's standby state.
-    let mut handle = db.clone();
-    let mut transaction = handle
-        .transaction()
-        .await
-        .context("analytics snapshot transaction failed")?;
-    toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .exec(&mut transaction)
-        .await
-        .context("analytics snapshot configuration failed")?;
-    toasty::sql::statement("SET LOCAL statement_timeout = '3s'")
-        .exec(&mut transaction)
-        .await
-        .context("analytics statement timeout failed")?;
+    const SNAPSHOT: &str = "
+        RETURN {
+            events: (
+                SELECT *, record::id(id) AS id
+                FROM analytics_events
+                WHERE occurred_at >= $cutoff
+            ),
+            prior_sessions: (
+                SELECT VALUE session_id
+                FROM analytics_events
+                WHERE kind = 'pageview'
+                    AND occurred_at < $cutoff
+                    AND session_id IN (
+                        SELECT VALUE session_id
+                        FROM analytics_events
+                        WHERE kind = 'pageview'
+                            AND occurred_at >= $cutoff
+                    )
+                GROUP BY session_id
+            )
+        }";
 
-    let overview = load_overview(&mut transaction, cutoff).await?;
-    let performance = load_performance(&mut transaction, cutoff).await?;
-    let days = load_days(&mut transaction, cutoff).await?;
-    let pages = load_pages(&mut transaction, cutoff).await?;
-    let channels = load_counts(
-        &mut transaction,
-        cutoff,
-        "WITH arrivals AS (
-             SELECT event.*
-             FROM analytics_events event
-             WHERE event.occurred_at >= $1 AND event.kind = 'pageview'
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM analytics_events earlier
-                   WHERE earlier.kind = 'pageview'
-                     AND earlier.visitor_id = event.visitor_id
-                     AND earlier.session_id = event.session_id
-                     AND (earlier.occurred_at, earlier.id)
-                         < (event.occurred_at, event.id)
-               )
-         )
-         SELECT referrer_kind, COUNT(*)::bigint
-         FROM arrivals
-         GROUP BY referrer_kind
-         ORDER BY COUNT(*) DESC, referrer_kind",
+    let snapshot = timeout(Duration::from_secs(3), async {
+        let mut response = db
+            .query(SNAPSHOT)
+            .bind(("cutoff", cutoff))
+            .await
+            .context("analytics snapshot query failed")?
+            .check()
+            .context("analytics snapshot query failed")?;
+        let snapshot: Option<SnapshotRows> = response
+            .take(0)
+            .context("analytics snapshot decoding failed")?;
+        snapshot.context("analytics snapshot query returned no rows")
+    })
+    .await
+    .context("analytics snapshot exceeded three seconds")??;
+    let current = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock predates the Unix epoch")?
+            .as_secs(),
     )
-    .await?;
-    let referrers = load_cohorts(
-        &mut transaction,
-        cutoff,
-        "WITH arrivals AS (
-             SELECT event.*
-             FROM analytics_events event
-             WHERE event.occurred_at >= $1 AND event.kind = 'pageview'
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM analytics_events earlier
-                   WHERE earlier.kind = 'pageview'
-                     AND earlier.visitor_id = event.visitor_id
-                     AND earlier.session_id = event.session_id
-                     AND (earlier.occurred_at, earlier.id)
-                         < (event.occurred_at, event.id)
-               )
-         )
-         SELECT referrer_host, COUNT(*)::bigint,
-                COUNT(DISTINCT visitor_id)::bigint
-         FROM arrivals
-         WHERE referrer_host IS NOT NULL
-         GROUP BY referrer_host
-         HAVING COUNT(DISTINCT visitor_id) >= 3
-         ORDER BY COUNT(*) DESC, referrer_host
-         LIMIT 12",
-    )
-    .await?;
-    let countries = load_cohorts(
-        &mut transaction,
-        cutoff,
-        "SELECT country_code, COUNT(*)::bigint,
-                COUNT(DISTINCT visitor_id)::bigint
-         FROM analytics_events
-         WHERE occurred_at >= $1 AND kind = 'pageview'
-           AND country_code IS NOT NULL
-         GROUP BY country_code
-         HAVING COUNT(DISTINCT visitor_id) >= 3
-         ORDER BY COUNT(*) DESC, country_code
-         LIMIT 30",
-    )
-    .await?;
-    let technology = load_technology(&mut transaction, cutoff).await?;
-    let hourly = load_hourly(&mut transaction, cutoff).await?;
-    let journeys = load_journeys(&mut transaction, cutoff).await?;
-    let outbound = load_cohorts(
-        &mut transaction,
-        cutoff,
-        "SELECT target_host, COUNT(*)::bigint,
-                COUNT(DISTINCT visitor_id)::bigint
-         FROM analytics_events
-         WHERE occurred_at >= $1 AND kind = 'outbound'
-           AND target_host IS NOT NULL
-         GROUP BY target_host
-         HAVING COUNT(DISTINCT visitor_id) >= 3
-         ORDER BY COUNT(*) DESC, target_host
-         LIMIT 10",
-    )
-    .await?;
-    let campaigns = load_campaigns(&mut transaction, cutoff).await?;
+    .context("current timestamp exceeds i64")?;
 
-    let dashboard = Dashboard {
-        overview,
-        performance,
-        days,
-        pages,
-        channels,
-        referrers,
-        countries,
-        technology,
-        hourly,
-        journeys,
-        outbound,
-        campaigns,
-    };
-    transaction
-        .commit()
-        .await
-        .context("analytics snapshot commit failed")?;
-    Ok(dashboard)
+    Ok(aggregate(
+        &snapshot.events,
+        &snapshot.prior_sessions.into_iter().collect(),
+        cutoff,
+        current,
+    ))
 }
 
-async fn query(
-    executor: &mut dyn Executor,
-    sql: &'static str,
+fn aggregate(
+    events: &[AnalyticsEvent],
+    prior_sessions: &HashSet<String>,
     cutoff: i64,
-) -> anyhow::Result<Vec<Value>> {
-    toasty::sql::query(sql)
-        .bind(cutoff)
-        .exec(executor)
-        .await
-        .context("analytics aggregate query failed")
-}
-
-async fn load_overview(executor: &mut dyn Executor, cutoff: i64) -> anyhow::Result<Overview> {
-    let rows = query(
-        executor,
-        "WITH filtered AS (
-             SELECT visitor_id, session_id, kind, engagement_seconds
-             FROM analytics_events
-             WHERE occurred_at >= $1
-         ),
-         visitors AS (
-             SELECT visitor_id, COUNT(DISTINCT session_id) AS sessions
-             FROM filtered WHERE kind = 'pageview' GROUP BY visitor_id
-         ),
-         sessions AS (
-             SELECT visitor_id, session_id, COUNT(*) AS views
-             FROM filtered
-             WHERE kind = 'pageview'
-             GROUP BY visitor_id, session_id
-         )
-         SELECT
-             COUNT(*) FILTER (WHERE kind = 'pageview')::bigint,
-             COUNT(DISTINCT visitor_id) FILTER (WHERE kind = 'pageview')::bigint,
-             COUNT(DISTINCT (visitor_id, session_id))
-                 FILTER (WHERE kind = 'pageview')::bigint,
-             COALESCE(SUM(engagement_seconds)
-                 FILTER (WHERE kind = 'engagement'), 0)::bigint,
-             COUNT(*) FILTER (WHERE kind = 'outbound')::bigint,
-             COALESCE((SELECT ROUND(
-                 100.0 * COUNT(*) FILTER (WHERE sessions > 1)
-                 / NULLIF(COUNT(*), 0)
-             )::bigint FROM visitors), 0)::bigint,
-             COALESCE((SELECT ROUND(
-                 100.0 * COUNT(*) FILTER (WHERE views = 1) / NULLIF(COUNT(*), 0)
-             )::bigint FROM sessions), 0)::bigint
-         FROM filtered",
-        cutoff,
-    )
-    .await?;
-    let row = only_row(&rows, 7)?;
-    Ok(Overview {
-        pageviews: integer(&row[0])?,
-        visitors: integer(&row[1])?,
-        sessions: integer(&row[2])?,
-        engaged_seconds: integer(&row[3])?,
-        outbound_clicks: integer(&row[4])?,
-        returning_percent: integer(&row[5])?,
-        single_page_percent: integer(&row[6])?,
-    })
-}
-
-async fn load_performance(executor: &mut dyn Executor, cutoff: i64) -> anyhow::Result<Performance> {
-    let rows = query(
-        executor,
-        "SELECT
-             COALESCE(ROUND(AVG(engagement_seconds))::bigint, 0),
-             COALESCE(ROUND(AVG(scroll_percent))::bigint, 0),
-             COALESCE(ROUND(
-                 100.0 * COUNT(*) FILTER (WHERE scroll_percent >= 90)
-                 / NULLIF(COUNT(*) FILTER (WHERE scroll_percent IS NOT NULL), 0)
-             )::bigint, 0),
-             COALESCE(ROUND(AVG(lcp_milliseconds))::bigint, 0),
-             COALESCE(ROUND(AVG(cls_thousandths))::bigint, 0),
-             COALESCE(ROUND(AVG(navigation_milliseconds))::bigint, 0),
-             COUNT(*)::bigint
-         FROM analytics_events
-         WHERE occurred_at >= $1 AND kind = 'engagement'",
-        cutoff,
-    )
-    .await?;
-    let row = only_row(&rows, 7)?;
-    Ok(Performance {
-        attention_seconds: integer(&row[0])?,
-        scroll_percent: integer(&row[1])?,
-        finish_percent: integer(&row[2])?,
-        lcp_milliseconds: integer(&row[3])?,
-        cls_thousandths: integer(&row[4])?,
-        navigation_milliseconds: integer(&row[5])?,
-        samples: integer(&row[6])?,
-    })
-}
-
-async fn load_days(executor: &mut dyn Executor, cutoff: i64) -> anyhow::Result<Vec<Day>> {
-    let rows = query(
-        executor,
-        "WITH daily AS (
-             SELECT (to_timestamp(occurred_at) AT TIME ZONE 'UTC')::date AS day,
-                    COUNT(*) FILTER (WHERE kind = 'pageview')::bigint AS views,
-                    COUNT(DISTINCT visitor_id)
-                        FILTER (WHERE kind = 'pageview')::bigint AS visitors,
-                    COALESCE(SUM(engagement_seconds)
-                        FILTER (WHERE kind = 'engagement'), 0)::bigint AS engaged
-             FROM analytics_events
-             WHERE occurred_at >= $1
-             GROUP BY 1
-         )
-         SELECT to_char(series.day, 'YYYY-MM-DD'),
-                COALESCE(daily.views, 0)::bigint,
-                COALESCE(daily.visitors, 0)::bigint,
-                COALESCE(daily.engaged, 0)::bigint
-         FROM generate_series(
-             (to_timestamp($1) AT TIME ZONE 'UTC')::date,
-             (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,
-             interval '1 day'
-         ) AS series(day)
-         LEFT JOIN daily ON daily.day = series.day
-         ORDER BY series.day",
-        cutoff,
-    )
-    .await?;
-    rows.iter()
-        .map(|value| {
-            let row = row(value, 4)?;
-            Ok(Day {
-                date: text(&row[0])?.to_string(),
-                views: integer(&row[1])?,
-                visitors: integer(&row[2])?,
-                engaged_seconds: integer(&row[3])?,
-            })
-        })
-        .collect()
-}
-
-async fn load_pages(executor: &mut dyn Executor, cutoff: i64) -> anyhow::Result<Vec<Page>> {
-    let rows = query(
-        executor,
-        "SELECT page_path,
-                COUNT(*) FILTER (WHERE kind = 'pageview')::bigint AS views,
-                COUNT(DISTINCT visitor_id)
-                    FILTER (WHERE kind = 'pageview')::bigint AS visitors,
-                COALESCE(SUM(engagement_seconds)
-                    FILTER (WHERE kind = 'engagement'), 0)::bigint,
-                COALESCE(ROUND(AVG(scroll_percent)
-                    FILTER (WHERE kind = 'engagement'))::bigint, 0)
-         FROM analytics_events
-         WHERE occurred_at >= $1
-         GROUP BY page_path
-         HAVING COUNT(*) FILTER (WHERE kind = 'pageview') > 0
-         ORDER BY views DESC, page_path",
-        cutoff,
-    )
-    .await?;
-    let mut pages: Vec<Page> = rows
+    current: i64,
+) -> Dashboard {
+    let loaded: Vec<&AnalyticsEvent> = events
         .iter()
-        .map(|value| {
-            let row = row(value, 5)?;
-            Ok(Page {
-                path: text(&row[0])?.to_string(),
-                views: integer(&row[1])?,
-                visitors: integer(&row[2])?,
-                engaged_seconds: integer(&row[3])?,
-                scroll_percent: integer(&row[4])?,
-            })
-        })
-        .collect::<anyhow::Result<_>>()?;
-    let fixed_routes = crate::content::routes::site_routes();
-    pages.retain(|page| fixed_routes.iter().any(|route| route == &page.path) || page.visitors >= 3);
-    pages.truncate(12);
-    Ok(pages)
+        .filter(|event| event.occurred_at >= cutoff)
+        .collect();
+    let arrivals = earliest_pageviews(&loaded, prior_sessions);
+
+    Dashboard {
+        overview: aggregate_overview(&loaded),
+        performance: aggregate_performance(&loaded),
+        days: aggregate_days(&loaded, cutoff, current),
+        pages: aggregate_pages(&loaded),
+        channels: aggregate_channels(&arrivals),
+        referrers: aggregate_referrers(&arrivals),
+        countries: aggregate_countries(&loaded),
+        technology: aggregate_technology(&loaded),
+        hourly: aggregate_hourly(&loaded),
+        journeys: aggregate_journeys(&loaded),
+        outbound: aggregate_outbound(&loaded),
+        campaigns: aggregate_campaigns(&arrivals),
+    }
 }
 
-async fn load_counts(
-    executor: &mut dyn Executor,
-    cutoff: i64,
-    sql: &'static str,
-) -> anyhow::Result<Vec<Count>> {
-    let rows = query(executor, sql, cutoff).await?;
-    rows.iter()
-        .map(|value| {
-            let row = row(value, 2)?;
-            Ok(Count {
-                label: text(&row[0])?.to_string(),
-                count: integer(&row[1])?,
-            })
-        })
-        .collect()
-}
+fn aggregate_overview(events: &[&AnalyticsEvent]) -> Overview {
+    let mut pageviews = 0;
+    let mut visitors = HashSet::new();
+    let mut sessions: HashMap<(&str, &str), i64> = HashMap::new();
+    let mut visitor_sessions: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut engaged_seconds = 0;
+    let mut outbound_clicks = 0;
 
-async fn load_cohorts(
-    executor: &mut dyn Executor,
-    cutoff: i64,
-    sql: &'static str,
-) -> anyhow::Result<Vec<Cohort>> {
-    let rows = query(executor, sql, cutoff).await?;
-    rows.iter()
-        .map(|value| {
-            let row = row(value, 3)?;
-            Ok(Cohort {
-                label: text(&row[0])?.to_string(),
-                views: integer(&row[1])?,
-                visitors: integer(&row[2])?,
-            })
-        })
-        .collect()
-}
-
-async fn load_technology(
-    executor: &mut dyn Executor,
-    cutoff: i64,
-) -> anyhow::Result<Vec<Technology>> {
-    let rows = query(
-        executor,
-        "SELECT dimension, label, views, visitors
-         FROM (
-             SELECT 'device'::text AS dimension, device_kind::text AS label,
-                    COUNT(*)::bigint AS views,
-                    COUNT(DISTINCT visitor_id)::bigint AS visitors
-             FROM analytics_events
-             WHERE occurred_at >= $1 AND kind = 'pageview'
-             GROUP BY device_kind
-             UNION ALL
-             SELECT 'browser', browser, COUNT(*)::bigint,
-                    COUNT(DISTINCT visitor_id)::bigint
-             FROM analytics_events
-             WHERE occurred_at >= $1 AND kind = 'pageview'
-             GROUP BY browser
-             UNION ALL
-             SELECT 'os', operating_system, COUNT(*)::bigint,
-                    COUNT(DISTINCT visitor_id)::bigint
-             FROM analytics_events
-             WHERE occurred_at >= $1 AND kind = 'pageview'
-             GROUP BY operating_system
-         ) technology
-         WHERE visitors >= 3
-         ORDER BY dimension, views DESC, label",
-        cutoff,
-    )
-    .await?;
-    rows.iter()
-        .map(|value| {
-            let row = row(value, 4)?;
-            Ok(Technology {
-                dimension: text(&row[0])?.to_string(),
-                label: text(&row[1])?.to_string(),
-                views: integer(&row[2])?,
-                visitors: integer(&row[3])?,
-            })
-        })
-        .collect()
-}
-
-async fn load_hourly(executor: &mut dyn Executor, cutoff: i64) -> anyhow::Result<[[i64; 24]; 7]> {
-    let rows = query(
-        executor,
-        "SELECT local_weekday::bigint, local_hour::bigint, COUNT(*)::bigint
-         FROM analytics_events
-         WHERE occurred_at >= $1 AND kind = 'pageview'
-           AND local_weekday IS NOT NULL AND local_hour IS NOT NULL
-         GROUP BY local_weekday, local_hour
-         ORDER BY local_weekday, local_hour",
-        cutoff,
-    )
-    .await?;
-    let mut grid = [[0; 24]; 7];
-    for value in &rows {
-        let row = row(value, 3)?;
-        let weekday = usize::try_from(integer(&row[0])?)?;
-        let hour = usize::try_from(integer(&row[1])?)?;
-        if let Some(cell) = grid.get_mut(weekday).and_then(|day| day.get_mut(hour)) {
-            *cell = integer(&row[2])?;
+    for event in events {
+        match event.kind.as_str() {
+            "pageview" => {
+                pageviews += 1;
+                visitors.insert(event.visitor_id.as_str());
+                *sessions
+                    .entry((event.visitor_id.as_str(), event.session_id.as_str()))
+                    .or_default() += 1;
+                visitor_sessions
+                    .entry(event.visitor_id.as_str())
+                    .or_default()
+                    .insert(event.session_id.as_str());
+            }
+            "engagement" => engaged_seconds += event.engagement_seconds.unwrap_or(0),
+            "outbound" => outbound_clicks += 1,
+            _ => {}
         }
     }
-    Ok(grid)
+
+    let returning = visitor_sessions
+        .values()
+        .filter(|sessions| sessions.len() > 1)
+        .count();
+    let single_page = sessions.values().filter(|views| **views == 1).count();
+    Overview {
+        pageviews,
+        visitors: usize_to_i64(visitors.len()),
+        sessions: usize_to_i64(sessions.len()),
+        engaged_seconds,
+        outbound_clicks,
+        returning_percent: percent(returning, visitor_sessions.len()),
+        single_page_percent: percent(single_page, sessions.len()),
+    }
 }
 
-async fn load_journeys(executor: &mut dyn Executor, cutoff: i64) -> anyhow::Result<Vec<Journey>> {
-    let rows = query(
-        executor,
-        "SELECT referrer_path, page_path, COUNT(*)::bigint,
-                COUNT(DISTINCT visitor_id)::bigint
-         FROM analytics_events
-         WHERE occurred_at >= $1 AND kind = 'pageview'
-           AND referrer_kind = 'internal' AND referrer_path IS NOT NULL
-           AND referrer_path <> page_path
-         GROUP BY referrer_path, page_path
-         HAVING COUNT(DISTINCT visitor_id) >= 3
-         ORDER BY COUNT(*) DESC, referrer_path, page_path
-         LIMIT 10",
-        cutoff,
-    )
-    .await?;
-    rows.iter()
-        .map(|value| {
-            let row = row(value, 4)?;
-            Ok(Journey {
-                from: text(&row[0])?.to_string(),
-                to: text(&row[1])?.to_string(),
-                trips: integer(&row[2])?,
-                visitors: integer(&row[3])?,
-            })
+#[derive(Default)]
+struct Average {
+    sum: i128,
+    samples: usize,
+}
+
+impl Average {
+    fn push(&mut self, value: Option<i64>) {
+        if let Some(value) = value {
+            self.sum += i128::from(value);
+            self.samples += 1;
+        }
+    }
+
+    fn rounded(&self) -> i64 {
+        positive_half_up(self.sum, self.samples)
+    }
+}
+
+fn aggregate_performance(events: &[&AnalyticsEvent]) -> Performance {
+    let mut attention = Average::default();
+    let mut scroll = Average::default();
+    let mut lcp = Average::default();
+    let mut cls = Average::default();
+    let mut navigation = Average::default();
+    let mut finishes = 0;
+    let mut scroll_samples = 0;
+    let mut samples = 0;
+
+    for event in events.iter().filter(|event| event.kind == "engagement") {
+        samples += 1;
+        attention.push(event.engagement_seconds);
+        scroll.push(event.scroll_percent);
+        lcp.push(event.lcp_milliseconds);
+        cls.push(event.cls_thousandths);
+        navigation.push(event.navigation_milliseconds);
+        if let Some(value) = event.scroll_percent {
+            scroll_samples += 1;
+            finishes += usize::from(value >= 90);
+        }
+    }
+
+    Performance {
+        attention_seconds: attention.rounded(),
+        scroll_percent: scroll.rounded(),
+        finish_percent: percent(finishes, scroll_samples),
+        lcp_milliseconds: lcp.rounded(),
+        cls_thousandths: cls.rounded(),
+        navigation_milliseconds: navigation.rounded(),
+        samples: usize_to_i64(samples),
+    }
+}
+
+#[derive(Default)]
+struct Daily<'a> {
+    views: i64,
+    visitors: HashSet<&'a str>,
+    engaged_seconds: i64,
+}
+
+fn aggregate_days(events: &[&AnalyticsEvent], cutoff: i64, current: i64) -> Vec<Day> {
+    const SECONDS_PER_DAY: i64 = 86_400;
+
+    let mut daily: BTreeMap<i64, Daily<'_>> = BTreeMap::new();
+    for event in events {
+        let day = event.occurred_at.div_euclid(SECONDS_PER_DAY);
+        let aggregate = daily.entry(day).or_default();
+        match event.kind.as_str() {
+            "pageview" => {
+                aggregate.views += 1;
+                aggregate.visitors.insert(event.visitor_id.as_str());
+            }
+            "engagement" => {
+                aggregate.engaged_seconds += event.engagement_seconds.unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+
+    let first = cutoff.div_euclid(SECONDS_PER_DAY);
+    let last = current.div_euclid(SECONDS_PER_DAY);
+    if first > last {
+        return Vec::new();
+    }
+    (first..=last)
+        .map(|day| {
+            let aggregate = daily.get(&day);
+            Day {
+                date: format_utc_day(day),
+                views: aggregate.map_or(0, |value| value.views),
+                visitors: aggregate.map_or(0, |value| usize_to_i64(value.visitors.len())),
+                engaged_seconds: aggregate.map_or(0, |value| value.engaged_seconds),
+            }
         })
         .collect()
 }
 
-async fn load_campaigns(executor: &mut dyn Executor, cutoff: i64) -> anyhow::Result<Vec<Campaign>> {
-    let rows = query(
-        executor,
-        "WITH arrivals AS (
-             SELECT event.*
-             FROM analytics_events event
-             WHERE event.occurred_at >= $1 AND event.kind = 'pageview'
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM analytics_events earlier
-                   WHERE earlier.kind = 'pageview'
-                     AND earlier.visitor_id = event.visitor_id
-                     AND earlier.session_id = event.session_id
-                     AND (earlier.occurred_at, earlier.id)
-                         < (event.occurred_at, event.id)
-               )
-         )
-         SELECT utm_source, COALESCE(utm_campaign, '(uncategorized)'),
-                COUNT(*)::bigint, COUNT(DISTINCT visitor_id)::bigint
-         FROM arrivals
-         WHERE utm_source IS NOT NULL
-         GROUP BY utm_source, COALESCE(utm_campaign, '(uncategorized)')
-         HAVING COUNT(DISTINCT visitor_id) >= 3
-         ORDER BY COUNT(*) DESC, utm_source,
-                  COALESCE(utm_campaign, '(uncategorized)')
-         LIMIT 10",
-        cutoff,
-    )
-    .await?;
-    rows.iter()
-        .map(|value| {
-            let row = row(value, 4)?;
-            Ok(Campaign {
-                source: text(&row[0])?.to_string(),
-                campaign: text(&row[1])?.to_string(),
-                views: integer(&row[2])?,
-                visitors: integer(&row[3])?,
-            })
+#[derive(Default)]
+struct PageAggregate<'a> {
+    views: i64,
+    visitors: HashSet<&'a str>,
+    engaged_seconds: i64,
+    scroll: Average,
+}
+
+fn aggregate_pages(events: &[&AnalyticsEvent]) -> Vec<Page> {
+    let mut aggregates: BTreeMap<&str, PageAggregate<'_>> = BTreeMap::new();
+    for event in events {
+        let aggregate = aggregates.entry(event.page_path.as_str()).or_default();
+        match event.kind.as_str() {
+            "pageview" => {
+                aggregate.views += 1;
+                aggregate.visitors.insert(event.visitor_id.as_str());
+            }
+            "engagement" => {
+                aggregate.engaged_seconds += event.engagement_seconds.unwrap_or(0);
+                aggregate.scroll.push(event.scroll_percent);
+            }
+            _ => {}
+        }
+    }
+
+    let mut pages: Vec<Page> = aggregates
+        .into_iter()
+        .filter(|(_, aggregate)| aggregate.views > 0)
+        .map(|(path, aggregate)| Page {
+            path: path.to_owned(),
+            views: aggregate.views,
+            visitors: usize_to_i64(aggregate.visitors.len()),
+            engaged_seconds: aggregate.engaged_seconds,
+            scroll_percent: aggregate.scroll.rounded(),
         })
-        .collect()
+        .collect();
+    pages.sort_by(|left, right| {
+        right
+            .views
+            .cmp(&left.views)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    let fixed_routes: HashSet<String> = crate::content::routes::site_routes().into_iter().collect();
+    pages.retain(|page| fixed_routes.contains(&page.path) || page.visitors >= 3);
+    pages.truncate(12);
+    pages
 }
 
-fn only_row(rows: &[Value], fields: usize) -> anyhow::Result<&[Value]> {
-    if rows.len() != 1 {
-        return Err(anyhow!(
-            "analytics query expected one row, received {}",
-            rows.len()
-        ));
+fn earliest_pageviews<'a>(
+    events: &[&'a AnalyticsEvent],
+    prior_sessions: &HashSet<String>,
+) -> Vec<&'a AnalyticsEvent> {
+    let mut arrivals: HashMap<(&str, &str), &AnalyticsEvent> = HashMap::new();
+    for event in events.iter().filter(|event| event.kind == "pageview") {
+        if prior_sessions.contains(event.session_id.as_str()) {
+            continue;
+        }
+        let key = (event.visitor_id.as_str(), event.session_id.as_str());
+        arrivals
+            .entry(key)
+            .and_modify(|earlier| {
+                if (event.occurred_at, event.id.as_str())
+                    < (earlier.occurred_at, earlier.id.as_str())
+                {
+                    *earlier = event;
+                }
+            })
+            .or_insert(event);
     }
-    row(&rows[0], fields)
+    arrivals.into_values().collect()
 }
 
-fn row(value: &Value, fields: usize) -> anyhow::Result<&[Value]> {
-    let record = value
-        .as_record()
-        .ok_or_else(|| anyhow!("analytics query returned a non-record row"))?;
-    if record.len() != fields {
-        return Err(anyhow!(
-            "analytics query expected {fields} fields, received {}",
-            record.len()
-        ));
+fn aggregate_channels(arrivals: &[&AnalyticsEvent]) -> Vec<Count> {
+    let mut aggregates: BTreeMap<&str, i64> = BTreeMap::new();
+    for event in arrivals {
+        *aggregates.entry(event.referrer_kind.as_str()).or_default() += 1;
     }
-    Ok(record.as_slice())
+    let mut channels: Vec<Count> = aggregates
+        .into_iter()
+        .map(|(label, count)| Count {
+            label: label.to_owned(),
+            count,
+        })
+        .collect();
+    channels.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    channels
 }
 
-fn text(value: &Value) -> anyhow::Result<&str> {
-    value
-        .as_str()
-        .ok_or_else(|| anyhow!("analytics query expected text, received {value:?}"))
+#[derive(Default)]
+struct CohortAggregate<'a> {
+    views: i64,
+    visitors: HashSet<&'a str>,
 }
 
-fn integer(value: &Value) -> anyhow::Result<i64> {
-    match value {
-        Value::I64(value) => Ok(*value),
-        Value::I32(value) => Ok(i64::from(*value)),
-        Value::I16(value) => Ok(i64::from(*value)),
-        Value::I8(value) => Ok(i64::from(*value)),
-        Value::U64(value) => i64::try_from(*value).context("analytics integer overflow"),
-        Value::U32(value) => Ok(i64::from(*value)),
-        value => Err(anyhow!(
-            "analytics query expected an integer, received {value:?}"
-        )),
+fn add_cohort<'a>(
+    aggregates: &mut BTreeMap<&'a str, CohortAggregate<'a>>,
+    label: &'a str,
+    visitor: &'a str,
+) {
+    let aggregate = aggregates.entry(label).or_default();
+    aggregate.views += 1;
+    aggregate.visitors.insert(visitor);
+}
+
+fn collect_cohorts(aggregates: BTreeMap<&str, CohortAggregate<'_>>, limit: usize) -> Vec<Cohort> {
+    let mut cohorts: Vec<Cohort> = aggregates
+        .into_iter()
+        .filter(|(_, aggregate)| aggregate.visitors.len() >= 3)
+        .map(|(label, aggregate)| Cohort {
+            label: label.to_owned(),
+            views: aggregate.views,
+            visitors: usize_to_i64(aggregate.visitors.len()),
+        })
+        .collect();
+    cohorts.sort_by(|left, right| {
+        right
+            .views
+            .cmp(&left.views)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    cohorts.truncate(limit);
+    cohorts
+}
+
+fn aggregate_referrers(arrivals: &[&AnalyticsEvent]) -> Vec<Cohort> {
+    let mut aggregates = BTreeMap::new();
+    for event in arrivals {
+        if let Some(host) = event.referrer_host.as_deref() {
+            add_cohort(&mut aggregates, host, event.visitor_id.as_str());
+        }
     }
+    collect_cohorts(aggregates, 12)
+}
+
+fn aggregate_countries(events: &[&AnalyticsEvent]) -> Vec<Cohort> {
+    let mut aggregates = BTreeMap::new();
+    for event in events.iter().filter(|event| event.kind == "pageview") {
+        if let Some(country) = event.country_code.as_deref() {
+            add_cohort(&mut aggregates, country, event.visitor_id.as_str());
+        }
+    }
+    collect_cohorts(aggregates, 30)
+}
+
+fn aggregate_technology(events: &[&AnalyticsEvent]) -> Vec<Technology> {
+    let mut aggregates: BTreeMap<(&str, &str), CohortAggregate<'_>> = BTreeMap::new();
+    for event in events.iter().filter(|event| event.kind == "pageview") {
+        for (dimension, label) in [
+            ("device", event.device_kind.as_str()),
+            ("browser", event.browser.as_str()),
+            ("os", event.operating_system.as_str()),
+        ] {
+            let aggregate = aggregates.entry((dimension, label)).or_default();
+            aggregate.views += 1;
+            aggregate.visitors.insert(event.visitor_id.as_str());
+        }
+    }
+
+    let mut technology: Vec<Technology> = aggregates
+        .into_iter()
+        .filter(|(_, aggregate)| aggregate.visitors.len() >= 3)
+        .map(|((dimension, label), aggregate)| Technology {
+            dimension: dimension.to_owned(),
+            label: label.to_owned(),
+            views: aggregate.views,
+            visitors: usize_to_i64(aggregate.visitors.len()),
+        })
+        .collect();
+    technology.sort_by(|left, right| {
+        left.dimension
+            .cmp(&right.dimension)
+            .then_with(|| right.views.cmp(&left.views))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    technology
+}
+
+fn aggregate_hourly(events: &[&AnalyticsEvent]) -> [[i64; 24]; 7] {
+    let mut grid = [[0; 24]; 7];
+    for event in events.iter().filter(|event| event.kind == "pageview") {
+        let (Some(weekday), Some(hour)) = (event.local_weekday, event.local_hour) else {
+            continue;
+        };
+        let (Ok(weekday), Ok(hour)) = (usize::try_from(weekday), usize::try_from(hour)) else {
+            continue;
+        };
+        if let Some(cell) = grid.get_mut(weekday).and_then(|day| day.get_mut(hour)) {
+            *cell += 1;
+        }
+    }
+    grid
+}
+
+fn aggregate_journeys(events: &[&AnalyticsEvent]) -> Vec<Journey> {
+    let mut aggregates: BTreeMap<(&str, &str), CohortAggregate<'_>> = BTreeMap::new();
+    for event in events.iter().filter(|event| event.kind == "pageview") {
+        let Some(from) = event.referrer_path.as_deref() else {
+            continue;
+        };
+        if event.referrer_kind != "internal" || from == event.page_path {
+            continue;
+        }
+        let aggregate = aggregates
+            .entry((from, event.page_path.as_str()))
+            .or_default();
+        aggregate.views += 1;
+        aggregate.visitors.insert(event.visitor_id.as_str());
+    }
+
+    let mut journeys: Vec<Journey> = aggregates
+        .into_iter()
+        .filter(|(_, aggregate)| aggregate.visitors.len() >= 3)
+        .map(|((from, to), aggregate)| Journey {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            trips: aggregate.views,
+            visitors: usize_to_i64(aggregate.visitors.len()),
+        })
+        .collect();
+    journeys.sort_by(|left, right| {
+        right
+            .trips
+            .cmp(&left.trips)
+            .then_with(|| left.from.cmp(&right.from))
+            .then_with(|| left.to.cmp(&right.to))
+    });
+    journeys.truncate(10);
+    journeys
+}
+
+fn aggregate_outbound(events: &[&AnalyticsEvent]) -> Vec<Cohort> {
+    let mut aggregates = BTreeMap::new();
+    for event in events.iter().filter(|event| event.kind == "outbound") {
+        if let Some(host) = event.target_host.as_deref() {
+            add_cohort(&mut aggregates, host, event.visitor_id.as_str());
+        }
+    }
+    collect_cohorts(aggregates, 10)
+}
+
+fn aggregate_campaigns(arrivals: &[&AnalyticsEvent]) -> Vec<Campaign> {
+    let mut aggregates: BTreeMap<(&str, &str), CohortAggregate<'_>> = BTreeMap::new();
+    for event in arrivals {
+        let Some(source) = event.utm_source.as_deref() else {
+            continue;
+        };
+        let campaign = event.utm_campaign.as_deref().unwrap_or("(uncategorized)");
+        let aggregate = aggregates.entry((source, campaign)).or_default();
+        aggregate.views += 1;
+        aggregate.visitors.insert(event.visitor_id.as_str());
+    }
+
+    let mut campaigns: Vec<Campaign> = aggregates
+        .into_iter()
+        .filter(|(_, aggregate)| aggregate.visitors.len() >= 3)
+        .map(|((source, campaign), aggregate)| Campaign {
+            source: source.to_owned(),
+            campaign: campaign.to_owned(),
+            views: aggregate.views,
+            visitors: usize_to_i64(aggregate.visitors.len()),
+        })
+        .collect();
+    campaigns.sort_by(|left, right| {
+        right
+            .views
+            .cmp(&left.views)
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| left.campaign.cmp(&right.campaign))
+    });
+    campaigns.truncate(10);
+    campaigns
+}
+
+fn percent(numerator: usize, denominator: usize) -> i64 {
+    positive_half_up(
+        i128::try_from(numerator).expect("analytics count fits i128") * 100,
+        denominator,
+    )
+}
+
+fn positive_half_up(numerator: i128, denominator: usize) -> i64 {
+    if denominator == 0 {
+        return 0;
+    }
+    debug_assert!(numerator >= 0);
+    let denominator = i128::try_from(denominator).expect("analytics count fits i128");
+    let rounded = (numerator * 2 + denominator) / (denominator * 2);
+    i64::try_from(rounded).expect("analytics aggregate fits i64")
+}
+
+fn usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).expect("analytics count fits i64")
+}
+
+fn format_utc_day(day: i64) -> String {
+    const SECONDS_PER_DAY: i64 = 86_400;
+
+    jiff::Timestamp::from_second(
+        day.checked_mul(SECONDS_PER_DAY)
+            .expect("analytics day fits a timestamp"),
+    )
+    .expect("analytics day is a valid timestamp")
+    .strftime("%Y-%m-%d")
+    .to_string()
 }
 
 #[cfg(test)]
@@ -676,23 +705,220 @@ mod tests {
     }
 
     #[test]
-    fn public_queries_do_not_name_the_private_table() {
-        let source = include_str!("dashboard.rs");
-        let private_table = ["analytics", "_identities"].concat();
-        assert!(
-            !source.contains(&private_table),
-            "public dashboard source must not access private identities"
+    fn aggregation_preserves_rounding_nulls_arrivals_and_day_gaps() {
+        let cutoff = 1_704_067_200;
+        let mut events = vec![
+            event("z", "v1", "s1", cutoff, "pageview", "/resume"),
+            event("a", "v1", "s1", cutoff, "pageview", "/thoughts"),
+            event("b", "v1", "s2", cutoff + 1, "pageview", "/resume"),
+            event("c", "v2", "s3", cutoff + 2, "pageview", "/resume"),
+            event("d", "v1", "s1", cutoff + 2, "engagement", "/resume"),
+            event("e", "v1", "s1", cutoff + 2, "engagement", "/resume"),
+            event("f", "v1", "s1", cutoff + 2, "engagement", "/resume"),
+            event("g", "v1", "s1", cutoff + 2, "outbound", "/resume"),
+            event("old", "v1", "s1", cutoff - 1, "pageview", "/resume"),
+            event(
+                "later",
+                "v3",
+                "s4",
+                cutoff + 2 * 86_400,
+                "pageview",
+                "/resume",
+            ),
+        ];
+        events[0].referrer_kind = "direct".to_string();
+        events[1].referrer_kind = "search".to_string();
+        events[8].referrer_kind = "social".to_string();
+        events[4].engagement_seconds = Some(1);
+        events[4].scroll_percent = Some(89);
+        events[4].lcp_milliseconds = Some(100);
+        events[5].engagement_seconds = Some(2);
+        events[5].scroll_percent = Some(90);
+        events[5].lcp_milliseconds = Some(101);
+        events[6].engagement_seconds = None;
+        events[6].scroll_percent = None;
+        events[6].lcp_milliseconds = None;
+
+        let dashboard = aggregate(&events, &HashSet::new(), cutoff, cutoff + 2 * 86_400);
+
+        assert_eq!(dashboard.overview.pageviews, 5);
+        assert_eq!(dashboard.overview.visitors, 3);
+        assert_eq!(dashboard.overview.sessions, 4);
+        assert_eq!(dashboard.overview.engaged_seconds, 3);
+        assert_eq!(dashboard.overview.outbound_clicks, 1);
+        assert_eq!(dashboard.overview.returning_percent, 33);
+        assert_eq!(dashboard.overview.single_page_percent, 75);
+        assert_eq!(dashboard.performance.attention_seconds, 2);
+        assert_eq!(dashboard.performance.scroll_percent, 90);
+        assert_eq!(dashboard.performance.finish_percent, 50);
+        assert_eq!(dashboard.performance.lcp_milliseconds, 101);
+        assert_eq!(dashboard.performance.samples, 3);
+        assert_eq!(dashboard.channels.len(), 2);
+        assert_eq!(dashboard.channels[0].label, "direct");
+        assert_eq!(dashboard.channels[0].count, 3);
+        assert_eq!(dashboard.channels[1].label, "search");
+        assert_eq!(dashboard.channels[1].count, 1);
+        assert_eq!(
+            dashboard
+                .days
+                .iter()
+                .map(|day| (day.date.as_str(), day.views))
+                .collect::<Vec<_>>(),
+            vec![("2024-01-01", 4), ("2024-01-02", 0), ("2024-01-03", 1)]
         );
     }
 
     #[test]
-    fn public_cohorts_require_three_visitors() {
-        let source = include_str!("dashboard.rs");
+    fn public_aggregates_keep_fixed_pages_and_suppress_small_cohorts() {
+        let cutoff = 1_704_067_200;
+        let mut events = Vec::new();
+        let cohorts = [
+            ("v1", "s1", "/felix/public", "US", "good.example", "good"),
+            ("v2", "s2", "/felix/public", "US", "good.example", "good"),
+            ("v3", "s3", "/felix/public", "US", "good.example", "good"),
+            ("v4", "s4", "/felix/private", "CA", "small.example", "small"),
+            ("v5", "s5", "/felix/private", "CA", "small.example", "small"),
+        ];
+        for (index, (visitor, session, path, country, host, source)) in
+            cohorts.into_iter().enumerate()
+        {
+            let mut pageview = event(
+                &format!("p{index}"),
+                visitor,
+                session,
+                cutoff + i64::try_from(index).unwrap(),
+                "pageview",
+                path,
+            );
+            pageview.referrer_kind = "internal".to_string();
+            pageview.referrer_host = Some(host.to_string());
+            pageview.referrer_path = Some("/thoughts".to_string());
+            pageview.country_code = Some(country.to_string());
+            pageview.device_kind = if source == "good" {
+                "mobile"
+            } else {
+                "desktop"
+            }
+            .to_string();
+            pageview.browser = if source == "good" {
+                "Firefox"
+            } else {
+                "Chrome"
+            }
+            .to_string();
+            pageview.operating_system =
+                if source == "good" { "Linux" } else { "Windows" }.to_string();
+            pageview.utm_source = Some(source.to_string());
+            events.push(pageview);
+
+            let mut outbound = event(
+                &format!("o{index}"),
+                visitor,
+                session,
+                cutoff + 10 + i64::try_from(index).unwrap(),
+                "outbound",
+                path,
+            );
+            outbound.target_host = Some(host.to_string());
+            events.push(outbound);
+        }
+        events.push(event(
+            "fixed",
+            "solo",
+            "solo",
+            cutoff + 30,
+            "pageview",
+            "/resume",
+        ));
+
+        let dashboard = aggregate(&events, &HashSet::new(), cutoff, cutoff);
+
+        assert!(dashboard.pages.iter().any(|page| page.path == "/resume"));
         assert!(
-            source
-                .matches("HAVING COUNT(DISTINCT visitor_id) >= 3")
-                .count()
-                >= 4
+            dashboard
+                .pages
+                .iter()
+                .any(|page| page.path == "/felix/public")
         );
+        assert!(
+            dashboard
+                .pages
+                .iter()
+                .all(|page| page.path != "/felix/private")
+        );
+        assert_eq!(dashboard.referrers.len(), 1);
+        assert_eq!(dashboard.referrers[0].label, "good.example");
+        assert_eq!(dashboard.countries.len(), 1);
+        assert_eq!(dashboard.countries[0].label, "US");
+        assert!(
+            dashboard
+                .technology
+                .iter()
+                .all(|row| !["desktop", "Chrome", "Windows"].contains(&row.label.as_str()))
+        );
+        assert_eq!(dashboard.journeys.len(), 1);
+        assert_eq!(dashboard.outbound.len(), 1);
+        assert_eq!(dashboard.outbound[0].label, "good.example");
+        assert_eq!(dashboard.campaigns.len(), 1);
+        assert_eq!(dashboard.campaigns[0].source, "good");
+    }
+
+    #[test]
+    fn a_session_that_started_before_the_window_is_not_an_arrival_again() {
+        let cutoff = 1_704_067_200;
+        let mut continued = event("a", "v1", "continued", cutoff, "pageview", "/resume");
+        continued.referrer_kind = "search".to_string();
+        let fresh = event("b", "v2", "fresh", cutoff + 1, "pageview", "/resume");
+
+        let dashboard = aggregate(
+            &[continued, fresh],
+            &HashSet::from(["continued".to_string()]),
+            cutoff,
+            cutoff,
+        );
+
+        assert_eq!(dashboard.channels.len(), 1);
+        assert_eq!(dashboard.channels[0].label, "direct");
+        assert_eq!(dashboard.channels[0].count, 1);
+    }
+
+    fn event(
+        id: &str,
+        visitor_id: &str,
+        session_id: &str,
+        occurred_at: i64,
+        kind: &str,
+        page_path: &str,
+    ) -> AnalyticsEvent {
+        AnalyticsEvent {
+            id: id.to_string(),
+            visitor_id: visitor_id.to_string(),
+            session_id: session_id.to_string(),
+            occurred_at,
+            kind: kind.to_string(),
+            page_path: page_path.to_string(),
+            referrer_kind: "direct".to_string(),
+            referrer_host: None,
+            referrer_path: None,
+            country_code: None,
+            timezone: None,
+            language: None,
+            device_kind: "unknown".to_string(),
+            browser: "Other".to_string(),
+            operating_system: "Other".to_string(),
+            viewport_kind: "unknown".to_string(),
+            navigation_kind: None,
+            local_hour: None,
+            local_weekday: None,
+            engagement_seconds: None,
+            scroll_percent: None,
+            lcp_milliseconds: None,
+            cls_thousandths: None,
+            navigation_milliseconds: None,
+            target_host: None,
+            utm_source: None,
+            utm_medium: None,
+            utm_campaign: None,
+        }
     }
 }

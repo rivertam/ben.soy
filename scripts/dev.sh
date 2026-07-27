@@ -3,43 +3,46 @@
 set -Eeuo pipefail
 
 site_port="${1:-3000}"
-pg_container=benjisponge-pg
-pg_port=5490
-pg_url="postgresql://postgres:dev@127.0.0.1:${pg_port}/benjisponge"
+surreal_container=benjisponge-surrealdb
+surreal_image=surrealdb/surrealdb:v3.2.3
+surreal_port=5800
+surreal_endpoint="ws://127.0.0.1:${surreal_port}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 
-# Local Postgres (18, matching production) for everything the site reads
-# in-process. Seed data with:
+# Local SurrealDB for everything the site reads in-process. The application
+# bootstraps its schema after connecting. Seed data with:
 #   just sync-spire --api "http://127.0.0.1:${site_port}"
 #   just reset-fitness-local   (or: just sync-fitness <csv> --api ...)
-printf 'dev: ensuring Postgres on 127.0.0.1:%s\n' "${pg_port}"
-if [[ "$(docker inspect -f '{{.State.Running}}' "${pg_container}" 2>/dev/null)" != "true" ]]; then
-    if docker inspect "${pg_container}" >/dev/null 2>&1; then
-        docker start "${pg_container}" >/dev/null
+printf 'dev: ensuring SurrealDB on 127.0.0.1:%s\n' "${surreal_port}"
+if [[ "$(docker inspect -f '{{.State.Running}}' "${surreal_container}" 2>/dev/null)" != "true" ]]; then
+    if docker inspect "${surreal_container}" >/dev/null 2>&1; then
+        docker start "${surreal_container}" >/dev/null
     else
-        docker run -d --name "${pg_container}" \
-            -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=benjisponge \
-            -v benjisponge-pg-data:/var/lib/postgresql \
-            -p "127.0.0.1:${pg_port}:5432" \
-            postgres:18-alpine >/dev/null
+        docker run -d --name "${surreal_container}" \
+            -e SURREAL_BIND=0.0.0.0:8000 \
+            -e SURREAL_PATH=rocksdb:///home/nonroot/data.db \
+            -e SURREAL_USER=root \
+            -e SURREAL_PASS=dev \
+            -v benjisponge-surrealdb-data:/home/nonroot \
+            -p "127.0.0.1:${surreal_port}:8000" \
+            "${surreal_image}" start >/dev/null
     fi
 fi
-until docker exec "${pg_container}" pg_isready -U postgres -q 2>/dev/null; do
+until docker exec "${surreal_container}" /surreal is-ready \
+    --endpoint http://127.0.0.1:8000 >/dev/null 2>&1; do
     sleep 0.3
 done
 # The container stays up between dev sessions (named volume
-# benjisponge-pg-data holds the data); `docker rm -f benjisponge-pg`
-# to reclaim it.
-
-printf 'dev: applying migrations\n'
-(cd "${repo_root}" && POSTGRES_URL="${pg_url}" cargo run --quiet --bin migrate -- migration apply)
+# benjisponge-surrealdb-data holds the data); remove the container and
+# volume explicitly to reclaim them.
 
 printf 'dev: starting Topcoat on port %s\n' "${site_port}"
 cd "${repo_root}"
 # Optional local secrets (mainly Google OAuth). See .env.dev.example /
 # docs/auth.md. Loaded before the pinned locals below so a misplaced
-# POSTGRES_URL in .env.dev cannot point the app at production.
+# SurrealDB endpoint or credential in .env.dev cannot point the app at
+# production.
 if [[ -f "${repo_root}/.env.dev" ]]; then
     set -a
     # shellcheck disable=SC1091
@@ -48,7 +51,11 @@ if [[ -f "${repo_root}/.env.dev" ]]; then
 fi
 # COOKIE_KEY is a fixed non-secret so viewer logins survive rebuilds;
 # Google credentials come from .env.dev or the shell environment.
-POSTGRES_URL="${pg_url}" \
+SURREALDB_ENDPOINT="${surreal_endpoint}" \
+    SURREALDB_NAMESPACE=benjisponge \
+    SURREALDB_DATABASE=benjisponge \
+    SURREALDB_USERNAME=root \
+    SURREALDB_PASSWORD=dev \
     SPIRE_SYNC_TOKEN=local-development \
     FITNESS_SYNC_TOKEN=local-development \
     COOKIE_KEY=local-development-cookie-key-not-a-secret \

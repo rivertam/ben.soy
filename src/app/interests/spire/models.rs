@@ -1,25 +1,21 @@
-//! Spire toasty models — the schema source of truth for the spire tables.
+//! Spire database models.
 //!
-//! This file lives with its interest but is compiled as part of the LIB
-//! crate: `src/data.rs` pulls it in via `#[path]` as
-//! `benjisponge::data::spire_models`, because the migrations CLI
-//! (`src/bin/migrate.rs`) and `toasty::models!` registration need every
-//! model in the shared lib. Schema changes go through
-//! `cargo run --bin migrate -- migration generate/apply`.
+//! The record identifier is projected to its raw string key when these
+//! models are loaded, so the site's domain and API continue to use the run
+//! file stem rather than exposing SurrealDB record ids.
+
+use serde::{Deserialize, Serialize};
+use surrealdb::types::SurrealValue;
 
 /// A Slay the Spire 2 run, minus the original `.run` payload.
 ///
-/// `raw` deliberately lives in [`SpireRunRaw`]: toasty hydrates whole rows,
-/// and dragging ~100 KB of JSON per run into every list read would swamp
-/// the container. Splitting the table makes `raw` write-only by
-/// construction.
-#[derive(Debug, toasty::Model)]
-#[table = "spire_runs"]
+/// `raw` deliberately lives in [`SpireRunRaw`]: dragging ~100 KB of JSON per
+/// run into every list read would swamp the container. Splitting the table
+/// makes `raw` write-only by construction.
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct SpireRun {
-    #[key]
     pub id: String,
     pub date: String,
-    #[index]
     pub start_time: i64,
     pub character: String,
     pub win: bool,
@@ -38,18 +34,14 @@ pub struct SpireRun {
 
 /// The whole original `.run` file, kept so future redesigns never need a
 /// re-scrape. Written by import, read by nothing.
-#[derive(Debug, toasty::Model)]
-#[table = "spire_run_raws"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct SpireRunRaw {
-    #[key]
     pub id: String,
     pub raw: String,
 }
 
-#[derive(Debug, toasty::Model)]
-#[table = "spire_meta"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct SpireMeta {
-    #[key]
     pub k: String,
     pub v: i64,
 }

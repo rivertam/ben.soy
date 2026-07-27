@@ -1,0 +1,258 @@
+-- The application applies this schema on its first database connection.
+-- OVERWRITE changes definitions in place without deleting stored records.
+
+DEFINE TABLE OVERWRITE spire_runs SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON spire_runs TYPE string;
+DEFINE FIELD OVERWRITE date ON spire_runs TYPE string;
+DEFINE FIELD OVERWRITE start_time ON spire_runs TYPE int;
+DEFINE FIELD OVERWRITE character ON spire_runs TYPE string;
+DEFINE FIELD OVERWRITE win ON spire_runs TYPE bool;
+DEFINE FIELD OVERWRITE abandoned ON spire_runs TYPE bool;
+DEFINE FIELD OVERWRITE ascension ON spire_runs TYPE int;
+DEFINE FIELD OVERWRITE acts ON spire_runs TYPE int;
+DEFINE FIELD OVERWRITE floors ON spire_runs TYPE int;
+DEFINE FIELD OVERWRITE killed_by ON spire_runs TYPE option<string>;
+DEFINE FIELD OVERWRITE kill_kind ON spire_runs TYPE option<string>;
+DEFINE FIELD OVERWRITE run_time ON spire_runs TYPE int;
+DEFINE FIELD OVERWRITE seed ON spire_runs TYPE string;
+DEFINE FIELD OVERWRITE game_mode ON spire_runs TYPE string;
+DEFINE FIELD OVERWRITE build_id ON spire_runs TYPE string;
+DEFINE FIELD OVERWRITE added_at ON spire_runs TYPE int;
+DEFINE INDEX OVERWRITE spire_runs_start_time ON spire_runs FIELDS start_time;
+
+DEFINE TABLE OVERWRITE spire_run_raws SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON spire_run_raws TYPE string;
+DEFINE FIELD OVERWRITE raw ON spire_run_raws TYPE string;
+
+DEFINE TABLE OVERWRITE spire_meta SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON spire_meta TYPE string;
+DEFINE FIELD OVERWRITE k ON spire_meta TYPE string;
+DEFINE FIELD OVERWRITE v ON spire_meta TYPE int;
+
+DEFINE TABLE OVERWRITE workouts SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON workouts TYPE string;
+DEFINE FIELD OVERWRITE title ON workouts TYPE string;
+DEFINE FIELD OVERWRITE raw_title ON workouts TYPE string;
+DEFINE FIELD OVERWRITE started_at_utc ON workouts TYPE string;
+DEFINE FIELD OVERWRITE started_at_local ON workouts TYPE string;
+DEFINE FIELD OVERWRITE eastern_offset_minutes ON workouts TYPE int;
+DEFINE FIELD OVERWRITE duration_seconds ON workouts TYPE int;
+DEFINE FIELD OVERWRITE duration_suspicious ON workouts TYPE bool;
+DEFINE FIELD OVERWRITE notes ON workouts TYPE option<string>;
+DEFINE FIELD OVERWRITE description ON workouts TYPE option<string>;
+DEFINE FIELD OVERWRITE source ON workouts TYPE string;
+DEFINE FIELD OVERWRITE imported_at ON workouts TYPE int;
+DEFINE INDEX OVERWRITE workouts_started_at_utc ON workouts FIELDS started_at_utc;
+
+DEFINE TABLE OVERWRITE exercises SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON exercises TYPE string;
+DEFINE FIELD OVERWRITE name ON exercises TYPE string;
+DEFINE INDEX OVERWRITE exercises_name ON exercises FIELDS name UNIQUE;
+
+DEFINE TABLE OVERWRITE exercise_tags SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON exercise_tags TYPE string;
+DEFINE FIELD OVERWRITE exercise_name ON exercise_tags TYPE string;
+DEFINE FIELD OVERWRITE kind ON exercise_tags TYPE string;
+DEFINE FIELD OVERWRITE value ON exercise_tags TYPE string;
+DEFINE INDEX OVERWRITE exercise_tags_identity
+    ON exercise_tags FIELDS exercise_name, kind, value UNIQUE;
+
+DEFINE TABLE OVERWRITE sets SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON sets TYPE string;
+DEFINE FIELD OVERWRITE workout_id ON sets TYPE string;
+DEFINE FIELD OVERWRITE exercise_name ON sets TYPE string;
+DEFINE FIELD OVERWRITE raw_exercise_name ON sets TYPE string;
+DEFINE FIELD OVERWRITE ordinal ON sets TYPE int;
+DEFINE FIELD OVERWRITE exercise_note ON sets TYPE option<string>;
+DEFINE FIELD OVERWRITE superset_id ON sets TYPE option<int>;
+DEFINE FIELD OVERWRITE weight_milli ON sets TYPE option<int>;
+DEFINE FIELD OVERWRITE weight_unit ON sets TYPE string;
+DEFINE FIELD OVERWRITE reps ON sets TYPE option<int>;
+DEFINE FIELD OVERWRITE effort_hundredths ON sets TYPE option<int>;
+DEFINE FIELD OVERWRITE distance_milli ON sets TYPE option<int>;
+DEFINE FIELD OVERWRITE set_time_seconds ON sets TYPE option<int>;
+DEFINE FIELD OVERWRITE set_type ON sets TYPE string;
+DEFINE FIELD OVERWRITE incomplete ON sets TYPE bool;
+DEFINE INDEX OVERWRITE sets_workout_ordinal ON sets FIELDS workout_id, ordinal UNIQUE;
+DEFINE INDEX OVERWRITE sets_workout_id ON sets FIELDS workout_id;
+
+DEFINE TABLE OVERWRITE fitness_meta SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON fitness_meta TYPE string;
+DEFINE FIELD OVERWRITE k ON fitness_meta TYPE string;
+DEFINE FIELD OVERWRITE v ON fitness_meta TYPE int;
+
+DEFINE TABLE OVERWRITE analytics_events SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON analytics_events TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
+DEFINE FIELD OVERWRITE visitor_id ON analytics_events TYPE string
+    ASSERT string::matches($value, '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE session_id ON analytics_events TYPE string
+    ASSERT string::matches($value, '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE occurred_at ON analytics_events TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE kind ON analytics_events TYPE string
+    ASSERT $value IN ['pageview', 'engagement', 'outbound']
+        AND (
+            ($value = 'outbound' AND target_host IS NOT NONE)
+            OR ($value != 'outbound' AND target_host IS NONE)
+        );
+DEFINE FIELD OVERWRITE page_path ON analytics_events TYPE string
+    ASSERT string::len($value) >= 1
+        AND string::len($value) <= 300
+        AND string::starts_with($value, '/')
+        AND !string::starts_with($value, '//')
+        AND !string::contains($value, '?')
+        AND !string::contains($value, '#')
+        AND !string::contains($value, '\\')
+        AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
+        AND !string::starts_with($value, '/api/')
+        AND !string::starts_with($value, '/_topcoat/');
+DEFINE FIELD OVERWRITE referrer_kind ON analytics_events TYPE string
+    ASSERT $value IN ['direct', 'internal', 'search', 'social', 'ai', 'referral']
+        AND (
+            ($value = 'direct'
+                AND referrer_host IS NONE
+                AND referrer_path IS NONE)
+            OR ($value = 'internal' AND referrer_host IS NONE)
+            OR ($value IN ['search', 'social', 'ai', 'referral']
+                AND referrer_host IS NOT NONE
+                AND referrer_path IS NONE)
+        );
+DEFINE FIELD OVERWRITE referrer_host ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 253
+        AND $value = string::lowercase($value)
+        AND string::matches($value, '^[^\\s/?#]+$')
+    );
+DEFINE FIELD OVERWRITE referrer_path ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 300
+        AND string::starts_with($value, '/')
+        AND !string::starts_with($value, '//')
+        AND !string::contains($value, '?')
+        AND !string::contains($value, '#')
+        AND !string::contains($value, '\\')
+        AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
+    );
+DEFINE FIELD OVERWRITE country_code ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR string::matches($value, '^[A-Z]{2}$');
+DEFINE FIELD OVERWRITE timezone ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 64
+        AND string::matches($value, '^[A-Za-z0-9_/+-]+$')
+    );
+DEFINE FIELD OVERWRITE language ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 24
+        AND string::matches($value, '^[A-Za-z0-9-]+$')
+    );
+DEFINE FIELD OVERWRITE device_kind ON analytics_events TYPE string
+    ASSERT $value IN ['desktop', 'mobile', 'tablet', 'unknown'];
+DEFINE FIELD OVERWRITE browser ON analytics_events TYPE string
+    ASSERT $value IN ['Edge', 'Firefox', 'Opera', 'Chrome', 'Safari', 'Other'];
+DEFINE FIELD OVERWRITE operating_system ON analytics_events TYPE string
+    ASSERT $value IN ['iOS', 'Android', 'Windows', 'macOS', 'Linux', 'Other'];
+DEFINE FIELD OVERWRITE viewport_kind ON analytics_events TYPE string
+    ASSERT $value IN ['phone', 'tablet', 'desktop', 'wide', 'unknown'];
+DEFINE FIELD OVERWRITE navigation_kind ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE
+        OR $value IN ['navigate', 'reload', 'back_forward', 'prerender'];
+DEFINE FIELD OVERWRITE local_hour ON analytics_events TYPE option<int>
+    ASSERT (
+        $value IS NONE AND local_weekday IS NONE
+    ) OR (
+        $value >= 0 AND $value <= 23
+        AND local_weekday >= 0 AND local_weekday <= 6
+    );
+DEFINE FIELD OVERWRITE local_weekday ON analytics_events TYPE option<int>
+    ASSERT $value IS NONE OR (
+        $value >= 0 AND $value <= 6 AND local_hour IS NOT NONE
+    );
+DEFINE FIELD OVERWRITE engagement_seconds ON analytics_events TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 7200);
+DEFINE FIELD OVERWRITE scroll_percent ON analytics_events TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 100);
+DEFINE FIELD OVERWRITE lcp_milliseconds ON analytics_events TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 120000);
+DEFINE FIELD OVERWRITE cls_thousandths ON analytics_events TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 100000);
+DEFINE FIELD OVERWRITE navigation_milliseconds ON analytics_events TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 120000);
+DEFINE FIELD OVERWRITE target_host ON analytics_events TYPE option<string>
+    ASSERT (
+        (kind = 'outbound' AND $value IS NOT NONE)
+        OR (kind != 'outbound' AND $value IS NONE)
+    ) AND (
+        $value IS NONE OR (
+            string::len($value) >= 1
+            AND string::len($value) <= 253
+            AND $value = string::lowercase($value)
+            AND string::matches($value, '^[^\\s/?#]+$')
+        )
+    );
+DEFINE FIELD OVERWRITE utm_source ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 80
+        AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
+    );
+DEFINE FIELD OVERWRITE utm_medium ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 80
+        AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
+    );
+DEFINE FIELD OVERWRITE utm_campaign ON analytics_events TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 80
+        AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
+    );
+DEFINE INDEX OVERWRITE analytics_events_kind_time
+    ON analytics_events FIELDS kind, occurred_at;
+DEFINE INDEX OVERWRITE analytics_events_time
+    ON analytics_events FIELDS occurred_at;
+DEFINE INDEX OVERWRITE analytics_events_session
+    ON analytics_events FIELDS visitor_id, session_id, occurred_at;
+DEFINE INDEX OVERWRITE analytics_events_session_time
+    ON analytics_events FIELDS session_id, occurred_at;
+
+DEFINE TABLE OVERWRITE analytics_visitor_aliases SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON analytics_visitor_aliases TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE visitor_id ON analytics_visitor_aliases TYPE string
+    ASSERT string::matches($value, '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE created_at ON analytics_visitor_aliases TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
+DEFINE TABLE OVERWRITE analytics_sessions SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON analytics_sessions TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE session_id ON analytics_sessions TYPE string
+    ASSERT string::matches($value, '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE last_seen_at ON analytics_sessions TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
+DEFINE TABLE OVERWRITE analytics_identities SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON analytics_identities TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE display_name ON analytics_identities TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 80
+        AND $value = string::trim($value)
+        AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$');
+DEFINE FIELD OVERWRITE note ON analytics_identities TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1
+        AND string::len($value) <= 400
+        AND $value = string::trim($value)
+        AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
+    );
+DEFINE FIELD OVERWRITE first_submitted_at ON analytics_identities TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE updated_at ON analytics_identities TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799
+        AND $value >= first_submitted_at;

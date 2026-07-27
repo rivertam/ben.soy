@@ -1,23 +1,22 @@
-//! Toasty schema for first-party site analytics.
+//! Database models for first-party site analytics.
 //!
 //! Event rows are deliberately coarse: there is no IP address, raw user agent,
 //! arbitrary query string, or external referrer path. Engagement rows only
 //! move monotonically toward their final cumulative measurements. Voluntary
 //! names live in a separate table that the public dashboard never reads.
 
+use serde::{Deserialize, Serialize};
+use surrealdb::types::SurrealValue;
+
 /// One browser-reported event, enriched with coarse request metadata.
-#[derive(Debug, toasty::Model)]
-#[table = "analytics_events"]
-#[index(kind, occurred_at)]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct AnalyticsEvent {
     /// Client-generated UUID. It makes retries idempotent.
-    #[key]
     pub id: String,
     /// SHA-256 digest of the opaque first-party cookie value.
     pub visitor_id: String,
-    /// Opaque 30-minute session selected atomically by PostgreSQL.
+    /// Opaque 30-minute session selected atomically by the database.
     pub session_id: String,
-    #[index]
     pub occurred_at: i64,
     pub kind: String,
     pub page_path: String,
@@ -55,10 +54,8 @@ pub struct AnalyticsEvent {
 /// the same tab-bootstrap-derived visitor, and whichever cookie wins maps
 /// back to it on later requests. Reusing the nonce within one browser tab also
 /// closes a rapid-navigation race before the first response installs a cookie.
-#[derive(Debug, toasty::Model)]
-#[table = "analytics_visitor_aliases"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct AnalyticsVisitorAlias {
-    #[key]
     pub token_hash: String,
     pub visitor_id: String,
     pub created_at: i64,
@@ -69,10 +66,8 @@ pub struct AnalyticsVisitorAlias {
 /// Historical session membership remains fixed on event rows. This small state
 /// table lets concurrent first events agree on one session and rotate it
 /// atomically after thirty minutes without trusting a browser-defined session.
-#[derive(Debug, toasty::Model)]
-#[table = "analytics_sessions"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct AnalyticsSession {
-    #[key]
     pub visitor_id: String,
     pub session_id: String,
     pub last_seen_at: i64,
@@ -82,10 +77,8 @@ pub struct AnalyticsSession {
 ///
 /// This table intentionally has no public read path and no relation declared
 /// to `AnalyticsEvent`; a dashboard query cannot accidentally eager-load it.
-#[derive(Debug, toasty::Model)]
-#[table = "analytics_identities"]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct AnalyticsIdentity {
-    #[key]
     pub visitor_id: String,
     pub display_name: String,
     pub note: Option<String>,

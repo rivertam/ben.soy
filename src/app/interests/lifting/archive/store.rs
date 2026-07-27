@@ -151,10 +151,7 @@ impl FitnessStore {
             .db()
             .await
             .map_err(|error| StoreError(error.to_string()))?;
-        let version = db::current_version(&handle)
-            .await
-            .map_err(|error| StoreError(error.to_string()))?;
-        let (workouts, sets, tags) = db::load_archive(&handle)
+        let (version, workouts, sets, tags) = db::load_archive(&handle)
             .await
             .map_err(|error| StoreError(error.to_string()))?;
         snapshot::build(version, workouts, sets, tags)

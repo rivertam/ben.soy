@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 0 golden-fixture capture for the Rust/toasty data-layer migration.
+# Golden-fixture capture for the Rust data-layer contract.
 #
 # Captures the live TypeScript-Worker API responses (bodies byte-exact,
 # selected header dumps, HTTP statuses) plus remote D1 dumps. These fixtures
@@ -8,8 +8,8 @@
 # Usage: bash tests/fixtures/capture.sh [origin]
 #   origin defaults to https://benjisponge.com
 #
-# Re-runnable; overwrites previous captures. Run it only while the old
-# Worker data path is still live (before the Phase 2/4 cutovers).
+# Historical only: it overwrites the fixtures and depends on the retired
+# Worker/D1 data path. Do not run it against the current production service.
 
 set -euo pipefail
 

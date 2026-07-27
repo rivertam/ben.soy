@@ -27,9 +27,12 @@ DNS: CNAME each hostname to `<tunnel-id>.cfargotunnel.com` (proxied).
 
 ## Secrets / sync
 
-Sync tokens and `POSTGRES_URL` live on the Railway web service, not as
-Worker secrets. Spire/fitness write paths and CLI usage are unchanged;
-point `just sync-spire` / `just sync-fitness` at `https://benjisponge.com`.
+`SURREALDB_ENDPOINT`, `SURREALDB_NAMESPACE`, `SURREALDB_DATABASE`,
+`SURREALDB_USERNAME`, `SURREALDB_PASSWORD`, and the sync tokens live on the
+Railway web service, not as Worker secrets. The database service stays on
+Railway's private network and is not a Tunnel hostname. Spire/fitness write
+paths and CLI usage are unchanged; point `just sync-spire` /
+`just sync-fitness` at `https://benjisponge.com`.
 
 ## Historical Worker notes
 

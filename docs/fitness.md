@@ -40,16 +40,17 @@ file under "API contract".
 - Public reads and the authenticated import:
   `src/app/interests/lifting/archive/` — `routes.rs` over the engine
   (filters, import validation, in-memory snapshot, store) and `db.rs`
-  (Postgres). Records are derived in `archive/records.rs` at snapshot build —
+  (SurrealDB). Records are derived in `archive/records.rs` at snapshot build —
   there is deliberately no records table and no records field in the import
   payload.
-- Schema: `toasty/migrations/0001_fitness_tables.sql` — five tables:
+- Schema: `src/schema.surql` — five fitness tables:
   `workouts`, `exercises`, `exercise_tags`, `sets`, and `fitness_meta`.
 - CSV parsing, stable IDs, taxonomy, chunking:
   `src/app/interests/lifting/fitness_sync.rs`.
 - `just dev [port]` delegates to `scripts/dev.sh`: it starts the local
-  Postgres container, applies toasty migrations, then runs Topcoat with
-  local-only sync tokens. It never imports data.
+  SurrealDB container, then runs Topcoat with local-only sync tokens. The app
+  applies the committed schema on its first data-backed connection. It never
+  imports data.
 - `just reset-fitness-local [csv]` runs while `just dev` is active. It
   truncates only the local fitness tables, resets the fitness version, and
   imports the CSV; local Spire tables in the shared database remain untouched.
@@ -197,14 +198,15 @@ just sync-fitness /home/benji/Downloads/WorkoutData.csv
 
 The default token file is `~/.config/benjisponge/fitness.token`; installing
 the matching `FITNESS_SYNC_TOKEN` secret is covered in
-`docs/cloudflare-deploy.md#database-and-secrets`.
+`docs/railway-deploy.md#database-and-secrets`.
 
 ## Local development
 
-- Local data lives in the `benjisponge-pg` Docker container (named volume
-  `benjisponge-pg-data`), which `just dev` starts and migrates. To seed or
-  adopt a fitness schema/import change, start `just dev` in one terminal and
-  reset from another. The CSV defaults to
+- Local data lives in the `benjisponge-surrealdb` Docker container (named
+  volume `benjisponge-surrealdb-data`, host port `5800`), which `just dev`
+  starts. The app bootstraps `src/schema.surql`; startup does not seed data.
+  To seed or adopt a fitness schema/import change, start `just dev` in one
+  terminal and reset from another. The CSV defaults to
   `/home/benji/Downloads/WorkoutData.csv`; pass another path as the argument:
 
   ```sh
@@ -230,25 +232,28 @@ the matching `FITNESS_SYNC_TOKEN` secret is covered in
 
 ## Production and future logging
 
-- For a new archive, rollout order is: apply migrations to production
-  (`just migrate migration apply`), install `FITNESS_SYNC_TOKEN`, deploy
-  committed HEAD, then run `just sync-fitness`.
+- For a new archive, rollout order is: provision the clean database as
+  described in `docs/railway-deploy.md`, configure all five connection
+  variables and `FITNESS_SYNC_TOKEN`, deploy committed HEAD, exercise a
+  data-backed route so the app installs `src/schema.surql`, then run
+  `just sync-fitness`.
 - The fitness archive intentionally uses reset-and-resync rather than an
-  in-place upgrade. To replace production fitness data, truncate exactly the
-  fitness tables against the production database (`POSTGRES_URL` in `.env`),
-  then resync from the machine with the CSV:
+  in-place upgrade. To replace production fitness data, open an authenticated
+  `/surreal sql` session inside the private Railway database service and run
+  this transaction as one line, then resync from the machine with the CSV:
+
+  ```surql
+  BEGIN TRANSACTION; DELETE sets RETURN NONE; DELETE exercise_tags RETURN NONE; DELETE exercises RETURN NONE; DELETE workouts RETURN NONE; UPSERT fitness_meta:version SET k = 'version', v = 0 RETURN NONE; COMMIT TRANSACTION;
+  ```
 
   ```sh
-  psql "$(sed -n 's/^POSTGRES_URL=//p' .env)" \
-    -c "TRUNCATE TABLE sets, exercise_tags, exercises, workouts;" \
-    -c "UPDATE fitness_meta SET v = 0 WHERE k = 'version';"
   just sync-fitness /home/benji/Downloads/WorkoutData.csv
   ```
 
   This is destructive for fitness history until the CSV is resynced. The
   database is shared with Slay the Spire data: do not drop the database itself
-  and do not touch any Spire tables. The commands above touch fitness tables
-  only.
+  and do not touch any Spire tables. The transaction above touches fitness
+  records only.
 - Never treat local database contents as proof that production has been reset
   or seeded.
 - Manual logging is not implemented. Schema reserves `source='manual'`, but the
