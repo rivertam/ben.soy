@@ -19,6 +19,9 @@ pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
 pub const FIRA_SANS: Font = fontsource_font!(FIRA_SANS, host: Asset);
 pub const FIRA_MONO: Font = fontsource_font!(FIRA_MONO, host: Asset);
 const ANALYTICS_JS: Asset = asset!("./analytics.js");
+const FAVICON_16: Asset = asset!("./favicon/favicon-16.png");
+const FAVICON_32: Asset = asset!("./favicon/favicon-32.png");
+const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 
 /// The full document: every page renders through this, so every page owns its
 /// title. Pages invoke it as markup with the page content as trailing children:
@@ -100,6 +103,11 @@ pub async fn shell(
                 topcoat::font::link(font: ZILLA_SLAB)
                 topcoat::font::link(font: FIRA_SANS)
                 topcoat::font::link(font: FIRA_MONO)
+                // Hashed PNGs for browsers; app/favicon.rs serves /favicon.ico
+                // for the non-HTML clients that guess the path.
+                <link rel="icon" type="image/png" sizes="32x32" href=(FAVICON_32)>
+                <link rel="icon" type="image/png" sizes="16x16" href=(FAVICON_16)>
+                <link rel="apple-touch-icon" sizes="180x180" href=(APPLE_TOUCH_ICON)>
                 <link
                     rel="alternate"
                     type="application/rss+xml"

@@ -1,6 +1,7 @@
 mod admin;
 mod analytics;
 mod diary;
+mod favicon;
 mod feed;
 mod interests;
 mod llms;
