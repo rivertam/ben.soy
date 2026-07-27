@@ -367,9 +367,9 @@ fn build_calendar(version: i64, workouts: &[SnapWorkout]) -> api::Calendar {
 }
 
 impl Snapshot {
-    /// Full manual workouts for `/feed.xml`, newest-first. CSV imports remain
-    /// archive-only; publishing one must never dump the historical corpus
-    /// into subscribers' readers.
+    /// Full manual workouts for the homepage timeline and `/feed.xml`,
+    /// newest-first. CSV imports remain archive-only; publishing one must
+    /// never dump the historical corpus into subscribers' readers.
     pub fn published_workouts(&self) -> Vec<PublishedWorkout> {
         self.workouts
             .iter()

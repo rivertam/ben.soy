@@ -140,8 +140,19 @@ pub static LOG: [Entry; 7] = [
     },
 ];
 
-/// The homepage filter row's fixed tag chips.
-pub static FILTER_TAGS: [&str; 6] = ["rust", "ai", "climate", "music", "keyboards", "games"];
+/// The homepage filter row's fixed tag chips. `spire` and `fitness` filter
+/// dynamic timeline items (wins and published lifts); the rest match curated
+/// logbook entry tags.
+pub static FILTER_TAGS: [&str; 8] = [
+    "rust",
+    "ai",
+    "climate",
+    "music",
+    "keyboards",
+    "games",
+    "spire",
+    "fitness",
+];
 
 #[cfg(test)]
 mod tests {
@@ -251,10 +262,9 @@ mod tests {
     #[test]
     fn every_filter_tag_matches_an_entry() {
         for tag in FILTER_TAGS.iter() {
-            assert!(
-                LOG.iter().any(|e| e.tags().contains(tag)),
-                "filter tag {tag} matches nothing"
-            );
+            let curated = LOG.iter().any(|e| e.tags().contains(tag));
+            let dynamic = matches!(*tag, "spire" | "fitness");
+            assert!(curated || dynamic, "filter tag {tag} matches nothing");
         }
     }
 

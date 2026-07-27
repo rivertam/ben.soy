@@ -3,8 +3,9 @@
 //! publishes to the feed. Slay the Spire 2 victories (and only victories —
 //! deaths stay on `/spire`) join the feed at render time from the synced run
 //! database, as do workouts explicitly published through the authenticated
-//! manual-entry path. Not a page: it renders no shell and stays out of
-//! `site_routes()` (the 404 index is for pages).
+//! manual-entry path (same set the homepage timeline shows). Not a page: it
+//! renders no shell and stays out of `site_routes()` (the 404 index is for
+//! pages).
 
 use topcoat::{
     Result,
@@ -127,7 +128,7 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
             curated: false,
             start_time: run.start_time,
             title: format!(
-                "[win] spire — {}, Ascension {}",
+                "[spire] win — {}, Ascension {}",
                 run.character, run.ascension
             ),
             link: format!("{origin}/spire"),
@@ -150,7 +151,7 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
             pub_date: rfc2822_timestamp(published.start_time, &published.date),
             curated: false,
             start_time: published.start_time,
-            title: format!("[lift] {}", workout.title),
+            title: format!("[fitness] lift — {}", workout.title),
             link,
             description: workout_description(workout),
             // The UTC-derived archive id is the immutable identity anchor;
@@ -200,7 +201,8 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
     xml
 }
 
-fn workout_description(workout: &Workout) -> String {
+/// One-line set summary used by `/feed.xml` and the homepage timeline.
+pub(crate) fn workout_description(workout: &Workout) -> String {
     let mut seen = std::collections::HashSet::new();
     let exercises: Vec<&str> = workout
         .sets
@@ -434,7 +436,7 @@ mod tests {
         let xml = rss_xml(ORIGIN, &[], &workouts);
 
         assert_eq!(xml.matches("<item>").count(), LOG.len() + 1);
-        assert!(xml.contains("<title>[lift] Quickest Arms in the Wesf</title>"));
+        assert!(xml.contains("<title>[fitness] lift — Quickest Arms in the Wesf</title>"));
         assert!(xml.contains(&format!(
             "<link>{ORIGIN}/lifting/2026-07-24T10-38-00-04-00</link>"
         )));
@@ -499,7 +501,7 @@ mod tests {
         )];
         let xml = rss_xml(ORIGIN, &runs, &workouts);
         assert!(xml.contains("Necrobinder &amp; &lt;Friends&gt;"));
-        assert!(xml.contains("[lift] Arms &amp; &lt;Stuff&gt;"));
+        assert!(xml.contains("[fitness] lift — Arms &amp; &lt;Stuff&gt;"));
         assert!(xml.contains("Curl &amp; Press &lt;Machine&gt;"));
         assert!(!xml.contains("<Friends>"));
         assert!(!xml.contains("<Stuff>"));

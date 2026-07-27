@@ -12,6 +12,8 @@ mod workout_upload;
 
 use benjisponge::data::Data;
 
+use self::feed::workout_description;
+use self::interests::lifting::archive::snapshot::PublishedWorkout;
 use self::interests::lifting::archive::store::FitnessStore;
 use self::interests::spire::runs::{self as spire_runs, Run, fmt_duration};
 use topcoat::{
@@ -85,14 +87,15 @@ struct Chip {
     active: bool,
 }
 
-/// One timeline item: a curated logbook entry, or a Slay the Spire 2 victory
-/// pulled from the synced run database (wins only — deaths stay on `/spire`).
+/// One timeline item: a curated logbook entry, a Slay the Spire 2 victory
+/// (wins only — deaths stay on `/spire`), or a manually published lift.
 enum Item<'a> {
     Log {
         serial: String,
         entry: &'static Entry,
     },
     Win(&'a Run),
+    Lift(&'a PublishedWorkout),
 }
 
 impl<'a> Item<'a> {
@@ -100,22 +103,24 @@ impl<'a> Item<'a> {
         match self {
             Item::Log { entry, .. } => entry.date(),
             Item::Win(run) => &run.date,
+            Item::Lift(published) => &published.date,
         }
     }
 
-    /// Sort rank on equal dates: the curated entry leads the day's wins.
+    /// Sort rank on equal dates: the curated entry leads the day's dynamic items.
     fn rank(&self) -> u8 {
         match self {
             Item::Log { .. } => 0,
-            Item::Win(_) => 1,
+            Item::Win(_) | Item::Lift(_) => 1,
         }
     }
 
-    /// Tie-break among same-date wins; logbook dates are day-granular.
+    /// Tie-break among same-date dynamic items; logbook dates are day-granular.
     fn start_time(&self) -> i64 {
         match self {
             Item::Log { .. } => 0,
             Item::Win(run) => run.start_time,
+            Item::Lift(published) => published.start_time,
         }
     }
 }
@@ -131,14 +136,21 @@ impl<'a> Row<'a> {
     fn log(&self) -> Option<(&str, &'static Entry)> {
         match &self.item {
             Item::Log { serial, entry } => Some((serial.as_str(), entry)),
-            Item::Win(_) => None,
+            Item::Win(_) | Item::Lift(_) => None,
         }
     }
 
     fn win(&self) -> Option<&'a Run> {
         match self.item {
             Item::Win(run) => Some(run),
-            Item::Log { .. } => None,
+            Item::Log { .. } | Item::Lift(_) => None,
+        }
+    }
+
+    fn lift(&self) -> Option<&'a PublishedWorkout> {
+        match self.item {
+            Item::Lift(published) => Some(published),
+            Item::Log { .. } | Item::Win(_) => None,
         }
     }
 }
@@ -222,9 +234,18 @@ async fn home(cx: &Cx) -> Result {
         });
     }
 
-    // Curated entries and synced spire wins interleave into one timeline.
-    // Wins behave like updates tagged "games" for the filter row.
+    // Curated entries, synced Spire wins, and published lifts interleave
+    // into one timeline. Wins behave like updates tagged "spire" or "games";
+    // lifts behave like updates tagged "fitness" (CSV history stays
+    // archive-only, matching `/feed.xml`).
     let spire = spire_runs::load(app_context::<Data>(cx)).await;
+    let workouts = match app_context::<FitnessStore>(cx).snapshot().await {
+        Ok(snapshot) => snapshot.published_workouts(),
+        Err(error) => {
+            eprintln!("fitness homepage snapshot failed: {error}");
+            Vec::new()
+        }
+    };
     let mut items: Vec<Item> = Vec::new();
     for (index, entry) in LOG.iter().enumerate() {
         if kind.is_some_and(|k| entry.kind() != k)
@@ -237,8 +258,13 @@ async fn home(cx: &Cx) -> Result {
             entry,
         });
     }
-    if !kind.is_some_and(|k| k != Kind::Update) && !tag.is_some_and(|t| t != "games") {
+    if !kind.is_some_and(|k| k != Kind::Update)
+        && !tag.is_some_and(|t| t != "spire" && t != "games")
+    {
         items.extend(spire.runs.iter().filter(|r| r.win).map(Item::Win));
+    }
+    if !kind.is_some_and(|k| k != Kind::Update) && !tag.is_some_and(|t| t != "fitness") {
+        items.extend(workouts.iter().map(Item::Lift));
     }
     items.sort_by(|a, b| {
         b.date()
@@ -260,7 +286,8 @@ async fn home(cx: &Cx) -> Result {
     }
 
     view! {
-        // Fresh runs appear within a minute; CDN honors s-maxage (see docs/railway-deploy.md).
+        // Fresh runs and lifts appear within a minute; CDN honors s-maxage
+        // (see docs/railway-deploy.md).
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
         shell(title: "", active: "log",
         // Hero: "I like {interest}", cycling the interest registry. Pure CSS
@@ -401,9 +428,9 @@ async fn home(cx: &Cx) -> Result {
                         <span class="log-mark log-mark-update"></span>
                         <p class="log-date">(run.date.as_str())</p>
                         <p class="log-update min-w-0">
-                            <span class="log-update-stamp">"[win]"</span>
+                            <span class="log-update-stamp">"[spire]"</span>
                             " "
-                            <span class="text-patina">"spire ·"</span>
+                            <span class="text-patina">"win ·"</span>
                             " "
                             (format!(
                                 "{}, Ascension {} — {} floors in {}.",
@@ -415,6 +442,30 @@ async fn home(cx: &Cx) -> Result {
                             " "
                             <a class="log-update-link" href="/spire">
                                 link_label(label: "run log →")
+                            </a>
+                        </p>
+                    </article>
+                }
+                if let Some(published) = row.lift() {
+                    <article class="log-row items-baseline">
+                        <span class="log-mark log-mark-update"></span>
+                        <p class="log-date">(published.date.as_str())</p>
+                        <p class="log-update min-w-0">
+                            <span class="log-update-stamp">"[fitness]"</span>
+                            " "
+                            <span class="text-patina">"lift ·"</span>
+                            " "
+                            (format!(
+                                "{} — {}",
+                                published.workout.title,
+                                workout_description(&published.workout)
+                            ))
+                            " "
+                            <a
+                                class="log-update-link"
+                                href=(format!("/lifting/{}", published.workout.path))
+                            >
+                                link_label(label: "workout →")
                             </a>
                         </p>
                     </article>
