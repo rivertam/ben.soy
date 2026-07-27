@@ -85,13 +85,13 @@ pub fn parse_lyfta(input: &str) -> Result<ParsedWorkout, ParseError> {
     let mut exercise_blocks = 0usize;
     let mut index = 3usize;
     while index < body.len() {
-        let raw_exercise_name = bounded_text(body[index], "exercise name")?;
-        if raw_exercise_name.starts_with("Set ") {
+        let heading = bounded_text(body[index], "exercise name")?;
+        if heading.starts_with("Set ") {
             return Err(ParseError::new(format!(
-                "expected an exercise name before {:?}",
-                raw_exercise_name
+                "expected an exercise name before {heading:?}"
             )));
         }
+        let raw_exercise_name = strip_exercise_number(&heading, exercise_blocks + 1)?.to_string();
         let exercise_name = collapse_whitespace(&raw_exercise_name);
         index += 1;
         exercise_blocks += 1;
@@ -196,6 +196,33 @@ fn valid_lyfta_url(value: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// Lyfta shares sometimes number the exercise headings ("3. Pec Fly").
+/// That prefix is share-sheet furniture, not part of the exercise name;
+/// stored as identity it severs the exercise from its history — and
+/// therefore from the records derived against that history. A numbered
+/// heading must carry its 1-based position in the workout; headings that
+/// merely contain a period ("St. Bench Row") pass through untouched.
+fn strip_exercise_number(heading: &str, position: usize) -> Result<&str, ParseError> {
+    let Some((number, name)) = heading.split_once(". ") else {
+        return Ok(heading);
+    };
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(heading);
+    }
+    if number.parse() != Ok(position) {
+        return Err(ParseError::new(format!(
+            "exercise heading {heading:?} should be numbered {position}"
+        )));
+    }
+    let name = name.trim_start();
+    if name.is_empty() {
+        return Err(ParseError::new(format!(
+            "exercise heading {heading:?} has no name after its number"
+        )));
+    }
+    Ok(name)
 }
 
 fn bounded_text(value: &str, label: &str) -> Result<String, ParseError> {
@@ -736,6 +763,53 @@ https://lyfta.app/wk/5";
                 .unwrap_err()
                 .to_string()
                 .contains("unsupported set annotation")
+        );
+    }
+
+    #[test]
+    fn numbered_exercise_headings_shed_their_prefixes() {
+        // Lyfta's numbered share variant. The stored exercise identity must
+        // match the un-numbered history, or every set of the day competes
+        // against an empty podium and sweeps fake PRs.
+        let numbered = SAMPLE
+            .replace("\nIncline Bench Press\n", "\n1. Incline Bench Press\n")
+            .replace("\nUpright Row\n", "\n2. Upright Row\n")
+            .replace("\nMTS Biceps Curl\n", "\n3. MTS Biceps Curl\n");
+        let parsed = parse_lyfta(&numbered).unwrap();
+        let names: Vec<&str> = parsed
+            .payload
+            .exercises
+            .iter()
+            .map(|exercise| exercise.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["Incline Bench Press", "MTS Biceps Curl", "Upright Row"]
+        );
+        assert_eq!(parsed.payload.sets[0].exercise_name, "Incline Bench Press");
+        assert_eq!(
+            parsed.payload.sets[0].raw_exercise_name,
+            "Incline Bench Press"
+        );
+    }
+
+    #[test]
+    fn misnumbered_headings_are_rejected_and_dotted_names_pass_through() {
+        let shuffled = SAMPLE.replace("\nUpright Row\n", "\n5. Upright Row\n");
+        assert!(
+            parse_lyfta(&shuffled)
+                .unwrap_err()
+                .to_string()
+                .contains("should be numbered 2")
+        );
+        let dotted = SAMPLE.replace("\nUpright Row\n", "\nSt. Bench Row\n");
+        let parsed = parse_lyfta(&dotted).unwrap();
+        assert!(
+            parsed
+                .payload
+                .exercises
+                .iter()
+                .any(|exercise| exercise.name == "St. Bench Row")
         );
     }
 

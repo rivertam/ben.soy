@@ -99,7 +99,11 @@ file under "API contract".
 - Browser uploads accept pounds only, preserve whole-workout set order, map
   `(Warm Up)`/`(Failure)` and supported set annotations to the existing set
   types, and convert `rir` to stored RPE hundredths. The same taxonomy
-  classifier as the CSV importer handles exercises.
+  classifier as the CSV importer handles exercises. Lyfta's numbered exercise
+  headings (`3. Pec Fly`) shed their position prefix before storage — the
+  prefix is share-sheet furniture, and keeping it would sever the exercise
+  from its history and its derived records; a numbered heading must match its
+  1-based position in the workout.
 - Preserve apparent duplicate rows. Set identity is workout UTC start plus
   whole-workout ordinal; deduping or reordering changes IDs.
 - Duration `0` or at least four hours is suspicious, not invalid. Preserve it.

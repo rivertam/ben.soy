@@ -66,41 +66,47 @@ pub(super) struct SetRow<'a> {
     pub(super) effort_popover_id: String,
     pub(super) prescription: String,
     pub(super) details: String,
-    pub(super) records: Vec<RecordBadge>,
+    pub(super) record: Option<String>,
     pub(super) note: Option<&'a str>,
 }
 
-const RECORD_GOLD: &str = "inline-flex items-center min-h-[1.3rem] px-[0.36rem] py-[0.18rem] \
-     border border-current rounded-[0.2rem] font-meta text-[0.56rem] leading-none uppercase \
-     text-brass bg-brass/7";
-const RECORD_SILVER: &str = "inline-flex items-center min-h-[1.3rem] px-[0.36rem] py-[0.18rem] \
-     border border-current rounded-[0.2rem] font-meta text-[0.56rem] leading-none uppercase \
-     text-steel bg-steel/6";
-const RECORD_BRONZE: &str = "inline-flex items-center min-h-[1.3rem] px-[0.36rem] py-[0.18rem] \
-     border border-current rounded-[0.2rem] font-meta text-[0.56rem] leading-none uppercase \
-     text-oxide bg-oxide/6";
+pub(super) const RECORD_PR: &str = "inline-flex items-center min-h-[1.3rem] px-[0.36rem] \
+     py-[0.18rem] border border-current rounded-[0.2rem] font-meta text-[0.56rem] \
+     leading-none uppercase text-brass bg-brass/7";
 
-pub(super) struct RecordBadge {
-    pub(super) class: &'static str,
-    pub(super) label: String,
-}
-
-impl From<&fitness::Record> for RecordBadge {
-    fn from(record: &fitness::Record) -> Self {
-        let (class, rank) = match record.level.as_str() {
-            "gold" => (RECORD_GOLD, "PR"),
-            "silver" => (RECORD_SILVER, "#2"),
-            _ => (RECORD_BRONZE, "#3"),
-        };
-        let kind = match record.kind.as_str() {
-            "max-weight" => "max load".to_string(),
-            value => value.to_uppercase(),
-        };
-        Self {
-            class,
-            label: format!("{kind} {rank}"),
-        }
+/// Collapse a set's records into the one tag the page and share text show:
+/// genuine all-time records only — the wire still carries the runner-up
+/// podium places, but they are not presentation. A set that led every
+/// category is plainly "PR"; otherwise the categories are named, except
+/// that an estimated-1RM record subsumes the max-load record it almost
+/// always accompanies (the load is already on the line).
+pub(super) fn record_label(records: &[fitness::Record]) -> Option<String> {
+    let gold: Vec<&str> = records
+        .iter()
+        .filter(|record| record.level == "gold")
+        .map(|record| record.kind.as_str())
+        .collect();
+    if gold.is_empty() {
+        return None;
     }
+    if ["1rm", "max-weight", "volume", "reps"]
+        .iter()
+        .all(|kind| gold.contains(kind))
+    {
+        return Some("PR".to_string());
+    }
+    let subsumes_max_load = gold.contains(&"1rm");
+    let kinds: Vec<&str> = gold
+        .iter()
+        .copied()
+        .filter(|kind| !(subsumes_max_load && *kind == "max-weight"))
+        .map(|kind| match kind {
+            "1rm" => "1RM",
+            "max-weight" => "max load",
+            other => other,
+        })
+        .collect();
+    Some(format!("PR: {}", kinds.join(" · ")))
 }
 
 pub(super) struct Pager {
@@ -135,7 +141,7 @@ fn exercise_blocks<'a>(sets: &'a [fitness::Set], workout_path: &str) -> Vec<Exer
                     effort_popover_id: effort_popover_id(workout_path, set.ordinal),
                     prescription: prescription(set),
                     details: set_details(set),
-                    records: set.records.iter().map(RecordBadge::from).collect(),
+                    record: record_label(&set.records),
                     note: set.exercise_note.as_deref(),
                 })
                 .collect(),
@@ -307,6 +313,47 @@ mod tests {
             description: None,
             sets: vec![set()],
         }
+    }
+
+    fn record(level: &str, kind: &str) -> fitness::Record {
+        fitness::Record {
+            level: level.to_string(),
+            kind: kind.to_string(),
+        }
+    }
+
+    #[test]
+    fn record_tags_annotate_only_genuine_records_and_collapse() {
+        // Runner-up podium places stay wire data, never presentation.
+        assert_eq!(
+            record_label(&[record("silver", "1rm"), record("bronze", "reps")]),
+            None,
+        );
+        // A set that led every category is plainly a PR.
+        assert_eq!(
+            record_label(&[
+                record("gold", "1rm"),
+                record("gold", "max-weight"),
+                record("gold", "volume"),
+                record("gold", "reps"),
+            ])
+            .as_deref(),
+            Some("PR"),
+        );
+        // The estimated-1RM record subsumes the max-load record it rode in
+        // with; a lone max-load record keeps its own name.
+        assert_eq!(
+            record_label(&[record("gold", "1rm"), record("gold", "max-weight")]).as_deref(),
+            Some("PR: 1RM"),
+        );
+        assert_eq!(
+            record_label(&[record("gold", "max-weight"), record("silver", "reps")]).as_deref(),
+            Some("PR: max load"),
+        );
+        assert_eq!(
+            record_label(&[record("gold", "volume"), record("gold", "reps")]).as_deref(),
+            Some("PR: volume · reps"),
+        );
     }
 
     #[test]

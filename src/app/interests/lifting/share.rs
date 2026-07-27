@@ -112,14 +112,8 @@ pub(super) fn share_text(workout: &fitness::Workout, origin: Option<&str>) -> St
                 if !row.details.is_empty() {
                     line.push_str(&format!(" · {}", row.details));
                 }
-                if !row.records.is_empty() {
-                    let labels = row
-                        .records
-                        .iter()
-                        .map(|record| record.label.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    line.push_str(&format!(" — {labels}"));
+                if let Some(record) = &row.record {
+                    line.push_str(&format!(" — {record}"));
                 }
                 lines.push(line);
             }
@@ -280,12 +274,24 @@ https://benjisponge.com/lifting/2026-07-21T10-39-04-04-00";
     fn workout_notes_and_records_ride_along() {
         let mut workout = workout();
         workout.description = Some("Deload week".into());
-        workout.sets[1].records.push(fitness::Record {
-            level: "gold".into(),
-            kind: "1rm".into(),
-        });
+        workout.sets[1].records = vec![
+            fitness::Record {
+                level: "gold".into(),
+                kind: "1rm".into(),
+            },
+            fitness::Record {
+                level: "gold".into(),
+                kind: "max-weight".into(),
+            },
+        ];
+        workout.sets[2].records = vec![fitness::Record {
+            level: "silver".into(),
+            kind: "reps".into(),
+        }];
         let text = share_text(&workout, None);
         assert!(text.contains("\nDeload week\n"));
-        assert!(text.contains("2. 145 lbs × 3 @ RPE 8 — 1RM PR"));
+        assert!(text.contains("2. 145 lbs × 3 @ RPE 8 — PR: 1RM"));
+        // Runner-up podium places never reach the share text.
+        assert!(!text.contains('#') && !text.contains("failure —"));
     }
 }

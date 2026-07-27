@@ -1467,13 +1467,9 @@ async fn set_row(row: &results::SetRow<'_>, divided: bool) -> Result {
                     >
                         (row.prescription.as_str())
                     </span>
-                    <span class="flex flex-wrap items-center gap-1">
-                        for record in row.records.iter() {
-                            <span class=(record.class)>
-                                (record.label.as_str())
-                            </span>
-                        }
-                    </span>
+                    if let Some(record) = &row.record {
+                        <span class=(results::RECORD_PR)>(record.as_str())</span>
+                    }
                 </div>
                 if !row.details.is_empty() {
                     <span
