@@ -20,12 +20,21 @@
 //! evidence, and bound the body before parsing it — the forms are not an
 //! authorization boundary. Redirecting responses are hand-built `Ok(303)`s
 //! like the admin routes' so every branch carries `no-store`.
+//!
+//! The page doubles as an installable PWA with an offline write queue
+//! (`diary/diary.js` + `diary/sw.js`; stable routes in `pwa.rs`): with JS,
+//! saves go IndexedDB-first and replay through `POST /api/diary/entries`,
+//! which keys the entry by the CLIENT's composition second and dedupes
+//! replays (same second + same body) — Background Sync retries can never
+//! double-post, and a queued entry keeps the time it was written, not the
+//! time it synced. Details in docs/auth.md.
 
 use jiff::{Timestamp, tz::TimeZone};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 use topcoat::{
     Result,
+    asset::{Asset, asset},
     context::{Cx, app_context},
     router::{
         Body, HeaderMap, HeaderValue, Response, StatusCode, header, headers, page, path_param,
@@ -58,6 +67,18 @@ const MAX_ENTRY_CHARS: usize = 65_536;
 /// runs to several hundred KB; 1 MiB matches the fitness import's bound.
 const BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const NO_STORE: &str = "no-store";
+/// The offline queue's page-side half; the worker and manifest ride stable
+/// routes in `pwa.rs` (a service worker's URL is its identity, so it cannot
+/// be a hashed asset).
+const DIARY_JS: Asset = asset!("./diary/diary.js");
+/// Composition timestamps may trail "now" by up to a year (a long-offline
+/// queue) and lead it by five minutes (clock skew). Out of window is a 422,
+/// never a clamp: clamping would mint a fresh key per replay, so retrying a
+/// write whose response was lost would double-post.
+const MAX_PAST_SECONDS: i64 = 365 * 24 * 60 * 60;
+const MAX_FUTURE_SECONDS: i64 = 300;
+/// Same-second key collisions probe forward at most this many seconds.
+const COLLISION_PROBES: i64 = 5;
 
 const META_LABEL: &str =
     "font-meta text-[0.6875rem] leading-normal tracking-[0.13em] uppercase text-muted";
@@ -126,12 +147,18 @@ async fn diary(cx: &Cx) -> Result {
             active: "",
             runtime: false,
             analytics: false,
+            pwa: true,
             if let Some(message) = notice {
                 <p class="mt-6 max-w-prose border-l-2 border-oxide pl-3 font-meta text-sm text-ink2">
                     (message)
                 </p>
             }
-            <form method="post" action="/diary/write" class="mt-10 max-w-prose">
+            <form
+                method="post"
+                action="/diary/write"
+                id="diary-compose"
+                class="mt-10 max-w-prose"
+            >
                 <label class="flex flex-col gap-[0.35rem]" for="diary-body">
                     <span class=(META_LABEL)>"new entry"</span>
                     <textarea
@@ -148,6 +175,9 @@ async fn diary(cx: &Cx) -> Result {
                     class="oxlink mt-3 cursor-pointer font-meta text-sm"
                 >"save →"</button>
             </form>
+            // diary.js fills this with queued/failed offline entries and
+            // unhides it; without JS it renders empty and stays hidden.
+            <section id="diary-queue" class="mt-12 max-w-prose" hidden=""></section>
             if !store_ok {
                 <p class="mt-12 max-w-prose text-ink2">
                     "The diary store is unreachable, so nothing can be listed "
@@ -193,6 +223,7 @@ async fn diary(cx: &Cx) -> Result {
                     }
                 </nav>
             }
+            <script type="module" src=(DIARY_JS)></script>
         )
     }
 }
@@ -249,6 +280,7 @@ async fn diary_entry(cx: &Cx) -> Result {
             active: "",
             runtime: false,
             analytics: false,
+            pwa: true,
             page_head(stamp: "diary", title: heading.as_str(), lede: "")
             if let Some(entry) = entry {
                 <section class="mt-8 max-w-prose">
@@ -275,6 +307,7 @@ async fn diary_entry(cx: &Cx) -> Result {
                 </p>
             }
             back_link(href: PATH, label: "diary")
+            <script type="module" src=(DIARY_JS)></script>
         )
     }
 }
@@ -322,6 +355,189 @@ async fn delete_entry(cx: &Cx, body: Body) -> Result<Response> {
             Ok(back("unavailable"))
         }
     }
+}
+
+/// What the service worker's queue replay sends: the entry text plus the
+/// second it was composed. `deny_unknown_fields` keeps the contract exact —
+/// a shape drift between sw.js and this struct should fail loudly, not
+/// half-parse.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiEntry {
+    written_at: i64,
+    body: String,
+}
+
+/// The saved-or-deduped outcome `save_queued_entry` reports back as JSON.
+struct SavedEntry {
+    id: String,
+    written_at: i64,
+    deduped: bool,
+}
+
+enum SaveError {
+    /// Every probed second held a different entry — give up rather than
+    /// stamp the entry minutes away from its composition time.
+    Exhausted,
+    Store(String),
+}
+
+/// `POST /api/diary/entries` — the queue-replay twin of `/diary/write`.
+/// Same authorization gate; the differences are deliberate: JSON in and out
+/// (real status codes a background fetch can act on, where the form's
+/// 303-to-login is invisible), the CLIENT's composition second keys the
+/// entry, and replays dedupe instead of erroring. Worker-initiated fetches
+/// pass `is_same_origin` — Chrome stamps same-origin `Sec-Fetch-Site` and
+/// `Origin` on them like any page fetch.
+#[route(POST "/api/diary/entries")]
+async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
+    let Some(current) = viewer(cx) else {
+        return Ok(api_error(StatusCode::UNAUTHORIZED, "sign in"));
+    };
+    if !is_admin(&current.email) {
+        return Ok(api_error(StatusCode::NOT_FOUND, "not found"));
+    }
+    if !is_same_origin(headers(cx)) {
+        return Ok(api_error(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    if !is_json_content_type(headers(cx)) {
+        return Ok(api_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type must be application/json",
+        ));
+    }
+    let bytes = match to_bytes(body, BODY_LIMIT_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Ok(api_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "entry is too large",
+            ));
+        }
+    };
+    let entry: ApiEntry = match serde_json::from_slice(&bytes) {
+        Ok(entry) => entry,
+        Err(_) => return Ok(api_error(StatusCode::BAD_REQUEST, "malformed entry")),
+    };
+    if !written_at_in_window(entry.written_at, Timestamp::now().as_second()) {
+        return Ok(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "timestamp out of range",
+        ));
+    }
+    let Some(entry_body) = normalize_body(&entry.body) else {
+        return Ok(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "that didn't validate",
+        ));
+    };
+    match save_queued_entry(app_context::<Data>(cx), entry.written_at, &entry_body).await {
+        Ok(saved) => Ok(api_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "status": "saved",
+                "id": saved.id,
+                "written_at": saved.written_at,
+                "deduped": saved.deduped,
+            })
+            .to_string(),
+        )),
+        Err(SaveError::Exhausted) => Ok(api_error(
+            StatusCode::CONFLICT,
+            "no free second near that timestamp",
+        )),
+        Err(SaveError::Store(error)) => {
+            log_failure("api-write", &error);
+            Ok(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "store unreachable",
+            ))
+        }
+    }
+}
+
+/// Replay-safe insert. The id derives from the client's epoch; a collision
+/// holding the SAME body is a replay of a write whose response was lost, so
+/// it counts as saved. A different body probes forward one second at a
+/// time, re-running the dedupe check at EVERY probed id — the killer replay
+/// is "bumped to T+1, response lost, retried from T", which must land on
+/// the T+1 dedupe, not insert again at T+2. Check-first, then CREATE, then
+/// re-check when CREATE fails: a lost race is indistinguishable from a
+/// replayed twin, and neither is an error (never sniff the store's error
+/// strings). Never overwrites — the form path's rule holds here too.
+///
+/// Invariant: the stored `written_at` is always the epoch its id projects
+/// from, so `/diary`'s `ORDER BY written_at DESC, id DESC` and the
+/// permalink agree about when an entry happened.
+async fn save_queued_entry(
+    data: &Data,
+    written_at: i64,
+    body: &str,
+) -> std::result::Result<SavedEntry, SaveError> {
+    for offset in 0..COLLISION_PROBES {
+        let epoch = written_at + offset;
+        let Some(id) = entry_key(epoch) else {
+            return Err(SaveError::Store(format!("unprojectable epoch {epoch}")));
+        };
+        match entry_by_id(data, &id).await.map_err(SaveError::Store)? {
+            Some(existing) if existing.body == body => {
+                return Ok(SavedEntry {
+                    id,
+                    written_at: existing.written_at,
+                    deduped: true,
+                });
+            }
+            Some(_) => continue,
+            None => {}
+        }
+        match insert_entry(data, &id, epoch, body).await {
+            Ok(()) => {
+                return Ok(SavedEntry {
+                    id,
+                    written_at: epoch,
+                    deduped: false,
+                });
+            }
+            Err(error) => match entry_by_id(data, &id).await.map_err(SaveError::Store)? {
+                Some(existing) if existing.body == body => {
+                    return Ok(SavedEntry {
+                        id,
+                        written_at: existing.written_at,
+                        deduped: true,
+                    });
+                }
+                Some(_) => continue,
+                None => return Err(SaveError::Store(error)),
+            },
+        }
+    }
+    Err(SaveError::Exhausted)
+}
+
+fn written_at_in_window(written_at: i64, now: i64) -> bool {
+    written_at > now - MAX_PAST_SECONDS && written_at <= now + MAX_FUTURE_SECONDS
+}
+
+fn is_json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+}
+
+fn api_json(status: StatusCode, body: String) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, NO_STORE)
+        .header("x-content-type-options", "nosniff")
+        .body(Body::from(body))
+        .expect("static headers")
+}
+
+fn api_error(status: StatusCode, message: &'static str) -> Response {
+    api_json(status, serde_json::json!({ "error": message }).to_string())
 }
 
 /// One page of entries, newest first, plus the total count — one round trip.
@@ -458,16 +674,25 @@ fn normalize_body(raw: &str) -> Option<String> {
     Some(body.to_string())
 }
 
-/// The record key and stored timestamp for a new entry, from one instant:
-/// the Eastern public path (which becomes the permalink) plus epoch seconds.
+/// The record key and stored timestamp for a new form entry, from one
+/// instant.
 fn now_entry() -> Option<(String, i64)> {
-    let now = Timestamp::now();
-    let utc = now
+    let now = Timestamp::now().as_second();
+    Some((entry_key(now)?, now))
+}
+
+/// The record key a UTC epoch second projects to: the Eastern public path
+/// that becomes the permalink. Factored from `now_entry` so queued offline
+/// entries can be keyed by their composition second. `None` only for epochs
+/// outside jiff's representable range.
+fn entry_key(epoch: i64) -> Option<String> {
+    let utc = Timestamp::from_second(epoch)
+        .ok()?
         .to_zoned(TimeZone::UTC)
         .strftime("%Y-%m-%d %H:%M:%S")
         .to_string();
     let instant = eastern::eastern_instant(&utc, 0).ok()?;
-    Some((eastern::public_path(&instant), now.as_second()))
+    Some(eastern::public_path(&instant))
 }
 
 fn requested_page(raw: Option<&str>) -> Option<usize> {
@@ -603,6 +828,9 @@ mod tests {
         assert!(!crate::content::routes::is_trackable_route(
             "/diary/2026-07-27T10-00-00-04-00"
         ));
+        assert!(!crate::content::routes::is_trackable_route(
+            "/api/diary/entries"
+        ));
         assert!(
             crate::content::access::hidden_page(PATH).is_none(),
             "{PATH} must never be a grantable hidden page"
@@ -720,5 +948,109 @@ mod tests {
         let (id, written_at) = now_entry().expect("now projects");
         assert!(eastern::parse_public_path(&id).is_some(), "bad key {id}");
         assert!(written_at > 1_750_000_000, "implausible epoch {written_at}");
+        // now_entry IS entry_key applied to "now" — the form path and the
+        // queue path must never disagree about key derivation.
+        assert_eq!(entry_key(written_at).as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn entry_keys_project_from_client_epochs() {
+        let epoch = "2026-07-27T18:30:45Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_second();
+        assert_eq!(
+            entry_key(epoch).as_deref(),
+            Some("2026-07-27T14-30-45-04-00")
+        );
+        // Same wall clock on both sides of the November fold: the embedded
+        // offset digits keep the keys distinct and parseable.
+        let edt = "2026-11-01T05:30:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_second();
+        let est = "2026-11-01T06:30:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_second();
+        assert_eq!(entry_key(edt).as_deref(), Some("2026-11-01T01-30-00-04-00"));
+        assert_eq!(entry_key(est).as_deref(), Some("2026-11-01T01-30-00-05-00"));
+        assert!(entry_key(i64::MIN).is_none());
+    }
+
+    #[test]
+    fn collision_probes_stay_valid_across_the_fold() {
+        // Probing +1s across the fall-back instant keeps producing distinct,
+        // parseable keys. (They are NOT string-monotonic across the fold —
+        // fine: /diary orders by written_at first; ids only tie-break.)
+        let base = "2026-11-01T05:59:58Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_second();
+        let mut seen = std::collections::BTreeSet::new();
+        for offset in 0..COLLISION_PROBES {
+            let id = entry_key(base + offset).expect("probe projects");
+            assert!(eastern::parse_public_path(&id).is_some(), "bad probe {id}");
+            assert!(seen.insert(id), "duplicate probe key");
+        }
+    }
+
+    #[test]
+    fn client_timestamps_stay_inside_the_window() {
+        let now = 1_800_000_000;
+        assert!(written_at_in_window(now, now));
+        assert!(written_at_in_window(now - MAX_PAST_SECONDS + 1, now));
+        assert!(!written_at_in_window(now - MAX_PAST_SECONDS, now));
+        assert!(written_at_in_window(now + MAX_FUTURE_SECONDS, now));
+        assert!(!written_at_in_window(now + MAX_FUTURE_SECONDS + 1, now));
+        assert!(!written_at_in_window(0, now));
+    }
+
+    #[test]
+    fn api_bodies_parse_strictly() {
+        let entry: ApiEntry =
+            serde_json::from_slice(br#"{"written_at": 1753640000, "body": "Dear diary,"}"#)
+                .unwrap();
+        assert_eq!(entry.written_at, 1_753_640_000);
+        assert_eq!(entry.body, "Dear diary,");
+        for bad in [
+            &br#"{"written_at": 1753640000.5, "body": "x"}"#[..],
+            br#"{"written_at": "1753640000", "body": "x"}"#,
+            br#"{"body": "x"}"#,
+            br#"{"written_at": 1753640000}"#,
+            br#"{"written_at": 1753640000, "body": "x", "extra": true}"#,
+            b"not json",
+        ] {
+            assert!(
+                serde_json::from_slice::<ApiEntry>(bad).is_err(),
+                "accepted {:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
+
+    /// diary.js is the page half of the offline queue; these literals are
+    /// load-bearing. (sw.js's are pinned in pwa.rs, shared names in both.)
+    #[test]
+    fn diary_js_pins_the_page_contract() {
+        const DIARY_JS_SRC: &str = include_str!("diary/diary.js");
+        for needle in [
+            "const SW_URL = \"/sw.js\";",
+            "const SCOPE = \"/diary\";",
+            "{ scope: SCOPE }",
+            "\"sync\" in registration",
+            "Math.floor(Date.now() / 1000)",
+            "storage.persist",
+            "pageshow",
+            "visibilitychange",
+            "\"diary-compose\"",
+            "\"diary-body\"",
+            "\"diary-queue\"",
+            "dataset.discard",
+            "form.submit()",
+            "preventDefault",
+        ] {
+            assert!(DIARY_JS_SRC.contains(needle), "diary.js lost {needle:?}");
+        }
     }
 }

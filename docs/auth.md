@@ -55,6 +55,43 @@ entry would render a grant form for it here, and one mistyped grant would
 share a diary. Its `/admin` tool card is its one listing; entry permalinks
 reuse the lifting archive's Eastern public-path shape as record keys.
 
+## The diary as an installable offline app (PWA)
+
+`/diary` installs on Android as a standalone app with an offline write
+queue. `src/app/pwa.rs` serves the stable pieces (`/sw.js`,
+`/diary.webmanifest`, two icons); the diary pages load
+`src/app/diary/diary.js`; the worker `src/app/diary/sw.js` registers with
+scope `/diary`, so no public page is ever controlled and the CDN
+invariants above are untouched. Invariants:
+
+- The PWA routes are deliberately ungated: Chrome fetches manifests
+  without credentials (a cookie gate breaks install), and the bytes only
+  disclose that a diary app exists — which the public repo and the login
+  redirect already do. Keep anything private out of them.
+- With JS, saves are IndexedDB-first (db `diary-queue`) and flushed ONLY
+  by the service worker via `POST /api/diary/entries`. Never add a
+  page-side POST: one flush implementation is what keeps replays safe.
+  Without JS (or when IndexedDB refuses), the plain form POST to
+  `/diary/write` still works.
+- The API keys an entry by the CLIENT's composition second — a queued
+  entry keeps the time it was written, not the time it synced — inside a
+  bounded window (a year back, 5 minutes forward; outside is a 422, never
+  clamped, because clamping would mint a fresh key per replay and
+  double-post). Replays dedupe: same second + same body is "already
+  saved"; an occupied second probes forward ≤5 s, re-running the dedupe
+  at every probe. Overwriting an entry stays impossible.
+- The worker keeps the last good `GET /diary` (page 1) plus hashed assets
+  for offline reads — deliberate, device-local, Ben's choice. That cache
+  and the queue OUTLIVE sign-out and `COOKIE_KEY` rotation; wiping them
+  means clearing the site's data in Chrome on the device.
+- A flush stops and keeps the queue on 401/404 (sign in again), 403/5xx/
+  network (retry later); only 400/409/413/415/422 mark an entry failed,
+  and failed text stays on the page with a discard button — queued diary
+  text is never silently dropped.
+- `/sw.js` and the manifest keep stable un-hashed URLs (a worker's URL is
+  its identity; a hashed URL would register a new worker every deploy).
+  Served `no-cache` / day-long cache respectively via `pwa.rs`.
+
 ## Adding a hidden page
 
 Copy the `src/app/motorcycles.rs` pattern (+ `mod` in `app.rs`), add a

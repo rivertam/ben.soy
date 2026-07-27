@@ -8,6 +8,7 @@ mod llms;
 pub(crate) mod login;
 mod motorcycles;
 mod not_found;
+mod pwa;
 mod response_layer;
 mod resume;
 mod thoughts;

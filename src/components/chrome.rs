@@ -41,6 +41,11 @@ const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 /// `analytics` controls the first-party tracker. It is disabled on the 404 so
 /// arbitrary requested paths can never become public dashboard entries.
 ///
+/// `pwa` links the /diary app manifest and its status-bar color so the page
+/// is installable (app/pwa.rs serves the pieces). Only the admin-only diary
+/// pages set it; the flag renders no viewer data, but keeping it off
+/// everywhere else keeps the public site from advertising an install.
+///
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
 /// join the interests dropdown, and a barely-there "signed in" line sits at
 /// the footer's bottom right. Both personalize the HTML, which is why
@@ -54,6 +59,7 @@ pub async fn shell(
     #[default(false)] hide_nav: bool,
     #[default(true)] runtime: bool,
     #[default(true)] analytics: bool,
+    #[default(false)] pwa: bool,
     child: View,
 ) -> Result {
     let title = if title.is_empty() {
@@ -108,6 +114,12 @@ pub async fn shell(
                 <link rel="icon" type="image/png" sizes="32x32" href=(FAVICON_32)>
                 <link rel="icon" type="image/png" sizes="16x16" href=(FAVICON_16)>
                 <link rel="apple-touch-icon" sizes="180x180" href=(APPLE_TOUCH_ICON)>
+                if pwa {
+                    // The /diary app surface (app/pwa.rs); the color matches
+                    // --color-page so the standalone status bar blends in.
+                    <link rel="manifest" href="/diary.webmanifest">
+                    <meta name="theme-color" content="#f4f5f7">
+                }
                 <link
                     rel="alternate"
                     type="application/rss+xml"
