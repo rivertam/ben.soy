@@ -8,6 +8,7 @@ mod not_found;
 mod response_layer;
 mod resume;
 mod thoughts;
+mod workout_upload;
 
 use benjisponge::data::Data;
 

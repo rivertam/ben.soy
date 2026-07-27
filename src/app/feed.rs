@@ -2,7 +2,8 @@
 //! entry, long or short, becomes an `<item>`, so publishing to the log
 //! publishes to the feed. Slay the Spire 2 victories (and only victories —
 //! deaths stay on `/spire`) join the feed at render time from the synced run
-//! database. Not a page: it renders no shell and stays out of
+//! database, as do workouts explicitly published through the authenticated
+//! manual-entry path. Not a page: it renders no shell and stays out of
 //! `site_routes()` (the 404 index is for pages).
 
 use topcoat::{
@@ -12,8 +13,12 @@ use topcoat::{
 };
 
 use benjisponge::data::Data;
+use jiff::Timestamp;
 
-use crate::app::interests::spire::runs::{self as spire_runs, Run, fmt_duration};
+use crate::app::interests::{
+    lifting::archive::{api::Workout, snapshot::PublishedWorkout, store::FitnessStore},
+    spire::runs::{self as spire_runs, Run, fmt_duration},
+};
 use crate::content::logbook::{Entry, LOG};
 
 /// Where absolute links point. `SITE_ORIGIN` overrides the default at
@@ -25,22 +30,35 @@ fn origin() -> String {
 #[route(GET "/feed.xml")]
 async fn feed(cx: &Cx) -> Result<([(&'static str, &'static str); 2], String)> {
     let log = spire_runs::load(app_context::<Data>(cx)).await;
+    let workouts = match app_context::<FitnessStore>(cx).snapshot().await {
+        Ok(snapshot) => snapshot.published_workouts(),
+        Err(error) => {
+            // Dynamic data must never take down the static feed. Match the
+            // Spire loader's stale-or-empty failure behavior.
+            eprintln!("fitness feed snapshot failed: {error}");
+            Vec::new()
+        }
+    };
     Ok((
         [
             ("Content-Type", "application/rss+xml; charset=utf-8"),
-            // Fresh runs appear within a minute; CDN honors s-maxage (see docs/railway-deploy.md).
+            // Fresh runs and workouts appear within a minute; CDN honors
+            // s-maxage (see docs/railway-deploy.md).
             ("Cache-Control", "public, max-age=0, s-maxage=60"),
         ],
-        rss_xml(&origin(), &log.runs),
+        rss_xml(&origin(), &log.runs, &workouts),
     ))
 }
 
-/// One feed item, from either source, ready to sort and emit.
+/// One feed item, from any source, ready to sort and emit.
 struct FeedItem {
     date: String,
-    /// Curated logbook entries outrank runs on the same date.
+    /// RFC 2822 publication instant. Curated entries are day-granular and use
+    /// midnight UTC; database-backed items preserve their exact source time.
+    pub_date: String,
+    /// Curated logbook entries outrank dynamic items on the same date.
     curated: bool,
-    /// Tie-break among runs sharing a date; 0 for logbook entries.
+    /// Tie-break among dynamic items sharing a date; 0 for logbook entries.
     start_time: i64,
     title: String,
     link: String,
@@ -48,9 +66,10 @@ struct FeedItem {
     guid: String,
 }
 
-/// The whole feed as a string. Pure — origin and runs in, XML out. Losses
-/// and abandoned runs are filtered here so callers can pass the full log.
-pub fn rss_xml(origin: &str, runs: &[Run]) -> String {
+/// The whole feed as a string. Pure — origin and dynamic rows in, XML out.
+/// Losses and abandoned runs are filtered here so callers can pass the full
+/// Spire log; workout publication was already filtered by the snapshot.
+pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> String {
     let mut items: Vec<FeedItem> = Vec::new();
 
     for (index, entry) in LOG.iter().enumerate() {
@@ -91,6 +110,7 @@ pub fn rss_xml(origin: &str, runs: &[Run]) -> String {
         };
         items.push(FeedItem {
             date: entry.date().to_string(),
+            pub_date: rfc2822(entry.date()),
             curated: true,
             start_time: 0,
             title,
@@ -103,6 +123,7 @@ pub fn rss_xml(origin: &str, runs: &[Run]) -> String {
     for run in runs.iter().filter(|r| r.win && !r.abandoned) {
         items.push(FeedItem {
             date: run.date.clone(),
+            pub_date: rfc2822_timestamp(run.start_time, &run.date),
             curated: false,
             start_time: run.start_time,
             title: format!(
@@ -121,7 +142,26 @@ pub fn rss_xml(origin: &str, runs: &[Run]) -> String {
         });
     }
 
-    // Newest first; a curated entry leads the runs on its date.
+    for published in workouts {
+        let workout = &published.workout;
+        let link = format!("{origin}/lifting/{}", workout.path);
+        items.push(FeedItem {
+            date: published.date.clone(),
+            pub_date: rfc2822_timestamp(published.start_time, &published.date),
+            curated: false,
+            start_time: published.start_time,
+            title: format!("[lift] {}", workout.title),
+            link,
+            description: workout_description(workout),
+            // The UTC-derived archive id is the immutable identity anchor;
+            // unlike the reader-facing Eastern path, it can never change if
+            // timezone projection rules do.
+            guid: format!("{origin}/lifting/workout/{}", workout.id),
+        });
+    }
+
+    // Newest first; a curated entry leads dynamic entries on its date, then
+    // exact source instants interleave workouts and Spire runs.
     items.sort_by(|a, b| {
         b.date
             .cmp(&a.date)
@@ -153,11 +193,69 @@ pub fn rss_xml(origin: &str, runs: &[Run]) -> String {
             "<guid isPermaLink=\"false\">{}</guid>\n",
             escape(&item.guid)
         ));
-        xml.push_str(&format!("<pubDate>{}</pubDate>\n", rfc2822(&item.date)));
+        xml.push_str(&format!("<pubDate>{}</pubDate>\n", item.pub_date));
         xml.push_str("</item>\n");
     }
     xml.push_str("</channel>\n</rss>\n");
     xml
+}
+
+fn workout_description(workout: &Workout) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let exercises: Vec<&str> = workout
+        .sets
+        .iter()
+        .filter_map(|set| {
+            seen.insert(set.exercise_name.as_str())
+                .then_some(set.exercise_name.as_str())
+        })
+        .collect();
+    let set_count = workout.sets.len();
+    let exercise_count = exercises.len();
+    let mut description = format!(
+        "{set_count} {} across {exercise_count} {} in {}",
+        plural(set_count, "set", "sets"),
+        plural(exercise_count, "exercise", "exercises"),
+        workout_duration(workout.duration_seconds),
+    );
+    if exercises.is_empty() {
+        description.push('.');
+    } else {
+        description.push_str(": ");
+        description.push_str(&human_list(&exercises));
+        description.push('.');
+    }
+    description
+}
+
+fn workout_duration(seconds: u64) -> String {
+    let hours = seconds / 3_600;
+    let minutes = seconds % 3_600 / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
+    if count == 1 { one } else { many }
+}
+
+fn human_list(values: &[&str]) -> String {
+    match values {
+        [] => String::new(),
+        [only] => (*only).to_string(),
+        [first, second] => format!("{first} and {second}"),
+        _ => format!(
+            "{}, and {}",
+            values[..values.len() - 1].join(", "),
+            values[values.len() - 1]
+        ),
+    }
 }
 
 /// XML-escape everything interpolated into the feed.
@@ -189,7 +287,8 @@ fn truncate(text: &str, max: usize) -> String {
 
 /// `YYYY-MM-DD` → RFC 2822 at midnight UTC, e.g. `Sun, 12 Jul 2026 00:00:00
 /// +0000`. Weekday via Sakamoto's method — no date crate in the tree. Inputs
-/// are shape-checked upstream (logbook tests; run dates filtered on parse).
+/// are shape-checked upstream (logbook tests, filtered run dates, and the
+/// fitness snapshot's Eastern projection).
 fn rfc2822(iso: &str) -> String {
     let year: i32 = iso[0..4].parse().expect("feed date year");
     let month: usize = iso[5..7].parse().expect("feed date month");
@@ -212,6 +311,15 @@ fn rfc2822(iso: &str) -> String {
         MONTHS[month - 1],
         year
     )
+}
+
+/// Exact database-backed publication time in UTC. The date-only fallback
+/// keeps a malformed external row from taking down the entire feed; workout
+/// timestamps have already passed the snapshot's strict timestamp parser.
+fn rfc2822_timestamp(seconds: i64, fallback_date: &str) -> String {
+    Timestamp::from_second(seconds)
+        .map(|instant| instant.strftime("%a, %d %b %Y %H:%M:%S +0000").to_string())
+        .unwrap_or_else(|_| rfc2822(fallback_date))
 }
 
 #[cfg(test)]
@@ -237,9 +345,64 @@ mod tests {
         }
     }
 
+    fn lift(
+        id: &str,
+        date: &str,
+        start_time: i64,
+        title: &str,
+        duration_seconds: u64,
+        set_count: usize,
+        exercises: &[&str],
+    ) -> PublishedWorkout {
+        let path = format!("{date}T10-38-00-04-00");
+        let sets = (0..set_count)
+            .map(|index| {
+                let exercise = exercises
+                    .get(index % exercises.len().max(1))
+                    .copied()
+                    .unwrap_or("Unknown exercise");
+                crate::app::interests::lifting::archive::api::Set {
+                    id: format!("{id}:{:04}", index + 1),
+                    ordinal: (index + 1) as u32,
+                    exercise_name: exercise.to_string(),
+                    raw_exercise_name: exercise.to_string(),
+                    exercise_note: None,
+                    superset_id: None,
+                    weight_milli: Some(95_000),
+                    weight_unit: "lbs".to_string(),
+                    reps: Some(8),
+                    effort_hundredths: Some(1_000),
+                    distance_milli: None,
+                    set_time_seconds: None,
+                    set_type: "NORMAL_SET".to_string(),
+                    records: Vec::new(),
+                }
+            })
+            .collect();
+        PublishedWorkout {
+            workout: Workout {
+                id: id.to_string(),
+                path,
+                title: title.to_string(),
+                raw_title: title.to_string(),
+                started_at_local: format!("{date} 10:38:00"),
+                ended_at_local: format!("{date} 10:50:00"),
+                eastern_offset_minutes: -240,
+                end_eastern_offset_minutes: -240,
+                duration_seconds,
+                duration_suspicious: false,
+                notes: None,
+                description: None,
+                sets,
+            },
+            date: date.to_string(),
+            start_time,
+        }
+    }
+
     #[test]
     fn one_item_per_log_entry() {
-        let xml = rss_xml(ORIGIN, &[]);
+        let xml = rss_xml(ORIGIN, &[], &[]);
         assert_eq!(xml.matches("<item>").count(), LOG.len());
         assert_eq!(xml.matches("</item>").count(), LOG.len());
     }
@@ -250,11 +413,39 @@ mod tests {
             run("1784587453", "2026-07-20", true),
             run("1784500000", "2026-07-19", false),
         ];
-        let xml = rss_xml(ORIGIN, &runs);
+        let xml = rss_xml(ORIGIN, &runs, &[]);
         assert_eq!(xml.matches("<item>").count(), LOG.len() + 1);
         assert!(xml.contains(&format!("{ORIGIN}/spire/run/1784587453")));
         assert!(!xml.contains("1784500000"));
-        assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 00:00:00 +0000</pubDate>"));
+        assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 22:44:13 +0000</pubDate>"));
+    }
+
+    #[test]
+    fn published_workouts_join_the_feed_with_archive_identity() {
+        let workouts = [lift(
+            "fitness:2026-07-24T14:38:00",
+            "2026-07-24",
+            1_784_903_880,
+            "Quickest Arms in the Wesf",
+            720,
+            12,
+            &["Incline Bench Press", "Upright Row", "MTS Biceps Curl"],
+        )];
+        let xml = rss_xml(ORIGIN, &[], &workouts);
+
+        assert_eq!(xml.matches("<item>").count(), LOG.len() + 1);
+        assert!(xml.contains("<title>[lift] Quickest Arms in the Wesf</title>"));
+        assert!(xml.contains(&format!(
+            "<link>{ORIGIN}/lifting/2026-07-24T10-38-00-04-00</link>"
+        )));
+        assert!(xml.contains(&format!(
+            "<guid isPermaLink=\"false\">{ORIGIN}/lifting/workout/fitness:2026-07-24T14:38:00</guid>"
+        )));
+        assert!(xml.contains(
+            "<description>12 sets across 3 exercises in 12m 00s: Incline Bench Press, \
+             Upright Row, and MTS Biceps Curl.</description>"
+        ));
+        assert!(xml.contains("<pubDate>Fri, 24 Jul 2026 14:38:00 +0000</pubDate>"));
     }
 
     #[test]
@@ -264,7 +455,7 @@ mod tests {
             run("1784587453", "2026-07-20", true),
             run("1752300000", "2026-07-12", true),
         ];
-        let xml = rss_xml(ORIGIN, &runs);
+        let xml = rss_xml(ORIGIN, &runs, &[]);
         let win_new = xml.find("/spire/run/1784587453").unwrap();
         let essay = xml.find("How bad are planes?").unwrap();
         let win_tied = xml.find("/spire/run/1752300000").unwrap();
@@ -273,17 +464,51 @@ mod tests {
     }
 
     #[test]
-    fn run_fields_are_escaped() {
+    fn dynamic_items_on_one_date_sort_by_exact_start_time() {
         let runs = [run("1784587453", "2026-07-20", true)];
-        let xml = rss_xml(ORIGIN, &runs);
+        let workouts = [lift(
+            "fitness:2026-07-20T15:00:00",
+            "2026-07-20",
+            1_784_590_000,
+            "Later lift",
+            600,
+            1,
+            &["Upright Row"],
+        )];
+        let xml = rss_xml(ORIGIN, &runs, &workouts);
+        let lift = xml
+            .find("/lifting/workout/fitness:2026-07-20T15:00:00")
+            .unwrap();
+        let win = xml.find("/spire/run/1784587453").unwrap();
+        assert!(lift < win, "later workout leads an earlier same-date run");
+        assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 23:26:40 +0000</pubDate>"));
+        assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 22:44:13 +0000</pubDate>"));
+    }
+
+    #[test]
+    fn dynamic_fields_are_escaped() {
+        let runs = [run("1784587453", "2026-07-20", true)];
+        let workouts = [lift(
+            "fitness:2026-07-21T14:38:00",
+            "2026-07-21",
+            1_784_644_280,
+            "Arms & <Stuff>",
+            720,
+            1,
+            &["Curl & Press <Machine>"],
+        )];
+        let xml = rss_xml(ORIGIN, &runs, &workouts);
         assert!(xml.contains("Necrobinder &amp; &lt;Friends&gt;"));
+        assert!(xml.contains("[lift] Arms &amp; &lt;Stuff&gt;"));
+        assert!(xml.contains("Curl &amp; Press &lt;Machine&gt;"));
         assert!(!xml.contains("<Friends>"));
+        assert!(!xml.contains("<Stuff>"));
     }
 
     #[test]
     fn no_raw_ampersands_outside_entities() {
         let runs = [run("1784587453", "2026-07-20", true)];
-        let xml = rss_xml(ORIGIN, &runs);
+        let xml = rss_xml(ORIGIN, &runs, &[]);
         let mut rest = xml.as_str();
         while let Some(pos) = rest.find('&') {
             let tail = &rest[pos..];
@@ -305,9 +530,13 @@ mod tests {
         assert_eq!(rfc2822("2019-03-30"), "Sat, 30 Mar 2019 00:00:00 +0000");
         assert_eq!(rfc2822("2018-07-10"), "Tue, 10 Jul 2018 00:00:00 +0000");
         assert_eq!(rfc2822("2024-11-08"), "Fri, 08 Nov 2024 00:00:00 +0000");
+        assert_eq!(
+            rfc2822_timestamp(1_784_903_880, "1970-01-01"),
+            "Fri, 24 Jul 2026 14:38:00 +0000"
+        );
 
         // Every emitted pubDate matches the RFC 2822 shape.
-        let xml = rss_xml(ORIGIN, &[run("1784587453", "2026-07-20", true)]);
+        let xml = rss_xml(ORIGIN, &[run("1784587453", "2026-07-20", true)], &[]);
         for line in xml.lines().filter(|l| l.starts_with("<pubDate>")) {
             let date = line
                 .trim_start_matches("<pubDate>")
@@ -316,7 +545,11 @@ mod tests {
                 && ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].contains(&&date[0..3])
                 && &date[3..5] == ", "
                 && date[5..7].chars().all(|c| c.is_ascii_digit())
-                && date.ends_with("00:00:00 +0000");
+                && date.ends_with(" +0000")
+                && date[17..25].chars().enumerate().all(|(index, character)| {
+                    matches!(index, 2 | 5) && character == ':'
+                        || !matches!(index, 2 | 5) && character.is_ascii_digit()
+                });
             assert!(ok, "not RFC 2822: {date}");
         }
     }
@@ -327,9 +560,18 @@ mod tests {
             run("1784587453", "2026-07-20", true),
             run("1784400000", "2026-07-18", true),
         ];
-        let xml = rss_xml(ORIGIN, &runs);
+        let workouts = [lift(
+            "fitness:2026-07-21T14:38:00",
+            "2026-07-21",
+            1_784_644_280,
+            "Lift",
+            720,
+            1,
+            &["Curl"],
+        )];
+        let xml = rss_xml(ORIGIN, &runs, &workouts);
         let guids: Vec<&str> = xml.lines().filter(|l| l.starts_with("<guid")).collect();
-        assert_eq!(guids.len(), LOG.len() + 2);
+        assert_eq!(guids.len(), LOG.len() + 3);
         let mut deduped = guids.clone();
         deduped.sort_unstable();
         deduped.dedup();
@@ -352,7 +594,7 @@ mod tests {
 
     #[test]
     fn structure_is_sound() {
-        let xml = rss_xml(ORIGIN, &[]);
+        let xml = rss_xml(ORIGIN, &[], &[]);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
         assert!(xml.contains("<title>Ben Berman — logbook</title>"));
         assert!(xml.contains(&format!("<link>{ORIGIN}/</link>")));

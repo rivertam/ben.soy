@@ -4,7 +4,7 @@
 //! deliberately no primary/secondary column (`docs/fitness.md`). The
 //! split is derived here the same way records are derived at snapshot
 //! build: `PRIMARY_BY_MOVEMENT` mirrors which muscles each
-//! `fitness_sync::exercise_tags` movement rule co-emits as the movers,
+//! `taxonomy::exercise_tags` movement rule co-emits as the movers,
 //! and any remaining muscle tag on the exercise renders as secondary.
 //! Keep that table aligned with the importer's taxonomy rules.
 

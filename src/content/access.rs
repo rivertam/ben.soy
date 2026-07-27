@@ -10,15 +10,16 @@
 //! HIDDEN_PAGE_ACCESS=/motorcycles:alice@gmail.com,bob@gmail.com;/garage:carol@example.com
 //! ```
 //!
-//! The admin sees every hidden page without being listed. Checks read the
-//! env on every request, so editing the Railway variable (which redeploys)
-//! grants or revokes access immediately — no session state to invalidate.
-//! Hidden pages deliberately stay out of `INTERESTS`/`POSTS`/`site_routes()`:
-//! the nav, indexes, feed, and 404 never mention them.
+//! The admin sees every hidden page without being listed. Checks read the env
+//! on every request, so editing the Railway variable (which redeploys) grants
+//! or revokes access immediately — no session state to invalidate. Hidden
+//! pages deliberately stay out of `INTERESTS`/`POSTS`/`site_routes()`: the
+//! nav, indexes, feed, and 404 never mention them.
 
-/// Already public as the repo's commit author email, so hardcoding it leaks
-/// nothing new. Friends' emails are a different story — env only.
-pub const ADMIN_EMAIL: &str = "ben.b@digichem.com";
+/// The single app-wide administrator. This address is intentionally committed
+/// because it defines privileged behavior; friends' hidden-page grants remain
+/// environment-only.
+pub const ADMIN_EMAIL: &str = "ben.m.berman@gmail.com";
 
 /// A hidden page's display entry: what allowlisted viewers see when the nav
 /// dropdown and the interests index populate for them. Paths and copy are
@@ -40,7 +41,7 @@ pub static HIDDEN_PAGES: [HiddenPage; 1] = [HiddenPage {
 
 /// The hidden pages `email` may view, in registry order. This is the whole
 /// "only shows up if I allowlist you" surface: anonymous visitors never reach
-/// this call, everyone else sees exactly their grants (the admin, all of it).
+/// this call, everyone else sees exactly their grants.
 pub fn visible_pages(email: &str) -> impl Iterator<Item = &'static HiddenPage> + '_ {
     HIDDEN_PAGES
         .iter()
@@ -62,7 +63,7 @@ pub fn known_viewer(email: &str) -> bool {
     is_admin(email) || raw().is_some_and(|raw| known_in(&raw, email))
 }
 
-fn is_admin(email: &str) -> bool {
+pub fn is_admin(email: &str) -> bool {
     email.eq_ignore_ascii_case(ADMIN_EMAIL)
 }
 
@@ -105,6 +106,14 @@ mod tests {
             "/not-registered-anywhere"
         ));
         assert!(known_viewer(ADMIN_EMAIL));
+    }
+
+    #[test]
+    fn admin_identity_is_case_insensitive_and_exclusive() {
+        assert!(is_admin(ADMIN_EMAIL));
+        assert!(is_admin(&ADMIN_EMAIL.to_uppercase()));
+        assert!(!is_admin("alice@gmail.com"));
+        assert!(!is_admin(""));
     }
 
     #[test]

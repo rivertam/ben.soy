@@ -18,6 +18,8 @@ use super::filters::Filters;
 use super::records::{self, SetSource};
 use super::scoring;
 
+const PUBLISHED_WORKOUT_SOURCE: &str = "manual";
+
 pub struct Snapshot {
     pub version: i64,
     workouts: Vec<SnapWorkout>,
@@ -27,11 +29,25 @@ pub struct Snapshot {
     ids: api::SetIds,
 }
 
+/// One workout explicitly published by the authenticated manual-entry path.
+/// This stays internal to the server: `source` and the UTC sort instant must
+/// not widen the public fitness JSON contract.
+#[derive(Clone, Debug)]
+pub struct PublishedWorkout {
+    pub workout: api::Workout,
+    pub date: String,
+    pub start_time: i64,
+}
+
 struct SnapWorkout {
     /// Wire shape with `sets` left empty; responses clone it and fill in
     /// the sets the request's filters admit.
     wire: api::Workout,
     sets: Vec<SnapSet>,
+    source: String,
+    /// Epoch seconds from the source UTC instant, for ordering dynamic feed
+    /// entries against Spire runs on the same Eastern date.
+    start_time: i64,
     /// Stored projection columns — the filter/lookup side, exactly like
     /// the Worker's SQL reading `w.started_at_local`. (The wire side is
     /// re-derived from UTC, also exactly like the Worker.)
@@ -105,6 +121,7 @@ pub fn build(
 
     let mut workouts = Vec::with_capacity(workout_rows.len());
     for row in &workout_rows {
+        let start_time = eastern::utc_timestamp(&row.started_at_utc)?.as_second();
         let start = eastern::eastern_instant(&row.started_at_utc, 0)?;
         let end = eastern::eastern_instant(&row.started_at_utc, row.duration_seconds)?;
         let mut sets: Vec<&LiftSet> = sets_by_workout.remove(row.id.as_str()).unwrap_or_default();
@@ -166,6 +183,8 @@ pub fn build(
                 sets: Vec::new(),
             },
             sets,
+            source: row.source.clone(),
+            start_time,
             row_local: row.started_at_local.clone(),
             row_offset: row.eastern_offset_minutes,
             weekday: weekday_sunday_zero(&local_date),
@@ -348,6 +367,25 @@ fn build_calendar(version: i64, workouts: &[SnapWorkout]) -> api::Calendar {
 }
 
 impl Snapshot {
+    /// Full manual workouts for `/feed.xml`, newest-first. CSV imports remain
+    /// archive-only; publishing one must never dump the historical corpus
+    /// into subscribers' readers.
+    pub fn published_workouts(&self) -> Vec<PublishedWorkout> {
+        self.workouts
+            .iter()
+            .filter(|snap| snap.source == PUBLISHED_WORKOUT_SOURCE)
+            .map(|snap| {
+                let mut workout = snap.wire.clone();
+                workout.sets = snap.sets.iter().map(|set| set.wire.clone()).collect();
+                PublishedWorkout {
+                    date: workout.started_at_local[..10].to_string(),
+                    start_time: snap.start_time,
+                    workout,
+                }
+            })
+            .collect()
+    }
+
     pub fn facets(&self) -> api::Facets {
         self.facets.clone()
     }
@@ -872,6 +910,52 @@ mod tests {
         assert!(
             !tags.contains_key("Bench Press"),
             "untagged exercise absent"
+        );
+    }
+
+    #[test]
+    fn only_manual_workouts_are_projected_for_the_feed() {
+        let mut manual = workout_row(
+            "2026-07-21T14:39:04",
+            "2026-07-21 14:39:04",
+            "2026-07-21 10:39:04",
+            -240,
+        );
+        manual.source = "manual".into();
+        let csv = workout_row(
+            "2026-07-20T14:00:00",
+            "2026-07-20 14:00:00",
+            "2026-07-20 10:00:00",
+            -240,
+        );
+        let sets = vec![
+            set_row(
+                "2026-07-21T14:39:04",
+                1,
+                "Incline Bench Press",
+                Some(135_000),
+                Some(6),
+            ),
+            set_row(
+                "2026-07-20T14:00:00",
+                1,
+                "Squat (Barbell)",
+                Some(225_000),
+                Some(5),
+            ),
+        ];
+        let snap = build(8, vec![csv, manual], sets, Vec::new()).unwrap();
+
+        let published = snap.published_workouts();
+        assert_eq!(published.len(), 1, "CSV history stays out of the feed");
+        assert_eq!(published[0].workout.id, "fitness:2026-07-21T14:39:04");
+        assert_eq!(published[0].workout.sets.len(), 1);
+        assert_eq!(published[0].date, "2026-07-21");
+        assert_eq!(
+            published[0].start_time,
+            eastern::utc_timestamp("2026-07-21 14:39:04")
+                .unwrap()
+                .as_second()
         );
     }
 

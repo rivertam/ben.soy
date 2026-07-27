@@ -24,12 +24,11 @@ use benjisponge::data::Data;
 use self::{
     dashboard::{Cohort, Day, Window},
     guard::{AnalyticsGuard, WriteKind},
-    input::{
-        EventPayload, current_page_matches, is_canonical_v4_uuid, is_same_origin,
-        tracking_opted_out,
-    },
+    input::{EventPayload, current_page_matches, is_canonical_v4_uuid, tracking_opted_out},
 };
 use crate::components::{page_head, rail_section, shell};
+
+pub(super) use self::input::is_same_origin;
 
 const EVENT_BODY_LIMIT: usize = 4 * 1024;
 const IDENTITY_BODY_LIMIT: usize = 2 * 1024;

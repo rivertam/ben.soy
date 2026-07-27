@@ -34,6 +34,21 @@ impl std::fmt::Display for InvalidTimestamp {
 
 impl std::error::Error for InvalidTimestamp {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvalidEasternTimestamp(pub String);
+
+impl std::fmt::Display for InvalidEasternTimestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid or ambiguous America/New_York timestamp: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for InvalidEasternTimestamp {}
+
 fn eastern_tz() -> &'static TimeZone {
     static TZ: OnceLock<TimeZone> = OnceLock::new();
     TZ.get_or_init(|| TimeZone::get("America/New_York").expect("bundled tzdb has America/New_York"))
@@ -50,6 +65,25 @@ pub fn utc_timestamp(utc: &str) -> Result<Timestamp, InvalidTimestamp> {
         .to_zoned(TimeZone::UTC)
         .map(|zoned| zoned.timestamp())
         .map_err(|_| InvalidTimestamp(utc.to_string()))
+}
+
+/// Resolve an America/New_York wall clock to its canonical UTC source
+/// string. Lyfta's share text omits an offset, so DST gaps and folds are
+/// rejected instead of silently choosing an instant.
+pub fn eastern_local_to_utc(local: &str) -> Result<String, InvalidEasternTimestamp> {
+    if !is_plain_datetime_shape(local) {
+        return Err(InvalidEasternTimestamp(local.to_string()));
+    }
+    let civil = DateTime::strptime("%Y-%m-%d %H:%M:%S", local)
+        .map_err(|_| InvalidEasternTimestamp(local.to_string()))?;
+    let timestamp = eastern_tz()
+        .to_ambiguous_timestamp(civil)
+        .unambiguous()
+        .map_err(|_| InvalidEasternTimestamp(local.to_string()))?;
+    Ok(timestamp
+        .to_zoned(TimeZone::UTC)
+        .strftime("%Y-%m-%d %H:%M:%S")
+        .to_string())
 }
 
 /// Project a UTC source string (plus optional seconds, for workout ends)
@@ -238,5 +272,23 @@ mod tests {
         assert!(utc_timestamp("2026-02-30 14:39:04").is_err());
         assert!(utc_timestamp("2026-07-21 14:39").is_err());
         assert!(utc_timestamp("2026-07-21 14:39:04 ").is_err());
+    }
+
+    #[test]
+    fn eastern_local_time_resolves_to_utc() {
+        assert_eq!(
+            eastern_local_to_utc("2026-07-24 10:38:00").unwrap(),
+            "2026-07-24 14:38:00"
+        );
+        assert_eq!(
+            eastern_local_to_utc("2026-01-24 10:38:00").unwrap(),
+            "2026-01-24 15:38:00"
+        );
+    }
+
+    #[test]
+    fn eastern_local_time_rejects_dst_gap_and_fold() {
+        assert!(eastern_local_to_utc("2026-03-08 02:30:00").is_err());
+        assert!(eastern_local_to_utc("2026-11-01 01:30:00").is_err());
     }
 }

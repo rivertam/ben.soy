@@ -1,10 +1,9 @@
-# Sign-in and hidden pages
+# Sign-in, hidden pages, and admin controls
 
-Google OIDC login gates hidden pages (currently `/motorcycles`). Identity
-is a 30-day encrypted `__Host-viewer` cookie (`src/app/login.rs`);
-authorization is `src/content/access.rs`, checked on every request — so
-editing an allowlist and deploying grants or revokes access immediately,
-with no sessions to invalidate.
+Google OIDC login gates hidden pages (currently `/motorcycles`) and
+admin-only controls on public pages. Identity is a 30-day encrypted
+`__Host-viewer` cookie (`src/app/login.rs`); authorization is
+`src/content/access.rs`, checked on every request.
 
 ## Allowlisting someone
 
@@ -15,12 +14,18 @@ redeploys) — entries `;`-separated, emails `,`-separated:
 HIDDEN_PAGE_ACCESS=/motorcycles:alice@gmail.com,bob@gmail.com;/garage:carol@example.com
 ```
 
-Allowlists are env-only, NEVER committed: the repo is public, so a grant
-in `src/content/access.rs` would publish a friend's email to git history
-forever. `ADMIN_EMAIL` (already public as the commit author email) sees
-every hidden page without being listed. The login callback refuses to
-mint a cookie for emails appearing nowhere, so strangers who find
-`/login` end up holding nothing.
+Allowlists are env-only, NEVER committed: the repo is public, so a
+friend's grant in `src/content/access.rs` would publish their email to git
+history forever. `ADMIN_EMAIL` is the deliberately committed, app-wide
+administrator and sees every hidden page without being listed. The login
+callback refuses to mint a cookie for emails appearing nowhere, so
+strangers who find `/login` end up holding nothing.
+
+`HIDDEN_PAGE_ACCESS` grants access only to the named hidden page. It never
+grants admin capabilities. For example, `/lifting` renders its "upload lift"
+dialog only when the signed-in email matches `ADMIN_EMAIL`, and
+`POST /lifting/upload` independently repeats that exact check before reading
+the request body.
 
 ## Adding a hidden page
 
@@ -52,6 +57,9 @@ Invariants:
   absence in the document — though not in headers: the denial 404 is
   `no-store` while real 404s ride the cacheable shell default. Cache-safety
   wins that tradeoff; don't "fix" it by making the denial cacheable.
+- Browser POST routes repeat their authorization checks; a hidden form or
+  control is not an authorization boundary. They also require positive
+  same-origin evidence and bound the body before parsing it.
 
 ## Signed-in rendering and the CDN
 
@@ -100,8 +108,8 @@ after the eligible-for-cache rule (later cache rules win).
   the "log everyone out now" lever.
 - `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` — unset:
   `/login` reports sign-in unconfigured; hidden pages still 404/redirect.
-- `HIDDEN_PAGE_ACCESS` — the allowlists (format above). Unset: hidden
-  pages are admin-only.
+- `HIDDEN_PAGE_ACCESS` — the hidden-page allowlists (format above). Unset:
+  hidden pages are admin-only. It does not grant admin-only controls.
 - `SITE_ORIGIN` — already set in prod; the callback redirect URI is
   `$SITE_ORIGIN/auth/google/callback`.
 

@@ -23,6 +23,7 @@ pub(crate) mod db;
 pub(crate) mod eastern;
 pub(crate) mod filters;
 pub(crate) mod import;
+pub(crate) mod manual;
 pub(crate) mod records;
 pub(crate) mod routes;
 pub(crate) mod scoring;
