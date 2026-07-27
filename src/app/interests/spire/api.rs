@@ -54,6 +54,7 @@ fn internal_error(path: &str, error: impl std::fmt::Display) -> ApiResponse {
 #[derive(Serialize)]
 struct ApiRun {
     id: String,
+    game: String,
     date: String,
     start_time: i64,
     character: String,
@@ -74,6 +75,7 @@ impl From<SpireRun> for ApiRun {
     fn from(row: SpireRun) -> Self {
         ApiRun {
             id: row.id,
+            game: row.game,
             date: row.date,
             start_time: row.start_time,
             character: row.character,

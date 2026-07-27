@@ -85,6 +85,18 @@ This project deliberately starts clean; there is no legacy import or
 compatibility step. Upgrade the pinned database image deliberately and take a
 volume backup first.
 
+`just sync-spire` discovers both games on Linux: Slay the Spire 1 below the
+Steam install's `SlayTheSpire/runs` character directories, and Slay the Spire
+2 below its local and Steam Cloud history directories. `--history-dir <path>`
+adds another root and detects the game from each `.run` file. Run identity is
+`game:id`; old database rows without a game discriminator are read as StS2,
+so applying the current schema upgrades an existing production database
+without a data rewrite. Deploy the game-aware web service before running the
+matching sync client; the client rejects a legacy unscoped IDs response.
+Slay the Spire 1 does not put aggregate profile totals in the run log and
+those totals cannot recreate individual entries; when an installation has no
+`runs*` directory, the sync command reports that explicitly.
+
 ## Cloudflare edge
 
 Proxied CNAMEs for the apex, `www`, and `railway` point to

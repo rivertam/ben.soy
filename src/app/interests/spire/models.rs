@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
-/// A Slay the Spire 2 run, minus the original `.run` payload.
+/// A Slay the Spire run, minus the original `.run` payload.
 ///
 /// `raw` deliberately lives in [`SpireRunRaw`]: dragging ~100 KB of JSON per
 /// run into every list read would swamp the container. Splitting the table
@@ -15,6 +15,7 @@ use surrealdb::types::SurrealValue;
 #[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct SpireRun {
     pub id: String,
+    pub game: String,
     pub date: String,
     pub start_time: i64,
     pub character: String,
@@ -37,6 +38,7 @@ pub struct SpireRun {
 #[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct SpireRunRaw {
     pub id: String,
+    pub game: String,
     pub raw: String,
 }
 

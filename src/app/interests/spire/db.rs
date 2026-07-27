@@ -8,7 +8,9 @@
 
 use std::collections::HashSet;
 
+use serde::Deserialize;
 use serde_json::Value;
+use surrealdb::types::SurrealValue;
 
 use benjisponge::data::{
     Db,
@@ -21,7 +23,8 @@ pub const MAX_RUNS_PER_CHUNK: usize = 50;
 pub async fn list_runs(db: &Db) -> surrealdb::Result<Vec<SpireRun>> {
     let mut response = db
         .query(
-            "SELECT *, record::id(id) AS id
+            "SELECT *, game ?? 'sts2' AS game,
+                       run_id ?? record::id(id) AS id
              FROM spire_runs
              ORDER BY start_time DESC",
         )
@@ -33,11 +36,29 @@ pub async fn list_runs(db: &Db) -> surrealdb::Result<Vec<SpireRun>> {
 /// Stored run ids. Deliberately unordered, like `SELECT id FROM spire_runs`;
 /// the sync CLI treats the result as a set.
 pub async fn list_ids(db: &Db) -> surrealdb::Result<Vec<String>> {
+    #[derive(Deserialize, SurrealValue)]
+    struct StoredIdentity {
+        storage_id: String,
+        game: Option<String>,
+        run_id: Option<String>,
+    }
+
     let mut response = db
-        .query("SELECT VALUE record::id(id) FROM spire_runs")
+        .query(
+            "SELECT record::id(id) AS storage_id, game, run_id
+             FROM spire_runs",
+        )
         .await?
         .check()?;
-    response.take(0)
+    let identities: Vec<StoredIdentity> = response.take(0)?;
+    Ok(identities
+        .into_iter()
+        .map(|row| {
+            let game = row.game.unwrap_or_else(|| "sts2".to_string());
+            let run_id = row.run_id.unwrap_or(row.storage_id);
+            format!("{game}:{run_id}")
+        })
+        .collect())
 }
 
 /// The data version; 0 when the row does not exist yet.
@@ -54,6 +75,7 @@ pub async fn current_version(db: &Db) -> surrealdb::Result<i64> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncomingRun {
     pub id: String,
+    pub game: String,
     pub date: String,
     pub start_time: i64,
     pub character: String,
@@ -93,6 +115,11 @@ fn parse_run(value: &Value) -> Result<IncomingRun, String> {
     let id = match run.get("id").and_then(Value::as_str) {
         Some(id) if (1..=12).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit()) => id,
         _ => return Err("bad id".to_string()),
+    };
+    let game = match run.get("game") {
+        None => "sts2",
+        Some(Value::String(game)) if matches!(game.as_str(), "sts1" | "sts2") => game,
+        _ => return Err(format!("bad game on run {id}")),
     };
 
     let date = run.get("date").and_then(Value::as_str);
@@ -139,6 +166,7 @@ fn parse_run(value: &Value) -> Result<IncomingRun, String> {
 
     Ok(IncomingRun {
         id: id.to_string(),
+        game: game.to_string(),
         date: date.to_string(),
         start_time,
         character,
@@ -218,23 +246,11 @@ pub async fn insert_runs(
     incoming: &[IncomingRun],
     added_at_epoch: i64,
 ) -> surrealdb::Result<ImportOutcome> {
-    let ids: Vec<String> = incoming.iter().map(|run| run.id.clone()).collect();
-    let existing: HashSet<String> = {
-        let mut response = db
-            .query(
-                "SELECT VALUE record::id(id)
-                 FROM spire_runs
-                 WHERE record::id(id) IN $ids",
-            )
-            .bind(("ids", ids))
-            .await?
-            .check()?;
-        response.take::<Vec<String>>(0)?.into_iter().collect()
-    };
+    let existing: HashSet<String> = list_ids(db).await?.into_iter().collect();
 
     let candidates: Vec<&IncomingRun> = incoming
         .iter()
-        .filter(|run| !existing.contains(&run.id))
+        .filter(|run| !existing.contains(&format!("{}:{}", run.game, run.id)))
         .collect();
     let added = candidates.len();
 
@@ -243,6 +259,7 @@ pub async fn insert_runs(
             .iter()
             .map(|run| SpireRun {
                 id: run.id.clone(),
+                game: run.game.clone(),
                 date: run.date.clone(),
                 start_time: run.start_time,
                 character: run.character.clone(),
@@ -264,6 +281,7 @@ pub async fn insert_runs(
             .iter()
             .map(|run| SpireRunRaw {
                 id: run.id.clone(),
+                game: run.game.clone(),
                 raw: run.raw.clone(),
             })
             .collect();
@@ -271,8 +289,10 @@ pub async fn insert_runs(
         db.query(
             "BEGIN TRANSACTION;
              FOR $run IN $runs {
-                 CREATE ONLY type::record('spire_runs', $run.id)
-                     SET date = $run.date,
+                 CREATE ONLY type::record('spire_runs', $run.game + ':' + $run.id)
+                     SET game = $run.game,
+                         run_id = $run.id,
+                         date = $run.date,
                          start_time = $run.start_time,
                          character = $run.character,
                          win = $run.win,
@@ -289,8 +309,10 @@ pub async fn insert_runs(
                          added_at = $run.added_at;
              };
              FOR $raw IN $raws {
-                 CREATE ONLY type::record('spire_run_raws', $raw.id)
-                     SET raw = $raw.raw;
+                 CREATE ONLY type::record('spire_run_raws', $raw.game + ':' + $raw.id)
+                     SET game = $raw.game,
+                         run_id = $raw.id,
+                         raw = $raw.raw;
              };
              UPSERT spire_meta:version
                  SET k = 'version',
@@ -346,7 +368,22 @@ mod tests {
         let parsed = parse_payload(&payload(vec![valid_run()])).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].id, "1753210000");
+        assert_eq!(parsed[0].game, "sts2");
         assert_eq!(parsed[0].killed_by, None);
+    }
+
+    #[test]
+    fn accepts_both_games_and_rejects_unknown_discriminators() {
+        let mut sts1 = valid_run();
+        sts1["game"] = Value::from("sts1");
+        assert_eq!(parse_payload(&payload(vec![sts1])).unwrap()[0].game, "sts1");
+
+        let mut unknown = valid_run();
+        unknown["game"] = Value::from("sts3");
+        assert_eq!(
+            parse_payload(&payload(vec![unknown])).unwrap_err(),
+            "bad game on run 1753210000"
+        );
     }
 
     #[test]

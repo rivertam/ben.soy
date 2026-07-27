@@ -44,7 +44,11 @@ Use the shared client and check both transport and statement results:
 
 ```rust
 let mut response = db
-    .query("SELECT *, record::id(id) AS id FROM spire_runs")
+    .query(
+        "SELECT *, game ?? 'sts2' AS game,
+                   run_id ?? record::id(id) AS id
+         FROM spire_runs",
+    )
     .await?
     .check()?;
 let rows: Vec<SpireRun> = response.take(0)?;

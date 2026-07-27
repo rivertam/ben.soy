@@ -87,7 +87,7 @@ struct Chip {
     active: bool,
 }
 
-/// One timeline item: a curated logbook entry, a Slay the Spire 2 victory
+/// One timeline item: a curated logbook entry, a Slay the Spire victory
 /// (wins only — deaths stay on `/spire`), or a manually published lift.
 enum Item<'a> {
     Log {
@@ -433,7 +433,8 @@ async fn home(cx: &Cx) -> Result {
                             <span class="text-patina">"win ·"</span>
                             " "
                             (format!(
-                                "{}, Ascension {} — {} floors in {}.",
+                                "{} · {}, Ascension {} — {} floors in {}.",
+                                run.game_label(),
                                 run.character,
                                 run.ascension,
                                 run.floors,

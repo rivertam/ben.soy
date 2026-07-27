@@ -1,6 +1,6 @@
 //! RSS 2.0 feed at `/feed.xml`, generated from the logbook registry — every
 //! entry, long or short, becomes an `<item>`, so publishing to the log
-//! publishes to the feed. Slay the Spire 2 victories (and only victories —
+//! publishes to the feed. Slay the Spire victories (and only victories —
 //! deaths stay on `/spire`) join the feed at render time from the synced run
 //! database, as do workouts explicitly published through the authenticated
 //! manual-entry path (same set the homepage timeline shows). Not a page: it
@@ -128,18 +128,25 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
             curated: false,
             start_time: run.start_time,
             title: format!(
-                "[spire] win — {}, Ascension {}",
-                run.character, run.ascension
+                "[spire] {} win — {}, Ascension {}",
+                run.game_label(),
+                run.character,
+                run.ascension
             ),
             link: format!("{origin}/spire"),
             description: format!(
-                "{} victory at Ascension {} — {} floors in {}.",
+                "{} · {} victory at Ascension {} — {} floors in {}.",
+                run.game_label(),
                 run.character,
                 run.ascension,
                 run.floors,
                 fmt_duration(run.run_time)
             ),
-            guid: format!("{origin}/spire/run/{}", run.id),
+            guid: if run.game == "sts1" {
+                format!("{origin}/spire/run/sts1/{}", run.id)
+            } else {
+                format!("{origin}/spire/run/{}", run.id)
+            },
         });
     }
 
@@ -333,6 +340,7 @@ mod tests {
     fn run(id: &str, date: &str, win: bool) -> Run {
         Run {
             id: id.to_string(),
+            game: "sts2".to_string(),
             date: date.to_string(),
             start_time: id.parse().unwrap(),
             character: "Necrobinder & <Friends>".to_string(),
@@ -578,6 +586,16 @@ mod tests {
         deduped.sort_unstable();
         deduped.dedup();
         assert_eq!(deduped.len(), guids.len(), "duplicate guid");
+    }
+
+    #[test]
+    fn same_timestamp_in_both_games_has_distinct_guids() {
+        let sts2 = run("1784587453", "2026-07-20", true);
+        let mut sts1 = sts2.clone();
+        sts1.game = "sts1".to_string();
+        let xml = rss_xml(ORIGIN, &[sts1, sts2], &[]);
+        assert!(xml.contains(&format!("{ORIGIN}/spire/run/sts1/1784587453")));
+        assert!(xml.contains(&format!("{ORIGIN}/spire/run/1784587453")));
     }
 
     #[test]

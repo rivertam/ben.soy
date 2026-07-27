@@ -112,6 +112,7 @@ async fn spire(cx: &Cx) -> Result {
                             <thead>
                                 <tr class="text-left text-muted">
                                     <th class="pb-2 pr-4 font-normal">"date"</th>
+                                    <th class="pb-2 pr-4 font-normal">"game"</th>
                                     <th class="pb-2 pr-4 font-normal">"character"</th>
                                     <th class="pb-2 pr-4 font-normal">"result"</th>
                                     <th class="pb-2 pr-4 text-right font-normal">"asc"</th>
@@ -124,6 +125,9 @@ async fn spire(cx: &Cx) -> Result {
                                     <tr class="border-t border-hairline">
                                         <td class="py-1.5 pr-4 whitespace-nowrap text-muted">
                                             (run.date.as_str())
+                                        </td>
+                                        <td class="py-1.5 pr-4 whitespace-nowrap text-muted">
+                                            (run.game_label())
                                         </td>
                                         <td class="py-1.5 pr-4 whitespace-nowrap">
                                             (run.character.as_str())

@@ -3,6 +3,10 @@
 
 DEFINE TABLE OVERWRITE spire_runs SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON spire_runs TYPE string;
+-- `game`/`run_id` are optional only so rows written before multi-game support
+-- remain readable. Reads project missing values as sts2 / record::id(id).
+DEFINE FIELD OVERWRITE game ON spire_runs TYPE option<string>;
+DEFINE FIELD OVERWRITE run_id ON spire_runs TYPE option<string>;
 DEFINE FIELD OVERWRITE date ON spire_runs TYPE string;
 DEFINE FIELD OVERWRITE start_time ON spire_runs TYPE int;
 DEFINE FIELD OVERWRITE character ON spire_runs TYPE string;
@@ -22,6 +26,8 @@ DEFINE INDEX OVERWRITE spire_runs_start_time ON spire_runs FIELDS start_time;
 
 DEFINE TABLE OVERWRITE spire_run_raws SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON spire_run_raws TYPE string;
+DEFINE FIELD OVERWRITE game ON spire_run_raws TYPE option<string>;
+DEFINE FIELD OVERWRITE run_id ON spire_run_raws TYPE option<string>;
 DEFINE FIELD OVERWRITE raw ON spire_run_raws TYPE string;
 
 DEFINE TABLE OVERWRITE spire_meta SCHEMAFULL PERMISSIONS NONE;

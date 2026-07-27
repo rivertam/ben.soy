@@ -1,4 +1,4 @@
-//! The Slay the Spire 2 run log, queried in-process from SurrealDB.
+//! The Slay the Spire run log, queried in-process from SurrealDB.
 //! The sync CLI (`src/bin/spire_sync.rs`) is the write path via
 //! `POST /api/spire/runs` and does all the prettifying, so a [`Run`] arrives
 //! display-ready. Results are cached in-process for a minute; a failed query
@@ -17,6 +17,8 @@ use benjisponge::data::{Data, spire_models::SpireRun};
 pub struct Run {
     /// The run file's stem — also its `start_time`, as a string.
     pub id: String,
+    /// Stable wire discriminator: `sts1` or `sts2`.
+    pub game: String,
     /// `YYYY-MM-DD`, US Eastern, stamped by the sync CLI.
     pub date: String,
     /// Epoch seconds; the log's sort key.
@@ -38,6 +40,14 @@ pub struct Run {
 }
 
 impl Run {
+    pub fn game_label(&self) -> &'static str {
+        if self.game == "sts1" {
+            "StS 1"
+        } else {
+            "StS 2"
+        }
+    }
+
     /// The run-log table's result cell: "won", "died to X", "abandoned".
     pub fn result_label(&self) -> String {
         if self.win {
@@ -134,6 +144,7 @@ fn from_rows(rows: Vec<SpireRun>) -> Vec<Run> {
         })
         .map(|row| Run {
             id: row.id,
+            game: row.game,
             date: row.date,
             start_time: row.start_time,
             character: row.character,
@@ -167,6 +178,7 @@ mod tests {
     fn row(id: &str, date: &str, start_time: i64, win: bool) -> SpireRun {
         SpireRun {
             id: id.to_string(),
+            game: "sts2".to_string(),
             date: date.to_string(),
             start_time,
             character: if win { "Necrobinder" } else { "Silent" }.to_string(),

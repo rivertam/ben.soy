@@ -41,6 +41,8 @@ must diff clean, byte-for-byte where possible**:
 4. **Spire re-derived fields** — if prod spire data is replayed through
    `spire_sync` from dumped `raw` files, fields the CLI derives (e.g.
    `date`) reflect today's CLI code; `added_at` is not served by the API.
+   The multi-game API also adds `game` to each run and scopes `/api/spire/ids`
+   entries as `game:id`; frozen Worker fixtures predate both additions.
 5. **Volatile headers** — `date`, `cf-ray`, `server`, `alt-svc`, timing
    headers. Contract headers that must MATCH: `content-type`,
    `cache-control: no-store`, `access-control-allow-origin: *` on public

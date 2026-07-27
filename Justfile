@@ -42,7 +42,7 @@ deploy:
       -d '{"purge_everything":true}' \
       | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["success"], r'
 
-# Upload new Slay the Spire 2 runs to the site's database (see --help)
+# Upload new Slay the Spire 1 and 2 runs to the site's database (see --help)
 sync-spire *args:
     cargo run --bin spire_sync -- {{args}}
 

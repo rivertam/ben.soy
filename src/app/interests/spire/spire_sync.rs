@@ -1,9 +1,9 @@
-//! spire_sync — upload Slay the Spire 2 run history to benjisponge.com.
+//! spire_sync — upload Slay the Spire 1 and 2 run history to benjisponge.com.
 //!
-//! Reads every `<epoch>.run` file the game (or Steam Cloud) has on this
+//! Reads every `<epoch>.run` file either game (or Steam Cloud) has on this
 //! machine, asks the site which run ids it already has, and POSTs only the
 //! missing ones. Idempotent by construction: the id is the run file's stem,
-//! the server INSERT OR IGNOREs, and re-running is always safe. Designed to
+//! the server skips stored game/id pairs, and re-running is always safe. Designed to
 //! be driven by a human, a cron job, or an LLM agent — see `--help`.
 
 use std::collections::{BTreeMap, HashSet};
@@ -15,11 +15,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const DEFAULT_API: &str = "https://benjisponge.com";
-const STEAM_APP_ID: &str = "2868840";
+const STS2_STEAM_APP_ID: &str = "2868840";
 const CHUNK: usize = 20;
 
 const USAGE: &str = "\
-spire_sync — sync Slay the Spire 2 runs to the benjisponge.com run database
+spire_sync — sync Slay the Spire 1 and 2 runs to benjisponge.com
 
 USAGE
   just sync-spire [FLAGS]            (or: cargo run --bin spire_sync -- [FLAGS])
@@ -28,20 +28,22 @@ FLAGS
   --dry-run             scan and diff, but upload nothing
   --json                machine-readable summary on stdout (for agents)
   --api <origin>        API origin (default: https://benjisponge.com)
-  --history-dir <path>  extra runs directory; repeatable. Defaults to the
-                        game dir (~/.local/share/SlayTheSpire2/steam/*/
-                        profile*/saves/history) plus the Steam Cloud mirror
-                        (~/.local/share/Steam/userdata/*/2868840/remote/...)
+  --history-dir <path>  extra run-history root; repeatable. Its files are
+                        identified as StS 1 or 2 from their JSON shape.
+                        Defaults cover both games' standard Linux paths.
   --token <token>       write token; otherwise $SPIRE_SYNC_TOKEN, otherwise
                         ~/.config/benjisponge/spire.token
   -h, --help            this text
 
 BEHAVIOR
-  1. Collect *.run files (JSON) from every history dir; the file stem is the
-     run id. The same id in two dirs is the same run.
+  1. Recursively collect *.run files (JSON) from every history root; the file
+     stem is the run id. Identity is the game plus that id.
   2. GET  <api>/api/spire/ids to learn which ids the database already has.
   3. POST <api>/api/spire/runs (Bearer token) with the missing runs, oldest
      first, in chunks. The server ignores duplicates and reports added counts.
+
+  Deploy the matching server/schema before using this client; legacy APIs are
+  rejected so game identities cannot be silently lost.
 
   A read-only diff (--dry-run) needs no token. Exit codes: 0 success (even
   when there was nothing to upload), 1 failure (unreachable API, bad token,
@@ -54,6 +56,11 @@ struct Args {
     json: bool,
     dirs: Vec<PathBuf>,
     token: Option<String>,
+}
+
+struct HistoryDiscovery {
+    dirs: Vec<PathBuf>,
+    missing_sts1_history: Vec<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -123,26 +130,101 @@ fn profile_history_dirs(parent: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-fn default_history_dirs() -> Vec<PathBuf> {
+fn steam_library_roots(home: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![home.join(".local/share/Steam"), home.join(".steam/steam")];
+    for steam_root in roots.clone() {
+        let manifest = steam_root.join("steamapps/libraryfolders.vdf");
+        let Ok(vdf) = fs::read_to_string(manifest) else {
+            continue;
+        };
+        roots.extend(vdf.lines().filter_map(|line| {
+            let mut quoted = line.split('"');
+            (quoted.nth(1) == Some("path"))
+                .then(|| quoted.nth(1))
+                .flatten()
+                .map(PathBuf::from)
+        }));
+    }
+    let mut seen = HashSet::new();
+    roots.retain(|path| {
+        let identity = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        seen.insert(identity)
+    });
+    roots
+}
+
+fn sts1_history_dirs(install: &Path) -> Vec<PathBuf> {
+    subdirs(install)
+        .into_iter()
+        .filter(|path| {
+            path.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy().to_ascii_lowercase();
+                name.starts_with("runs") || name.starts_with("betaruns")
+            })
+        })
+        .collect()
+}
+
+fn default_history_dirs() -> HistoryDiscovery {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return Vec::new();
+        return HistoryDiscovery {
+            dirs: Vec::new(),
+            missing_sts1_history: Vec::new(),
+        };
     };
     let mut dirs = Vec::new();
+    let mut missing_sts1_history = Vec::new();
+    // StS 1 stores history below the game install rather than Steam userdata.
+    for library in steam_library_roots(&home) {
+        let install = library.join("steamapps/common/SlayTheSpire");
+        if install.is_dir() {
+            let histories = sts1_history_dirs(&install);
+            if histories.is_empty() {
+                missing_sts1_history.push(install);
+            } else {
+                dirs.extend(histories);
+            }
+        }
+    }
     // The game's own data dir wins ties with the cloud mirror (listed first).
     for account in subdirs(&home.join(".local/share/SlayTheSpire2/steam")) {
         profile_history_dirs(&account, &mut dirs);
     }
     for account in subdirs(&home.join(".local/share/Steam/userdata")) {
-        profile_history_dirs(&account.join(STEAM_APP_ID).join("remote"), &mut dirs);
+        profile_history_dirs(&account.join(STS2_STEAM_APP_ID).join("remote"), &mut dirs);
     }
-    dirs
+    let mut seen = HashSet::new();
+    dirs.retain(|path| {
+        let identity = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        seen.insert(identity)
+    });
+    HistoryDiscovery {
+        dirs,
+        missing_sts1_history,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Extraction: one .run file (SerializableRun JSON) → the API's run shape.
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Game {
+    Sts1,
+    Sts2,
+}
+
+impl Game {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Sts1 => "sts1",
+            Self::Sts2 => "sts2",
+        }
+    }
+}
+
 struct SyncRun {
     id: String,
+    game: Game,
     date: String,
     start_time: i64,
     character: String,
@@ -162,6 +244,16 @@ struct SyncRun {
 
 fn extract_run(id: &str, raw: &str) -> Result<SyncRun, String> {
     let v: Value = serde_json::from_str(raw).map_err(|e| format!("bad json: {e}"))?;
+    if v.get("character_chosen").is_some() {
+        extract_sts1_run(id, raw, &v)
+    } else if v.get("players").is_some() {
+        extract_sts2_run(id, raw, &v)
+    } else {
+        Err("unrecognized Slay the Spire run format".to_string())
+    }
+}
+
+fn extract_sts2_run(id: &str, raw: &str, v: &Value) -> Result<SyncRun, String> {
     let start_time = v
         .get("start_time")
         .and_then(Value::as_i64)
@@ -201,6 +293,7 @@ fn extract_run(id: &str, raw: &str) -> Result<SyncRun, String> {
         .unwrap_or(0);
     Ok(SyncRun {
         id: id.to_string(),
+        game: Game::Sts2,
         date: eastern_date(start_time),
         start_time,
         character,
@@ -219,11 +312,92 @@ fn extract_run(id: &str, raw: &str) -> Result<SyncRun, String> {
         killed_by,
         kill_kind,
         run_time: v.get("run_time").and_then(Value::as_u64).unwrap_or(0),
-        seed: str_field(&v, "seed"),
-        game_mode: str_field(&v, "game_mode"),
-        build_id: str_field(&v, "build_id"),
+        seed: str_field(v, "seed"),
+        game_mode: str_field(v, "game_mode"),
+        build_id: str_field(v, "build_id"),
         raw: raw.to_string(),
     })
+}
+
+fn extract_sts1_run(id: &str, raw: &str, v: &Value) -> Result<SyncRun, String> {
+    let start_time = v
+        .get("timestamp")
+        .and_then(Value::as_i64)
+        .ok_or("missing timestamp")?;
+    let character_id = v
+        .get("character_chosen")
+        .and_then(Value::as_str)
+        .ok_or("missing character_chosen")?;
+    let character = pretty_character(character_id.strip_prefix("THE_").unwrap_or(character_id));
+    let win = v.get("victory").and_then(Value::as_bool).unwrap_or(false);
+    let killed_by = v
+        .get("killed_by")
+        .and_then(Value::as_str)
+        .filter(|killer| !killer.is_empty())
+        .map(str::to_string);
+    let abandoned = !win && killed_by.is_none();
+    let floors = v.get("floor_reached").and_then(Value::as_u64).unwrap_or(0);
+    let acts = if floors == 0 {
+        0
+    } else {
+        ((floors - 1) / 17 + 1).min(4)
+    };
+    let kill_kind = killed_by.as_ref().map(|_| {
+        match v
+            .get("path_taken")
+            .and_then(Value::as_array)
+            .and_then(|path| path.iter().rev().find_map(Value::as_str))
+        {
+            Some("BOSS") => "boss",
+            Some("E") => "elite",
+            _ => "monster",
+        }
+        .to_string()
+    });
+    let game_mode = if bool_field(v, "is_daily") {
+        "daily"
+    } else if bool_field(v, "is_trial") {
+        "trial"
+    } else if bool_field(v, "is_endless") {
+        "endless"
+    } else {
+        "standard"
+    };
+
+    Ok(SyncRun {
+        id: id.to_string(),
+        game: Game::Sts1,
+        date: eastern_date(start_time),
+        start_time,
+        character,
+        win,
+        abandoned,
+        ascension: v
+            .get("ascension_level")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        acts,
+        floors,
+        killed_by,
+        kill_kind,
+        run_time: v.get("playtime").and_then(Value::as_u64).unwrap_or(0),
+        seed: scalar_text(v.get("seed_played")),
+        game_mode: game_mode.to_string(),
+        build_id: str_field(v, "build_version"),
+        raw: raw.to_string(),
+    })
+}
+
+fn bool_field(v: &Value, key: &str) -> bool {
+    v.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn scalar_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Number(value)) => value.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn str_field(v: &Value, key: &str) -> String {
@@ -352,6 +526,7 @@ fn resolve_token(cli: Option<String>) -> Option<String> {
 fn to_payload(run: &SyncRun) -> Value {
     json!({
         "id": run.id,
+        "game": run.game.as_str(),
         "date": run.date,
         "start_time": run.start_time,
         "character": run.character,
@@ -368,6 +543,28 @@ fn to_payload(run: &SyncRun) -> Value {
         "build_id": run.build_id,
         "raw": run.raw,
     })
+}
+
+fn collect_run_files(root: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_run_files(&path, files);
+        } else if path.extension().is_some_and(|extension| extension == "run")
+            && path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.chars().all(|c| c.is_ascii_digit()))
+        {
+            files.push(path);
+        }
+    }
 }
 
 async fn fetch_existing_ids(
@@ -389,7 +586,20 @@ async fn fetch_existing_ids(
         .json()
         .await
         .map_err(|e| format!("GET {url}: bad response: {e}"))?;
-    Ok(ids.ids.into_iter().collect())
+    existing_id_set(ids.ids)
+}
+
+fn existing_id_set(ids: Vec<String>) -> Result<HashSet<String>, String> {
+    if let Some(legacy) = ids
+        .iter()
+        .find(|id| !id.starts_with("sts1:") && !id.starts_with("sts2:"))
+    {
+        return Err(format!(
+            "API returned legacy unscoped run id {legacy:?} — deploy the game-aware server \
+             before running this sync"
+        ));
+    }
+    Ok(ids.into_iter().collect())
 }
 
 async fn upload_chunk(
@@ -434,42 +644,48 @@ async fn main() -> ExitCode {
         }
     };
 
-    let dirs = if args.dirs.is_empty() {
+    let discovery = if args.dirs.is_empty() {
         default_history_dirs()
     } else {
-        args.dirs.clone()
+        HistoryDiscovery {
+            dirs: args.dirs.clone(),
+            missing_sts1_history: Vec::new(),
+        }
     };
+    let dirs = discovery.dirs;
+    for install in &discovery.missing_sts1_history {
+        eprintln!(
+            "spire_sync: Slay the Spire 1 is installed at {}, but it has no runs history \
+             directory; aggregate preference stats cannot recreate individual runs",
+            install.display()
+        );
+    }
     if dirs.is_empty() {
         eprintln!(
-            "spire_sync: no run history directories found — is Slay the Spire 2 installed? \
+            "spire_sync: no run history directories found — is Slay the Spire installed? \
              (override with --history-dir)"
         );
         return ExitCode::FAILURE;
     }
 
-    // id → path; first dir listed wins, so the game dir shadows the mirror.
-    let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut paths = Vec::new();
     for dir in &dirs {
-        let Ok(entries) = fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "run")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                && stem.chars().all(|c| c.is_ascii_digit())
-            {
-                files.entry(stem.to_string()).or_insert(path);
-            }
-        }
+        collect_run_files(dir, &mut paths);
     }
 
-    let mut runs: Vec<SyncRun> = Vec::new();
+    // game:id → run; the first configured root wins duplicate mirrors.
+    let mut runs: BTreeMap<String, SyncRun> = BTreeMap::new();
     let mut parse_failures: Vec<(PathBuf, String)> = Vec::new();
-    for (id, path) in &files {
+    for path in &paths {
+        let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
         match fs::read_to_string(path) {
             Ok(raw) => match extract_run(id, &raw) {
-                Ok(run) => runs.push(run),
+                Ok(run) => {
+                    let key = format!("{}:{}", run.game.as_str(), run.id);
+                    runs.entry(key).or_insert(run);
+                }
                 Err(err) => parse_failures.push((path.clone(), err)),
             },
             Err(err) => parse_failures.push((path.clone(), err.to_string())),
@@ -493,7 +709,10 @@ async fn main() -> ExitCode {
         }
     };
 
-    let mut new_runs: Vec<&SyncRun> = runs.iter().filter(|r| !existing.contains(&r.id)).collect();
+    let mut new_runs: Vec<&SyncRun> = runs
+        .iter()
+        .filter_map(|(key, run)| (!existing.contains(key)).then_some(run))
+        .collect();
     new_runs.sort_by_key(|r| r.start_time); // oldest first
 
     let mut uploaded = 0u64;
@@ -535,7 +754,11 @@ async fn main() -> ExitCode {
             json!({
                 "api": args.api,
                 "dirs": dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>(),
-                "scanned": files.len(),
+                "missing_sts1_history": discovery.missing_sts1_history.iter()
+                    .map(|path| path.display().to_string()).collect::<Vec<_>>(),
+                "scanned": runs.len(),
+                "scanned_sts1": runs.values().filter(|run| run.game == Game::Sts1).count(),
+                "scanned_sts2": runs.values().filter(|run| run.game == Game::Sts2).count(),
                 "parse_failures": parse_failures.len(),
                 "already_synced": existing.len(),
                 "new": new_runs.len(),
@@ -546,8 +769,10 @@ async fn main() -> ExitCode {
         );
     } else {
         println!(
-            "scanned {} runs in {} dir(s); {} already in the database",
-            files.len(),
+            "scanned {} runs ({} StS 1, {} StS 2) in {} dir(s); {} already in the database",
+            runs.len(),
+            runs.values().filter(|run| run.game == Game::Sts1).count(),
+            runs.values().filter(|run| run.game == Game::Sts2).count(),
             dirs.len(),
             existing.len()
         );
@@ -555,8 +780,12 @@ async fn main() -> ExitCode {
             println!("dry run: {} run(s) would upload", new_runs.len());
             for run in new_runs.iter().take(10) {
                 println!(
-                    "  {} {} {} (asc {})",
-                    run.id, run.date, run.character, run.ascension
+                    "  {}:{} {} {} (asc {})",
+                    run.game.as_str(),
+                    run.id,
+                    run.date,
+                    run.character,
+                    run.ascension
                 );
             }
             if new_runs.len() > 10 {
@@ -590,6 +819,7 @@ mod tests {
     fn extracts_a_death() {
         let run = extract_run("1772889032", DEATH).unwrap();
         assert_eq!(run.id, "1772889032");
+        assert_eq!(run.game, Game::Sts2);
         assert_eq!(run.character, "Necrobinder");
         assert!(!run.win);
         assert_eq!(run.ascension, 2);
@@ -598,6 +828,64 @@ mod tests {
         assert_eq!(run.killed_by.as_deref(), Some("Knowledge Demon"));
         assert_eq!(run.kill_kind.as_deref(), Some("boss"));
         assert_eq!(run.raw, DEATH);
+    }
+
+    #[test]
+    fn extracts_an_sts1_run() {
+        let raw = r#"{
+            "timestamp": 1534999722,
+            "local_time": "20180823004842",
+            "character_chosen": "THE_SILENT",
+            "victory": false,
+            "ascension_level": 17,
+            "floor_reached": 28,
+            "killed_by": "Book of Stabbing",
+            "path_taken": ["M", "BOSS", "M", "E"],
+            "playtime": 1710,
+            "seed_played": "-693890031029414182",
+            "is_daily": false,
+            "is_trial": false,
+            "is_endless": false,
+            "build_version": "2018-08-16"
+        }"#;
+        let run = extract_run("1534999722", raw).unwrap();
+        assert_eq!(run.game, Game::Sts1);
+        assert_eq!(run.character, "Silent");
+        assert_eq!(run.date, "2018-08-23");
+        assert_eq!(run.acts, 2);
+        assert_eq!(run.floors, 28);
+        assert_eq!(run.killed_by.as_deref(), Some("Book of Stabbing"));
+        assert_eq!(run.kill_kind.as_deref(), Some("elite"));
+        assert_eq!(run.seed, "-693890031029414182");
+        assert!(!run.abandoned);
+    }
+
+    #[test]
+    fn treats_an_sts1_loss_without_a_killer_as_abandoned() {
+        let raw = r#"{
+            "timestamp": 1707684719,
+            "character_chosen": "IRONCLAD",
+            "victory": false,
+            "floor_reached": 7
+        }"#;
+        let run = extract_run("1707684719", raw).unwrap();
+        assert!(run.abandoned);
+        assert_eq!(run.killed_by, None);
+    }
+
+    #[test]
+    fn rejects_legacy_unscoped_server_ids() {
+        let error = existing_id_set(vec!["1772889032".to_string()]).unwrap_err();
+        assert!(error.contains("deploy the game-aware server"));
+        assert_eq!(
+            existing_id_set(vec![
+                "sts1:1534999722".to_string(),
+                "sts2:1772889032".to_string(),
+            ])
+            .unwrap()
+            .len(),
+            2
+        );
     }
 
     #[test]
