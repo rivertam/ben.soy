@@ -1,8 +1,8 @@
 //! podrick — the Discord bot for a server I'm in.
 //!
-//! Job 1 (here): announce a lift in a channel when one is published on
-//! benjisponge.com. Job 2 (later): manage database records in response to
-//! posts in another channel, seeded from that channel's history.
+//! Job 1 announces a lift when one is published on benjisponge.com. Job 2
+//! syncs and responds to Pants Off messages, seeded silently from the source
+//! channel's complete history.
 //!
 //! Runs as its own Railway service from the same image as the site
 //! (`docs/podrick.md`). It reads the site's public API for message content and
@@ -18,6 +18,7 @@ use benjisponge::data::Data;
 mod announce;
 mod db;
 mod discord;
+mod pants;
 
 // The permanent-path format is a public URL contract shared with /lifting and
 // the diary. Podrick reuses the implementation rather than restating it; it
@@ -28,11 +29,14 @@ mod eastern;
 
 use announce::{Announcer, TickReport};
 use discord::Discord;
+use pants::{PantsTickReport, PantsWorker};
 
 const DEFAULT_API: &str = "https://benjisponge.com";
 const DEFAULT_INTERVAL_SECONDS: u64 = 60;
 const TOKEN_VAR: &str = "DISCORD_BOT_TOKEN";
 const LIFT_CHANNEL_VAR: &str = "PODRICK_LIFT_CHANNEL_ID";
+const PANTS_CHANNEL_VAR: &str = "PODRICK_PANTS_CHANNEL_ID";
+const INFARCTIONS_CHANNEL_VAR: &str = "PODRICK_INFARCTIONS_CHANNEL_ID";
 
 const USAGE: &str = "\
 podrick — Discord bot for benjisponge.com
@@ -41,12 +45,12 @@ USAGE
   podrick <COMMAND> [FLAGS]        (or: cargo run --bin podrick -- <COMMAND>)
 
 COMMANDS
-  run                   poll forever, announcing new lifts (the deployed mode)
+  run                   poll forever (the deployed mode)
   once                  run a single pass and exit
 
 FLAGS
-  --dry-run             read-only: render messages to stdout, post nothing,
-                        write nothing. Needs no token.
+  --dry-run             read-only: preview work, post/react/write nothing.
+                        Pants history reads still need a token.
   --interval <seconds>  poll interval for `run` (default: 60, minimum: 5)
   --api <origin>        site API origin (default: https://benjisponge.com)
   --token <token>       bot token; otherwise $DISCORD_BOT_TOKEN, otherwise
@@ -55,7 +59,10 @@ FLAGS
 
 ENVIRONMENT
   DISCORD_BOT_TOKEN         bot token from the Discord developer portal
-  PODRICK_LIFT_CHANNEL_ID   channel id for lift announcements
+  PODRICK_LIFT_CHANNEL_ID   optional lift-announcement channel
+  PODRICK_PANTS_CHANNEL_ID  optional Pants Off source channel
+  PODRICK_INFARCTIONS_CHANNEL_ID
+                            infarction output; required with Pants source
   SURREALDB_*               the same five connection variables the site uses
 
 BEHAVIOR
@@ -65,8 +72,16 @@ BEHAVIOR
   the order they happened.
 
   Each announcement is claimed create-only by workout id before it is posted,
-  so a crash, a redeploy mid-post, or two workers cannot produce a duplicate.
-  A claim whose post never confirmed is retried on the next pass.
+  so competing first claims converge. A claim whose post never confirmed is
+  retried on the next pass; keep the deployed worker at one replica because
+  retries are not leased between workers.
+
+  Pants Off's first run walks the source channel's complete history into the
+  database without reacting or reporting historical infarctions. Live messages
+  are classified in America/New_York: 6:07 AM/PM claims a slot; another
+  HH:07 is out of town; any other minute is an infarction. Worm reactions and
+  infarction posts are claimed before Discord is called and retried until
+  confirmed.
 
   Exit codes: 0 success, 1 failure (unreachable database, rejected token,
   missing channel permission), 2 usage error.
@@ -161,11 +176,14 @@ fn resolve_token(flag: Option<String>) -> Result<String, String> {
 }
 
 fn required_env(variable: &str) -> Result<String, String> {
+    optional_env(variable).ok_or_else(|| format!("{variable} is not set"))
+}
+
+fn optional_env(variable: &str) -> Option<String> {
     std::env::var(variable)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{variable} is not set"))
 }
 
 fn now_seconds() -> i64 {
@@ -185,8 +203,28 @@ fn log(event: &str, fields: serde_json::Value) {
     println!("{entry}");
 }
 
-fn log_report(report: &TickReport, dry_run: bool) {
-    if let Some(watermark) = &report.seeded_watermark {
+#[derive(Default)]
+struct PassReport {
+    announcements: TickReport,
+    pants: PantsTickReport,
+}
+
+impl PassReport {
+    fn is_quiet(&self) -> bool {
+        self.announcements.is_quiet() && self.pants.is_quiet()
+    }
+
+    fn retry_after(&self) -> Option<Duration> {
+        match (self.announcements.retry_after, self.pants.retry_after) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (Some(after), None) | (None, Some(after)) => Some(after),
+            (None, None) => None,
+        }
+    }
+}
+
+fn log_report(report: &PassReport, dry_run: bool) {
+    if let Some(watermark) = &report.announcements.seeded_watermark {
         log(
             "watermark-seeded",
             serde_json::json!({
@@ -205,18 +243,75 @@ fn log_report(report: &TickReport, dry_run: bool) {
             }),
         );
     }
-    for id in &report.announced {
+    for id in &report.announcements.announced {
         log("announced", serde_json::json!({ "workout": id }));
     }
-    for id in &report.retried {
+    for id in &report.announcements.retried {
         log(
             "announced-after-retry",
             serde_json::json!({ "workout": id }),
         );
     }
-    for failure in &report.failed {
+    for failure in &report.announcements.failed {
         log(
             "announce-failed",
+            serde_json::json!({ "detail": failure, "note": "will retry next pass" }),
+        );
+    }
+    if report.pants.history_scanned > 0 {
+        log(
+            "pants-history",
+            serde_json::json!({
+                "messages_scanned": report.pants.history_scanned,
+                "participant_messages": report.pants.history_stored,
+                "complete": report.pants.history_complete,
+                "written": !dry_run,
+            }),
+        );
+    } else if report.pants.history_complete {
+        log(
+            "pants-history-complete",
+            serde_json::json!({ "written": !dry_run }),
+        );
+    }
+    if report.pants.live_stored > 0 {
+        log(
+            "pants-synced",
+            serde_json::json!({
+                "participant_messages": report.pants.live_stored,
+                "written": !dry_run,
+            }),
+        );
+    }
+    for detail in &report.pants.infarctions {
+        log(
+            if dry_run {
+                "pants-infarction-preview"
+            } else {
+                "pants-infarction-posted"
+            },
+            serde_json::json!({ "detail": detail }),
+        );
+    }
+    for detail in &report.pants.worms {
+        log(
+            if dry_run {
+                "pants-worm-preview"
+            } else {
+                "pants-wormed"
+            },
+            serde_json::json!({ "detail": detail }),
+        );
+    }
+    for detail in &report.pants.skipped {
+        log(
+            "pants-action-skipped",
+            serde_json::json!({ "detail": detail }),
+        );
+    }
+    for failure in &report.pants.failed {
+        log(
+            "pants-failed",
             serde_json::json!({ "detail": failure, "note": "will retry next pass" }),
         );
     }
@@ -232,26 +327,45 @@ async fn main() -> ExitCode {
         }
     };
 
-    // The token is not needed for a dry run, so `--dry-run` works before the
-    // Discord application exists — useful while wiring this up.
-    let token = match (args.dry_run, resolve_token(args.token.clone())) {
-        (_, Ok(token)) => token,
-        (true, Err(_)) => String::new(),
-        (false, Err(error)) => {
-            eprintln!("podrick: {error}");
+    let lift_channel = optional_env(LIFT_CHANNEL_VAR);
+    let pants_channels = match (
+        optional_env(PANTS_CHANNEL_VAR),
+        optional_env(INFARCTIONS_CHANNEL_VAR),
+    ) {
+        (None, None) => None,
+        (Some(source), Some(infarctions)) => Some((source, infarctions)),
+        (Some(_), None) => {
+            eprintln!(
+                "podrick: {INFARCTIONS_CHANNEL_VAR} is required when {PANTS_CHANNEL_VAR} is set"
+            );
+            return ExitCode::from(2);
+        }
+        (None, Some(_)) => {
+            eprintln!(
+                "podrick: {PANTS_CHANNEL_VAR} is required when {INFARCTIONS_CHANNEL_VAR} is set"
+            );
             return ExitCode::from(2);
         }
     };
-    let channel_id = match required_env(LIFT_CHANNEL_VAR) {
-        Ok(channel_id) => channel_id,
-        Err(error) => {
-            eprintln!("podrick: {error}");
-            return ExitCode::from(2);
-        }
-    };
+    if lift_channel.is_none() && pants_channels.is_none() {
+        eprintln!("podrick: configure {LIFT_CHANNEL_VAR}, or both Pants Off channel variables");
+        return ExitCode::from(2);
+    }
 
-    let announcer = Announcer {
-        discord: Discord::new(token),
+    // A lift-only dry run never calls Discord and can be used before the
+    // application exists. Pants Off must authenticate even to read history.
+    let token_required = !args.dry_run || pants_channels.is_some();
+    let token = match (token_required, resolve_token(args.token)) {
+        (_, Ok(token)) => token,
+        (false, Err(_)) => String::new(),
+        (true, Err(error)) => {
+            eprintln!("podrick: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let discord = Discord::new(token);
+    let announcer = lift_channel.as_ref().map(|channel_id| Announcer {
+        discord: discord.clone(),
         client: reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .user_agent("podrick (+https://benjisponge.com/podrick)")
@@ -260,7 +374,15 @@ async fn main() -> ExitCode {
         api_origin: args.api.clone(),
         channel_id: channel_id.clone(),
         dry_run: args.dry_run,
-    };
+    });
+    let pants_worker = pants_channels
+        .as_ref()
+        .map(|(channel_id, infarctions_channel_id)| PantsWorker {
+            discord,
+            channel_id: channel_id.clone(),
+            infarctions_channel_id: infarctions_channel_id.clone(),
+            dry_run: args.dry_run,
+        });
     let data = Data::from_env();
 
     log(
@@ -268,14 +390,16 @@ async fn main() -> ExitCode {
         serde_json::json!({
             "mode": if args.command == Command::Run { "run" } else { "once" },
             "api": args.api,
-            "channel": channel_id,
+            "lift_channel": lift_channel,
+            "pants_channel": pants_channels.as_ref().map(|channels| &channels.0),
+            "infarctions_channel": pants_channels.as_ref().map(|channels| &channels.1),
             "dry_run": args.dry_run,
             "interval_seconds": args.interval.as_secs(),
         }),
     );
 
     if args.command == Command::Once {
-        return match run_pass(&data, &announcer).await {
+        return match run_pass(&data, announcer.as_ref(), pants_worker.as_ref()).await {
             Ok(report) => {
                 log_report(&report, args.dry_run);
                 // A single pass is run by a human, so say so explicitly rather
@@ -297,8 +421,14 @@ async fn main() -> ExitCode {
     }
 
     loop {
-        match run_pass(&data, &announcer).await {
-            Ok(report) => log_report(&report, args.dry_run),
+        let delay = match run_pass(&data, announcer.as_ref(), pants_worker.as_ref()).await {
+            Ok(report) => {
+                let delay = report
+                    .retry_after()
+                    .map_or(args.interval, |after| args.interval.max(after));
+                log_report(&report, args.dry_run);
+                delay
+            }
             Err(error) => {
                 // Only unrecoverable conditions reach here: a rejected token,
                 // a channel the bot cannot post in, or a database that stayed
@@ -311,8 +441,8 @@ async fn main() -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
-        }
-        tokio::time::sleep(args.interval).await;
+        };
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -323,8 +453,9 @@ async fn main() -> ExitCode {
 /// worker.
 async fn run_pass(
     data: &Data,
-    announcer: &Announcer,
-) -> Result<TickReport, Box<dyn std::error::Error>> {
+    announcer: Option<&Announcer>,
+    pants_worker: Option<&PantsWorker>,
+) -> Result<PassReport, Box<dyn std::error::Error>> {
     let handle = match data.db().await {
         Ok(handle) => handle,
         Err(error) => {
@@ -332,10 +463,25 @@ async fn run_pass(
                 "database-unavailable",
                 serde_json::json!({ "error": error.to_string(), "note": "will retry next pass" }),
             );
-            return Ok(TickReport::default());
+            return Ok(PassReport::default());
         }
     };
-    Ok(announcer.tick(&handle, now_seconds()).await?)
+    let now = now_seconds();
+    let announcements = match announcer {
+        Some(announcer) => announcer.tick(&handle, now).await?,
+        None => TickReport::default(),
+    };
+    // A 429 can be route-specific or global. Without guessing which bucket
+    // Discord applied, make no more Discord calls in this pass and honor the
+    // full delay before resuming either job.
+    let pants = match (announcements.retry_after, pants_worker) {
+        (None, Some(worker)) => worker.tick(&handle, now).await?,
+        _ => PantsTickReport::default(),
+    };
+    Ok(PassReport {
+        announcements,
+        pants,
+    })
 }
 
 #[cfg(test)]
@@ -355,10 +501,28 @@ mod tests {
 
     #[test]
     fn a_seeded_watermark_is_reported_as_activity() {
-        let report = TickReport {
-            seeded_watermark: Some("2026-07-28 22:30:00".to_string()),
-            ..TickReport::default()
+        let report = PassReport {
+            announcements: TickReport {
+                seeded_watermark: Some("2026-07-28 22:30:00".to_string()),
+                ..TickReport::default()
+            },
+            ..PassReport::default()
         };
         assert!(!report.is_quiet());
+    }
+
+    #[test]
+    fn the_longest_discord_retry_hint_controls_the_next_pass() {
+        let report = PassReport {
+            announcements: TickReport {
+                retry_after: Some(Duration::from_secs(30)),
+                ..TickReport::default()
+            },
+            pants: PantsTickReport {
+                retry_after: Some(Duration::from_secs(1_337)),
+                ..PantsTickReport::default()
+            },
+        };
+        assert_eq!(report.retry_after(), Some(Duration::from_secs(1_337)));
     }
 }

@@ -16,7 +16,7 @@ usage='usage: just dev [port] [--no-podrick] [--podrick-reset]'
 
 # The port stays positional because it predates the flags. `--no-podrick` is
 # for a session where you want to drive the bot by hand in its own terminal;
-# `--podrick-reset` clears the LOCAL watermark and claims first, so the local
+# `--podrick-reset` clears all LOCAL Podrick state first, so the local
 # experiment can start over. Re-announcing a lift you already have means
 # deleting it too, since the reseed lands on the newest workout that exists
 # (see docs/podrick.md — production has no such switch and must not grow one).
@@ -80,9 +80,9 @@ if [[ -f "${repo_root}/.env.dev" ]]; then
     set +a
 fi
 
-# Podrick beside the site, so a lift pasted into the local upload dialog is
-# announced in Discord without remembering to start a second terminal. It runs
-# only when `.env.dev` names a channel and a token resolves, so a checkout
+# Podrick beside the site, so lift announcements and Pants Off ingestion can
+# be exercised without remembering to start a second terminal. It runs only
+# when `.env.dev` names one of its channels and a token resolves, so a checkout
 # without Discord configured behaves exactly as it did before.
 podrick_pid=
 
@@ -104,10 +104,10 @@ trap stop_podrick EXIT
 trap 'stop_podrick; exit 130' INT
 trap 'stop_podrick; exit 143' TERM
 
-if [[ "${run_podrick}" == auto && -n "${PODRICK_LIFT_CHANNEL_ID:-}" ]]; then
+if [[ "${run_podrick}" == auto &&
+      -n "${PODRICK_LIFT_CHANNEL_ID:-}${PODRICK_PANTS_CHANNEL_ID:-}${PODRICK_INFARCTIONS_CHANNEL_ID:-}" ]]; then
     if [[ -n "${DISCORD_BOT_TOKEN:-}" || -s "${HOME:-}/.config/benjisponge/podrick.token" ]]; then
-        printf 'dev: podrick will announce to channel %s once the site answers\n' \
-            "${PODRICK_LIFT_CHANNEL_ID}"
+        printf 'dev: podrick will start once the site answers (test Discord channels only)\n'
         podrick_args=(--port "${site_port}")
         if [[ "${podrick_reset}" == yes ]]; then
             podrick_args+=(--reset)
@@ -133,7 +133,7 @@ if [[ "${run_podrick}" == auto && -n "${PODRICK_LIFT_CHANNEL_ID:-}" ]]; then
         ) &
         podrick_pid=$!
     else
-        printf 'dev: skipping podrick — PODRICK_LIFT_CHANNEL_ID is set but no bot\n' >&2
+        printf 'dev: skipping podrick — a Podrick channel is set but no bot\n' >&2
         printf '     token was found (set DISCORD_BOT_TOKEN in .env.dev, or write\n' >&2
         printf '     ~/.config/benjisponge/podrick.token). See docs/podrick.md.\n' >&2
     fi

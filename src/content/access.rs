@@ -36,12 +36,20 @@ pub struct HiddenPage {
     pub teaser: &'static str,
 }
 
-pub static HIDDEN_PAGES: [HiddenPage; 1] = [HiddenPage {
-    path: "/motorcycles",
-    stamp: "motorcycles",
-    title: "Motorcycles",
-    teaser: "The garage log: bikes, routes, and wrenching notes. Shared, not published.",
-}];
+pub static HIDDEN_PAGES: [HiddenPage; 2] = [
+    HiddenPage {
+        path: "/motorcycles",
+        stamp: "motorcycles",
+        title: "Motorcycles",
+        teaser: "The garage log: bikes, routes, and wrenching notes. Shared, not published.",
+    },
+    HiddenPage {
+        path: "/podrick",
+        stamp: "podrick",
+        title: "Pants Off Podrick",
+        teaser: "A Discord bot for the Daniel Aficionados server",
+    },
+];
 
 /// The registered hidden page at `path`, if any. The admin page validates
 /// grant targets against this — you can't grant a page that doesn't exist.
@@ -253,15 +261,22 @@ mod tests {
         let none = HashSet::new();
         assert!(visible_from(&none).is_empty());
 
-        let granted: HashSet<String> = ["/motorcycles".to_string(), "/garage".to_string()].into();
+        let granted: HashSet<String> = [
+            "/podrick".to_string(),
+            "/motorcycles".to_string(),
+            "/garage".to_string(),
+        ]
+        .into();
         let visible = visible_from(&granted);
-        assert_eq!(visible.len(), 1);
+        assert_eq!(visible.len(), 2);
         assert_eq!(visible[0].path, "/motorcycles");
+        assert_eq!(visible[1].path, "/podrick");
     }
 
     #[test]
     fn registered_pages_resolve_and_strangers_do_not() {
         assert_eq!(hidden_page("/motorcycles").unwrap().stamp, "motorcycles");
+        assert_eq!(hidden_page("/podrick").unwrap().stamp, "podrick");
         assert!(hidden_page("/garage").is_none());
         assert!(hidden_page("motorcycles").is_none());
     }

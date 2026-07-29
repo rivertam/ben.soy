@@ -15,13 +15,23 @@
 
 use benjisponge::data::{
     Db,
-    podrick_models::{PodrickAnnouncement, PodrickMeta},
+    podrick_models::{PodrickAnnouncement, PodrickMeta, PodrickPantsAction, PodrickPantsMessage},
 };
 use serde::Deserialize;
 use surrealdb::types::SurrealValue;
 
 /// The cursor key holding the newest workout that predates Podrick.
 pub const ANNOUNCE_WATERMARK: &str = "announce_watermark";
+/// Newest Discord snowflake covered by a completed Pants Off history seed or
+/// live pass. Actions are produced only for messages newer than this cursor.
+pub const PANTS_CURSOR: &str = "pants_cursor";
+/// Newest message present when the one-time backwards history walk began.
+pub const PANTS_BACKFILL_HEAD: &str = "pants_backfill_head";
+/// Exclusive `before` snowflake for the next backwards history page.
+pub const PANTS_BACKFILL_BEFORE: &str = "pants_backfill_before";
+/// Immutable source channel bound on the first Pants Off run. Moving the
+/// cursor to another channel would otherwise skip its history and mix facts.
+pub const PANTS_SOURCE_CHANNEL: &str = "pants_source_channel";
 
 /// The workout source Podrick announces. CSV history is deliberately excluded:
 /// it never joins the homepage timeline or `/feed.xml` either, and a resync
@@ -90,6 +100,21 @@ pub async fn init_meta(db: &Db, key: &str, value: &str) -> surrealdb::Result<Str
         // A key collision means another worker seeded it first; adopt theirs.
         _ => Ok(meta(db, key).await?.unwrap_or_else(|| value.to_string())),
     }
+}
+
+/// Set a moving cursor value. Unlike [`init_meta`], Pants Off's history
+/// position and live high-water mark intentionally advance.
+pub async fn set_meta(db: &Db, key: &str, value: &str) -> surrealdb::Result<()> {
+    db.query(
+        "UPSERT ONLY type::record('podrick_meta', $key)
+         SET k = $key, v = $value
+         RETURN NONE;",
+    )
+    .bind(("key", key.to_string()))
+    .bind(("value", value.to_string()))
+    .await?
+    .check()?;
+    Ok(())
 }
 
 /// Manual workouts strictly newer than `watermark` that have never been
@@ -252,6 +277,155 @@ pub async fn record_attempt(db: &Db, workout_id: &str) -> surrealdb::Result<()> 
          RETURN NONE;",
     )
     .bind(("workout_id", workout_id.to_string()))
+    .await?
+    .check()?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Pants Off source facts and side-effect outbox.
+
+/// Store one recognized source message by its Discord snowflake.
+///
+/// An UPSERT is intentional: a history page can be replayed after a crash and
+/// two pollers can overlap without turning an already-synced source fact into
+/// an error. Discord message creation time and author are immutable for the
+/// rules this job uses; content is neither fetched nor stored.
+pub async fn store_pants_message(db: &Db, message: &PodrickPantsMessage) -> surrealdb::Result<()> {
+    db.query(
+        "UPSERT ONLY type::record('podrick_pants_messages', $message_id)
+         SET message_id = $message_id,
+             channel_id = $channel_id,
+             author_id = $author_id,
+             posted_at = $posted_at
+         RETURN NONE;",
+    )
+    .bind(("message_id", message.message_id.clone()))
+    .bind(("channel_id", message.channel_id.clone()))
+    .bind(("author_id", message.author_id.clone()))
+    .bind(("posted_at", message.posted_at))
+    .await?
+    .check()?;
+    Ok(())
+}
+
+/// Every stored source fact, oldest first.
+///
+/// Reconciliation intentionally reads the full set. The immutable action floor
+/// suppresses the silent history seed, while retaining all later facts means
+/// an asynkwerm that became final during a long outage can still be claimed
+/// after restart.
+pub async fn pants_messages(db: &Db) -> surrealdb::Result<Vec<PodrickPantsMessage>> {
+    let mut response = db
+        .query(
+            "SELECT record::id(id) AS id, message_id, channel_id, author_id,
+                    posted_at
+             FROM podrick_pants_messages
+             ORDER BY posted_at ASC;",
+        )
+        .await?
+        .check()?;
+    response.take(0)
+}
+
+/// Claim one Discord side effect before attempting it.
+pub async fn claim_pants_action(db: &Db, action: &PodrickPantsAction) -> surrealdb::Result<Claim> {
+    let created = db
+        .query(
+            "CREATE ONLY type::record('podrick_pants_actions', $action_id)
+             CONTENT $row
+             RETURN VALUE record::id(id);",
+        )
+        .bind(("action_id", action.id.clone()))
+        .bind(("row", action.clone()))
+        .await
+        .and_then(|mut response| response.take::<Option<String>>(0));
+    match created {
+        Ok(Some(_)) => Ok(Claim::Won),
+        Ok(None) => Ok(Claim::Taken),
+        Err(error) => {
+            // A key collision is the ordinary "another worker owns it"
+            // result. A schema/query failure must not masquerade as that:
+            // advancing the source cursor without a durable action would lose
+            // the side effect forever.
+            if pants_action_exists(db, &action.id).await? {
+                Ok(Claim::Taken)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn pants_action_exists(db: &Db, action_id: &str) -> surrealdb::Result<bool> {
+    let mut response = db
+        .query(
+            "SELECT VALUE record::id(id)
+             FROM type::record('podrick_pants_actions', $action_id);",
+        )
+        .bind(("action_id", action_id.to_string()))
+        .await?
+        .check()?;
+    let ids: Vec<String> = response.take(0)?;
+    Ok(!ids.is_empty())
+}
+
+/// Unconfirmed Pants Off side effects, oldest first.
+pub async fn uncompleted_pants_actions(
+    db: &Db,
+    limit: usize,
+) -> surrealdb::Result<Vec<PodrickPantsAction>> {
+    // Both optional fields are projected explicitly; Surreal omits NONE
+    // option fields from SELECT * rather than returning null.
+    let mut response = db
+        .query(
+            "SELECT record::id(id) AS id, action_kind, reason,
+                    target_channel_id, source_message_id, content, claimed_at,
+                    completed_at, output_message_id, attempts
+             FROM podrick_pants_actions
+             WHERE completed_at IS NONE
+             ORDER BY claimed_at ASC
+             LIMIT $limit;",
+        )
+        .bind(("limit", limit as i64))
+        .await?
+        .check()?;
+    response.take(0)
+}
+
+/// Confirm a post or idempotent reaction. `output_message_id` is present for
+/// infarction posts and absent for reactions.
+pub async fn mark_pants_action_completed(
+    db: &Db,
+    action_id: &str,
+    completed_at: i64,
+    output_message_id: Option<&str>,
+) -> surrealdb::Result<()> {
+    db.query(
+        "UPDATE type::record('podrick_pants_actions', $action_id)
+         SET completed_at = $completed_at,
+             output_message_id = $output_message_id
+         RETURN NONE;",
+    )
+    .bind(("action_id", action_id.to_string()))
+    .bind(("completed_at", completed_at))
+    .bind((
+        "output_message_id",
+        output_message_id.map(ToString::to_string),
+    ))
+    .await?
+    .check()?;
+    Ok(())
+}
+
+/// Count a failed Pants Off side effect for operator visibility.
+pub async fn record_pants_action_attempt(db: &Db, action_id: &str) -> surrealdb::Result<()> {
+    db.query(
+        "UPDATE type::record('podrick_pants_actions', $action_id)
+         SET attempts = attempts + 1
+         RETURN NONE;",
+    )
+    .bind(("action_id", action_id.to_string()))
     .await?
     .check()?;
     Ok(())

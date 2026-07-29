@@ -6,11 +6,13 @@
 //!    newest workout that already exists and announces nothing. Only workouts
 //!    strictly newer than it are ever eligible, and the watermark lives in the
 //!    database, so a restart cannot replay the archive.
-//! 2. **Never announce twice.** A create-only claim keyed by the workout id is
-//!    taken *before* the Discord POST. Two workers, a redeploy mid-post, or a
-//!    duplicated tick all converge on one message.
+//! 2. **Claim each lift once.** A create-only claim keyed by the workout id is
+//!    taken *before* the Discord POST, so competing first claims converge.
+//!    Unconfirmed retries are deliberately unleased, which is why deployment
+//!    stays at one replica.
 //! 3. **Prefer a late announcement to a lost one.** A claim whose POST never
-//!    confirmed stays unposted and is retried on the next tick.
+//!    confirmed stays unposted and is retried on the next tick. An accepted
+//!    POST whose response was lost can require manual duplicate cleanup.
 //!
 //! Message *content* comes from the public API rather than the database, so
 //! the Eastern projection and the permanent path keep their single
@@ -20,6 +22,7 @@
 
 use benjisponge::data::Db;
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::db::{self, AnnounceCandidate, Claim};
 use crate::discord::{Discord, DiscordError, MAX_MESSAGE_CHARS};
@@ -60,6 +63,7 @@ pub struct TickReport {
     pub announced: Vec<String>,
     pub retried: Vec<String>,
     pub failed: Vec<String>,
+    pub retry_after: Option<Duration>,
 }
 
 impl TickReport {
@@ -74,7 +78,10 @@ impl TickReport {
 /// The retryable/fatal split for one workout's post.
 enum Attempt {
     Posted,
-    Failed(String),
+    Failed {
+        detail: String,
+        retry_after: Option<Duration>,
+    },
 }
 
 pub struct Announcer {
@@ -134,7 +141,20 @@ impl Announcer {
             };
             match self.attempt(db, &workout, now).await? {
                 Attempt::Posted => report.retried.push(workout.id),
-                Attempt::Failed(error) => report.failed.push(format!("{}: {error}", workout.id)),
+                Attempt::Failed {
+                    detail,
+                    retry_after,
+                } => {
+                    report.failed.push(format!("{}: {detail}", workout.id));
+                    if let Some(after) = retry_after {
+                        report.retry_after = Some(
+                            report
+                                .retry_after
+                                .map_or(after, |current| current.max(after)),
+                        );
+                        return Ok(report);
+                    }
+                }
             }
         }
 
@@ -155,7 +175,20 @@ impl Announcer {
             }
             match self.attempt(db, &workout, now).await? {
                 Attempt::Posted => report.announced.push(workout.id),
-                Attempt::Failed(error) => report.failed.push(format!("{}: {error}", workout.id)),
+                Attempt::Failed {
+                    detail,
+                    retry_after,
+                } => {
+                    report.failed.push(format!("{}: {detail}", workout.id));
+                    if let Some(after) = retry_after {
+                        report.retry_after = Some(
+                            report
+                                .retry_after
+                                .map_or(after, |current| current.max(after)),
+                        );
+                        return Ok(report);
+                    }
+                }
             }
         }
         Ok(report)
@@ -186,7 +219,14 @@ impl Announcer {
                 {
                     return Err(error);
                 }
-                Ok(Attempt::Failed(error.to_string()))
+                let retry_after = match &error {
+                    AnnounceError::Discord(discord) => discord.retry_after(),
+                    _ => None,
+                };
+                Ok(Attempt::Failed {
+                    detail: error.to_string(),
+                    retry_after,
+                })
             }
         }
     }

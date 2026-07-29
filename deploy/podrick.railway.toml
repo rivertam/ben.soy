@@ -15,6 +15,6 @@ startCommand = "/app/podrick run"
 # down is a clearer signal than an endless crash loop.
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
-# The create-only claim makes a second replica safe, but there is no reason to
-# run one — two workers would just race for the same announcements.
+# Keep exactly one worker: create-only claims dedupe first ownership, but
+# retries of an unconfirmed lift announcement are not leased between replicas.
 numReplicas = 1

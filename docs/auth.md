@@ -1,6 +1,6 @@
 # Sign-in, hidden pages, and admin controls
 
-Google OIDC login gates hidden pages (currently `/motorcycles`) and
+Google OIDC login gates hidden pages (currently `/motorcycles` and `/podrick`) and
 admin-only controls on public pages. Identity is a 30-day encrypted
 `__Host-viewer` cookie (`src/app/login.rs`); authorization is
 `src/content/access.rs`, checked on every request.

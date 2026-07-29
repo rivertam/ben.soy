@@ -302,9 +302,9 @@ DEFINE FIELD OVERWRITE updated_at ON analytics_identities TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799
         AND $value >= first_submitted_at;
 
--- Podrick, the Discord bot (docs/podrick.md). Both tables are written only by
--- the `podrick` binary; the site reads them to render /podrick and never
--- writes them.
+-- Podrick, the Discord bot (docs/podrick.md). Every `podrick_*` table is
+-- written only by the `podrick` binary; the site reads them to render
+-- /podrick and never writes them.
 
 -- One row per workout Podrick has taken responsibility for announcing. The
 -- record key IS the workout id, so the claim is create-only: exactly one
@@ -334,11 +334,63 @@ DEFINE FIELD OVERWRITE attempts ON podrick_announcements TYPE int
 DEFINE INDEX OVERWRITE podrick_announcements_claimed_at
     ON podrick_announcements FIELDS claimed_at;
 
+-- Source facts for Pants Off: one row per Discord message by one of the three
+-- participants in #no-pants-talk. The Discord snowflake is both the record key
+-- and the stable source identity. Classification is deliberately derived from
+-- `posted_at` in Rust using America/New_York, so a rule correction never
+-- requires rewriting history and duplicate 6:07 posts remain auditable while
+-- still making one claim.
+DEFINE TABLE OVERWRITE podrick_pants_messages SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON podrick_pants_messages TYPE string;
+DEFINE FIELD OVERWRITE message_id ON podrick_pants_messages TYPE string
+    ASSERT string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE channel_id ON podrick_pants_messages TYPE string
+    ASSERT string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE author_id ON podrick_pants_messages TYPE string
+    ASSERT string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE posted_at ON podrick_pants_messages TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE INDEX OVERWRITE podrick_pants_messages_posted_at
+    ON podrick_pants_messages FIELDS posted_at;
+DEFINE INDEX OVERWRITE podrick_pants_messages_author_posted_at
+    ON podrick_pants_messages FIELDS author_id, posted_at;
+
+-- Retryable side effects produced from live Pants Off messages. Posts report
+-- infarctions in their channel; reactions put a worm on each participant's
+-- qualifying source message when a kwerm/asynkwerm completes. Deterministic
+-- record keys claim an action before Discord is called. Reactions are
+-- naturally idempotent PUTs, and posts carry a Discord-enforced nonce.
+DEFINE TABLE OVERWRITE podrick_pants_actions SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON podrick_pants_actions TYPE string;
+DEFINE FIELD OVERWRITE action_kind ON podrick_pants_actions TYPE string
+    ASSERT $value IN ['post', 'reaction'];
+DEFINE FIELD OVERWRITE reason ON podrick_pants_actions TYPE string
+    ASSERT $value IN ['infarction', 'kwerm_am', 'kwerm_pm', 'asynkwerm'];
+DEFINE FIELD OVERWRITE target_channel_id ON podrick_pants_actions TYPE string
+    ASSERT string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE source_message_id ON podrick_pants_actions TYPE string
+    ASSERT string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE content ON podrick_pants_actions TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 2000;
+DEFINE FIELD OVERWRITE claimed_at ON podrick_pants_actions TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE completed_at ON podrick_pants_actions TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 253402300799);
+DEFINE FIELD OVERWRITE output_message_id ON podrick_pants_actions TYPE option<string>
+    ASSERT $value IS NONE OR string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE attempts ON podrick_pants_actions TYPE int
+    ASSERT $value >= 0 AND $value <= 1000000;
+DEFINE INDEX OVERWRITE podrick_pants_actions_claimed_at
+    ON podrick_pants_actions FIELDS claimed_at;
+
 -- String-valued cursors, keyed by `k`. `announce_watermark` holds the newest
 -- workout `started_at_utc` that already existed the first time Podrick ran;
 -- nothing at or before it is ever announced. That single row is what keeps
--- three years of imported history out of the channel, and because it lives in
--- the database rather than in memory, a restart cannot replay the archive.
+-- three years of imported history out of the channel. The `pants_*` keys hold
+-- the immutable source-channel binding, history head, resumable
+-- backwards-page position, and live snowflake cursor. Because every cursor
+-- lives in the database rather than memory, a restart can neither replay the
+-- archive nor skip the rest of a partially seeded channel.
 DEFINE TABLE OVERWRITE podrick_meta SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON podrick_meta TYPE string;
 DEFINE FIELD OVERWRITE k ON podrick_meta TYPE string

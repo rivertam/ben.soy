@@ -12,7 +12,7 @@ pub struct Interest {
     pub teaser: &'static str,
 }
 
-pub static INTERESTS: [Interest; 9] = [
+pub static INTERESTS: [Interest; 8] = [
     Interest {
         slug: "felix",
         title: "Felix",
@@ -55,12 +55,6 @@ pub static INTERESTS: [Interest; 9] = [
         slug: "puzzles",
         title: "Crosswords",
         teaser: "I built a little TUI to solve crosswords for fun once",
-    },
-    Interest {
-        slug: "podrick",
-        title: "Podrick",
-        teaser: "A Discord bot I wrote for a server I'm in. He announces my lifts and keeps some \
-                 records straight.",
     },
 ];
 

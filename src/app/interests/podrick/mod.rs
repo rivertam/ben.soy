@@ -1,32 +1,68 @@
-//! The `/podrick` interest page.
+//! The hidden `/podrick` page.
 //!
 //! Podrick himself is `podrick.rs`, a separate binary in this folder that runs
 //! as its own service (`docs/podrick.md`). This module is only the page that
-//! describes him, plus the small status block that proves he is alive.
-//!
-//! The page renders without a database, without the bot running, and without
-//! any `podrick_*` row ever having been written — a bot being down should not
-//! take a page down.
+//! describes him and renders the Pants Off calendars. It follows the hidden
+//! page contract in `docs/auth.md`: database-managed grants, no public
+//! registry, no analytics, and no-store before every rendered shell.
 
+mod heatmap;
 pub(crate) mod status;
 
 use benjisponge::data::Data;
+use jiff::Timestamp;
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::page,
+    router::{HeaderValue, header, page, query_params, redirect, uri},
     view::view,
 };
 
 use crate::{
-    components::{back_link, ext_link, page_head, rail_prose, rail_section, shell},
-    content::interests::interest,
+    components::{back_link, page_head, rail_section, shell},
+    content::access::{hidden_page, may_view},
 };
+
+use super::super::{login::viewer, not_found::not_found_page};
+
+const PATH: &str = "/podrick";
+const LOGIN_REDIRECT: &str = "/login?next=%2Fpodrick";
+
+#[query_params(error = redirect("?"))]
+struct PodrickQuery {
+    year: Option<i16>,
+}
+
+fn selected_year(requested: Option<i16>, earliest: i16, current: i16) -> i16 {
+    requested.unwrap_or(current).clamp(earliest, current)
+}
+
+fn canonical_year_query(year: i16, current: i16) -> Option<String> {
+    (year != current).then(|| format!("year={year}"))
+}
 
 #[page("/podrick")]
 async fn podrick(cx: &Cx) -> Result {
-    let meta = interest("podrick");
+    let Some(current) = viewer(cx) else {
+        return Err(redirect(LOGIN_REDIRECT).into());
+    };
+    if !may_view(app_context::<Data>(cx), &current.email, PATH).await {
+        return view! {
+            ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
+            not_found_page(requested: PATH)
+        };
+    }
+    let meta = hidden_page(PATH).expect("/podrick is a registered hidden page");
+    let query = query_params::<PodrickQuery>(cx)?;
+    let now = Timestamp::now().as_second();
     let summary = status::load(app_context::<Data>(cx)).await;
+    let (earliest_year, current_year) =
+        heatmap::pants_year_bounds(&summary.pants, now).unwrap_or((1970, 1970));
+    let selected_year = selected_year(query.year, earliest_year, current_year);
+    let canonical_query = canonical_year_query(selected_year, current_year);
+    if uri(cx).query() != canonical_query.as_deref() {
+        return Err(redirect(&heatmap::year_path(selected_year, current_year)).into());
+    }
     let announced = match summary.posted {
         0 => "no lifts announced yet".to_string(),
         1 => "1 lift announced".to_string(),
@@ -34,68 +70,29 @@ async fn podrick(cx: &Cx) -> Result {
     };
 
     view! {
+        ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
             title: meta.title,
-            active: "interests",
-            page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
+            active: "",
+            runtime: false,
+            analytics: false,
+            page_head(stamp: meta.stamp, title: meta.title, lede: meta.teaser)
 
-            rail_prose(
-                class: "mt-4",
-                stamp: "who",
-                <p>
-                    "Podrick is a Discord bot I wrote for a server I'm in. He is named after "
-                    ext_link(
-                        class: "quiet-link",
-                        href: "https://awoiaf.westeros.org/index.php/Podrick_Payne",
-                        label: "Podrick Payne →"
-                    )
-                    ", who is loyal, useful, and does not say much. That is roughly the design brief."
-                </p>
-            )
-
-            rail_prose(
-                class: "mt-4",
-                stamp: "job 1",
-                <p>
-                    "When I publish a lift here, Podrick posts it to a channel as plain text: the \
-                     title, the date and duration, then every set with its load, reps, and effort, \
-                     ending in a link to the permanent page. It reads like the share sheet on a \
-                     workout page, because that is the point — the channel gets the workout, not a \
-                     summary of it. Personal records are deliberately left out; the link has them."
-                </p>
-                <p>
-                    "The interesting part is what he refuses to do. Podrick records a watermark the \
-                     first time he runs and never announces anything older than it, so the three \
-                     years of lifting history already in the archive stay out of the channel. Every \
-                     announcement is claimed in the database before it is posted, so a crash \
-                     halfway through, a redeploy, or two copies of him running at once still \
-                     produce exactly one message."
-                </p>
-            )
-
-            rail_prose(
-                class: "mt-4",
-                stamp: "job 2",
-                <p>
-                    "Not built yet. He will watch a second channel and keep some records straight \
-                     in response to what gets posted there, seeded from that channel's history."
-                </p>
-            )
-
-            rail_prose(
-                class: "mt-4",
-                stamp: "how",
-                <p>
-                    "No gateway connection and no bot framework — both jobs are shaped like plain \
-                     REST calls, and the version that reads a channel's history is the same code \
-                     that reads its newest messages. He runs as his own small service next to the \
-                     site and shares its database."
-                </p>
+            rail_section(
+                class: "mt-8",
+                stamp: "history",
+                heatmap::pants_heatmaps(
+                    status: summary.pants.clone(),
+                    now: now,
+                    selected_year: selected_year,
+                    earliest_year: earliest_year,
+                    current_year: current_year
+                )
             )
 
             rail_section(
                 class: "mt-4",
-                stamp: "status",
+                stamp: "announcements",
                 <p class="font-meta text-sm text-ink2">
                     (announced)
                     if let Some(latest) = summary.latest.as_ref() {
@@ -109,5 +106,34 @@ async fn podrick(cx: &Cx) -> Result {
 
             back_link(href: "/interests", label: "all interests")
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn year_selection_defaults_and_clamps_to_history() {
+        assert_eq!(selected_year(None, 2023, 2026), 2026);
+        assert_eq!(selected_year(Some(2024), 2023, 2026), 2024);
+        assert_eq!(selected_year(Some(1900), 2023, 2026), 2023);
+        assert_eq!(selected_year(Some(3000), 2023, 2026), 2026);
+    }
+
+    #[test]
+    fn current_year_has_the_bare_canonical_url() {
+        assert_eq!(canonical_year_query(2026, 2026), None);
+        assert_eq!(heatmap::year_path(2026, 2026), "/podrick");
+        assert_eq!(
+            canonical_year_query(2025, 2026).as_deref(),
+            Some("year=2025")
+        );
+        assert_eq!(heatmap::year_path(2025, 2026), "/podrick?year=2025");
+    }
+
+    #[test]
+    fn hidden_page_login_redirect_remains_query_free() {
+        assert_eq!(LOGIN_REDIRECT, "/login?next=%2Fpodrick");
     }
 }
