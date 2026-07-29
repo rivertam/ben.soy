@@ -19,6 +19,7 @@ mod announce;
 mod db;
 mod discord;
 mod pants;
+mod seed_install;
 
 // The permanent-path format is a public URL contract shared with /lifting and
 // the diary. Podrick reuses the implementation rather than restating it; it
@@ -30,6 +31,7 @@ mod eastern;
 use announce::{Announcer, TickReport};
 use discord::Discord;
 use pants::{PantsTickReport, PantsWorker};
+use seed_install::SeedReport;
 
 const DEFAULT_API: &str = "https://benjisponge.com";
 const DEFAULT_INTERVAL_SECONDS: u64 = 60;
@@ -63,6 +65,10 @@ ENVIRONMENT
   PODRICK_PANTS_CHANNEL_ID  optional Pants Off source channel
   PODRICK_INFARCTIONS_CHANNEL_ID
                             infarction output; required with Pants source
+  PODRICK_SEED_URL          optional; when set with PODRICK_SYNC_TOKEN and
+                            local podrick_* tables are empty, install that
+                            full production snapshot before normal work
+  PODRICK_SYNC_TOKEN        Bearer for PODRICK_SEED_URL
   SURREALDB_*               the same five connection variables the site uses
 
 BEHAVIOR
@@ -81,7 +87,9 @@ BEHAVIOR
   are classified in America/New_York: 6:07 AM/PM claims a slot; another
   HH:07 is out of town; any other minute is an infarction. Worm reactions and
   infarction posts are claimed before Discord is called and retried until
-  confirmed.
+  confirmed. When PODRICK_SEED_URL is set, an empty local Podrick database
+  installs production's full podrick_* snapshot first (skipping Discord history
+  when pants_cursor is included).
 
   Exit codes: 0 success, 1 failure (unreachable database, rejected token,
   missing channel permission), 2 usage error.
@@ -205,13 +213,14 @@ fn log(event: &str, fields: serde_json::Value) {
 
 #[derive(Default)]
 struct PassReport {
+    seed: SeedReport,
     announcements: TickReport,
     pants: PantsTickReport,
 }
 
 impl PassReport {
     fn is_quiet(&self) -> bool {
-        self.announcements.is_quiet() && self.pants.is_quiet()
+        self.seed.is_quiet() && self.announcements.is_quiet() && self.pants.is_quiet()
     }
 
     fn retry_after(&self) -> Option<Duration> {
@@ -224,6 +233,18 @@ impl PassReport {
 }
 
 fn log_report(report: &PassReport, dry_run: bool) {
+    if !report.seed.is_quiet() {
+        log(
+            "podrick-seeded",
+            serde_json::json!({
+                "announcements": report.seed.announcements,
+                "pants_messages": report.seed.pants_messages,
+                "pants_actions": report.seed.pants_actions,
+                "meta": report.seed.meta,
+                "written": !dry_run,
+            }),
+        );
+    }
     if let Some(watermark) = &report.announcements.seeded_watermark {
         log(
             "watermark-seeded",
@@ -399,7 +420,14 @@ async fn main() -> ExitCode {
     );
 
     if args.command == Command::Once {
-        return match run_pass(&data, announcer.as_ref(), pants_worker.as_ref()).await {
+        return match run_pass(
+            &data,
+            announcer.as_ref(),
+            pants_worker.as_ref(),
+            args.dry_run,
+        )
+        .await
+        {
             Ok(report) => {
                 log_report(&report, args.dry_run);
                 // A single pass is run by a human, so say so explicitly rather
@@ -421,7 +449,14 @@ async fn main() -> ExitCode {
     }
 
     loop {
-        let delay = match run_pass(&data, announcer.as_ref(), pants_worker.as_ref()).await {
+        let delay = match run_pass(
+            &data,
+            announcer.as_ref(),
+            pants_worker.as_ref(),
+            args.dry_run,
+        )
+        .await
+        {
             Ok(report) => {
                 let delay = report
                     .retry_after()
@@ -455,6 +490,7 @@ async fn run_pass(
     data: &Data,
     announcer: Option<&Announcer>,
     pants_worker: Option<&PantsWorker>,
+    dry_run: bool,
 ) -> Result<PassReport, Box<dyn std::error::Error>> {
     let handle = match data.db().await {
         Ok(handle) => handle,
@@ -466,6 +502,10 @@ async fn run_pass(
             return Ok(PassReport::default());
         }
     };
+    let pants_channel = pants_worker.map(|worker| worker.channel_id.as_str());
+    let seed = seed_install::maybe_install_from_api(&handle, dry_run, pants_channel)
+        .await?
+        .unwrap_or_default();
     let now = now_seconds();
     let announcements = match announcer {
         Some(announcer) => announcer.tick(&handle, now).await?,
@@ -479,6 +519,7 @@ async fn run_pass(
         _ => PantsTickReport::default(),
     };
     Ok(PassReport {
+        seed,
         announcements,
         pants,
     })
@@ -522,6 +563,7 @@ mod tests {
                 retry_after: Some(Duration::from_secs(1_337)),
                 ..PantsTickReport::default()
             },
+            ..PassReport::default()
         };
         assert_eq!(report.retry_after(), Some(Duration::from_secs(1_337)));
     }

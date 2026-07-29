@@ -2,11 +2,13 @@
 //!
 //! Podrick himself is `podrick.rs`, a separate binary in this folder that runs
 //! as its own service (`docs/podrick.md`). This module is only the page that
-//! describes him and renders the Pants Off calendars. It follows the hidden
-//! page contract in `docs/auth.md`: database-managed grants, no public
-//! registry, no analytics, and no-store before every rendered shell.
+//! renders the Pants Off calendars — the lift job has no panel here; you read
+//! it in the channel it posts to. It follows the hidden page contract in
+//! `docs/auth.md`: database-managed grants, no public registry, no analytics,
+//! and no-store before every rendered shell.
 
 mod heatmap;
+mod seed;
 pub(crate) mod status;
 
 use benjisponge::data::Data;
@@ -55,9 +57,9 @@ async fn podrick(cx: &Cx) -> Result {
     let meta = hidden_page(PATH).expect("/podrick is a registered hidden page");
     let query = query_params::<PodrickQuery>(cx)?;
     let now = Timestamp::now().as_second();
-    let summary = status::load(app_context::<Data>(cx)).await;
+    let pants = status::load(app_context::<Data>(cx)).await;
     let (earliest_year, current_year) =
-        heatmap::pants_year_bounds(&summary.pants, now).unwrap_or((1970, 1970));
+        heatmap::pants_year_bounds(&pants, now).unwrap_or((1970, 1970));
     let selected_year = selected_year(query.year, earliest_year, current_year);
     let canonical_query = canonical_year_query(selected_year, current_year);
     if uri(cx).query() != canonical_query.as_deref() {
@@ -77,7 +79,7 @@ async fn podrick(cx: &Cx) -> Result {
                 class: "mt-8",
                 stamp: "history",
                 heatmap::pants_heatmaps(
-                    status: summary.pants.clone(),
+                    status: pants,
                     now: now,
                     selected_year: selected_year,
                     earliest_year: earliest_year,

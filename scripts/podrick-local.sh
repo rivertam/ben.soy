@@ -2,8 +2,9 @@
 #
 # Run Podrick against the local dev stack: lift content comes from the local
 # site and all Podrick state (including Pants Off history) stays in the local
-# database. Discord channels themselves are still real, so `.env.dev` must
-# name test channels.
+# database. Discord channels themselves are still real. Prefer test channels in
+# `.env.dev`; if you point Pants at the production channel, empty local Podrick
+# state syncs from `GET /api/podrick/seed` when `PODRICK_SYNC_TOKEN` is set.
 #
 # `just dev` starts this automatically whenever `.env.dev` names a channel and
 # a token resolves; run it by hand for a one-off pass, a `--dry-run`, or a
@@ -16,9 +17,10 @@
 # credential in `.env.dev` cannot point this at the real database — the same
 # ordering, for the same reason, as scripts/dev.sh.
 #
-# What comes from `.env.dev`: the PODRICK_* channel ids, and
-# DISCORD_BOT_TOKEN if you keep it there. Otherwise the token falls back to
-# ~/.config/benjisponge/podrick.token, like the other sync clients.
+# What comes from `.env.dev`: the PODRICK_* channel ids, PODRICK_SYNC_TOKEN
+# (for production Podrick DB sync), and DISCORD_BOT_TOKEN if you keep it there.
+# Otherwise the bot token falls back to ~/.config/benjisponge/podrick.token,
+# like the other sync clients.
 
 set -Eeuo pipefail
 
@@ -97,7 +99,27 @@ if [[ "${reset}" == yes ]]; then
     fi
 fi
 
-printf 'podrick-local: local database and API (%s); Discord channels are live test channels\n' \
+# Prefer production's full Podrick snapshot over rebuilding from Discord /
+# local workouts when local podrick_* tables are empty. Only when the Pants
+# channel is unset or is the real source channel — test Pants channels still
+# walk Discord.
+production_pants_channel='883473115085164544'
+default_podrick_seed_url='https://benjisponge.com/api/podrick/seed'
+if [[ -n "${PODRICK_SYNC_TOKEN:-}" ]]; then
+    if [[ -z "${PODRICK_PANTS_CHANNEL_ID:-}" || "${PODRICK_PANTS_CHANNEL_ID}" == "${production_pants_channel}" ]]; then
+        export PODRICK_SEED_URL="${PODRICK_SEED_URL:-${PODRICK_PANTS_SEED_URL:-${default_podrick_seed_url}}}"
+        printf 'podrick-local: empty Podrick state will sync from %s\n' "${PODRICK_SEED_URL}"
+    else
+        unset PODRICK_SEED_URL PODRICK_PANTS_SEED_URL
+        printf 'podrick-local: test Pants channel — no production Podrick sync\n'
+    fi
+elif [[ -n "${PODRICK_PANTS_CHANNEL_ID:-}" && "${PODRICK_PANTS_CHANNEL_ID}" == "${production_pants_channel}" ]]; then
+    printf 'podrick-local: production Pants channel is set but PODRICK_SYNC_TOKEN is unset;\n' >&2
+    printf '               Discord will walk full channel history (slow). Add the token to\n' >&2
+    printf '               .env.dev to pull GET /api/podrick/seed instead.\n' >&2
+fi
+
+printf 'podrick-local: local database and API (%s); Discord channels are live\n' \
     "${site_api}"
 printf 'podrick-local: a first run seeds this local watermark at the NEWEST lift that\n'
 printf '               already exists and announces nothing; lifts pasted from now on\n'

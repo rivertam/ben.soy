@@ -36,8 +36,11 @@ const CELL_OUTSIDE: &str = "border-transparent opacity-25";
 const CELL_KWERM: &str = "ring-1 ring-[color-mix(in_srgb,var(--color-patina)_75%,transparent)]";
 const CELL_ASYNC: &str = "ring-1 ring-[color-mix(in_srgb,var(--color-patina)_38%,transparent)]";
 const DOT: &str = "absolute right-[0.05rem] top-[0.05rem] size-[0.18rem] rounded-full bg-patina";
-const INFARCTION: &str = "absolute left-[8%] top-1/2 h-px w-[84%] -rotate-45 \
-     bg-[color-mix(in_srgb,var(--color-oxide-hot)_88%,transparent)]";
+/// Two thick bars crossed into an X; redder than the claim heat fill.
+const INFARCTION_A: &str = "absolute left-[10%] top-1/2 h-[0.14rem] w-[80%] -translate-y-1/2 \
+     -rotate-45 bg-[color-mix(in_srgb,var(--color-oxide-hot)_55%,#8a0f08)]";
+const INFARCTION_B: &str = "absolute left-[10%] top-1/2 h-[0.14rem] w-[80%] -translate-y-1/2 \
+     rotate-45 bg-[color-mix(in_srgb,var(--color-oxide-hot)_55%,#8a0f08)]";
 const WORM: &str =
     "absolute inset-0 flex items-center justify-center text-[0.42rem] leading-none select-none";
 const LEGEND_CELL: &str =
@@ -137,14 +140,19 @@ pub(super) async fn pants_heatmaps(
                         "asynkwerm"
                     </span>
                     <span class="inline-flex items-center gap-1">
-                        <span class=(LEGEND_CELL) aria-hidden="true">
+                        <span
+                            class=(class!(LEGEND_CELL, HEAT_FILL))
+                            style="--pants-heat-alpha: 34%"
+                            aria-hidden="true"
+                        >
                             <span class=(DOT)></span>
                         </span>
                         "out of town"
                     </span>
                     <span class="inline-flex items-center gap-1">
                         <span class=(LEGEND_CELL) aria-hidden="true">
-                            <span class=(INFARCTION)></span>
+                            <span class=(INFARCTION_A)></span>
+                            <span class=(INFARCTION_B)></span>
                         </span>
                         "infarction"
                     </span>
@@ -232,7 +240,8 @@ pub(super) async fn pants_heatmaps(
                                                     <span class=(DOT) aria-hidden="true"></span>
                                                 }
                                                 if cell.infarction {
-                                                    <span class=(INFARCTION) aria-hidden="true"></span>
+                                                    <span class=(INFARCTION_A) aria-hidden="true"></span>
+                                                    <span class=(INFARCTION_B) aria-hidden="true"></span>
                                                 }
                                                 if cell.kwerm {
                                                     <span class=(WORM) aria-hidden="true">"🪱"</span>
@@ -324,15 +333,6 @@ pub(super) async fn pants_heatmaps(
                         aria-labelledby="pants-crew-totals-title"
                     >
                         <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-                            <div>
-                                <p class=(META)>"crew totals"</p>
-                                <h4
-                                    id="pants-crew-totals-title"
-                                    class="mt-1 font-display text-base font-semibold"
-                                >
-                                    "The worm ledger"
-                                </h4>
-                            </div>
                             <dl class="flex flex-wrap gap-x-8 gap-y-3">
                                 <div>
                                     <dt class=(META)>"kwerms"</dt>
@@ -354,7 +354,6 @@ pub(super) async fn pants_heatmaps(
                                     <dd class="mt-1 font-display text-xl tabular-nums">
                                         (calendar.crew.asynkwerms)
                                     </dd>
-                                    <dd class=(NOTE)>"crew claim days without a shared slot"</dd>
                                 </div>
                             </dl>
                         </div>
@@ -555,7 +554,7 @@ impl PantsCell {
             asynkwerm,
             outside_class: if outside { CELL_OUTSIDE } else { "" },
             team_class,
-            style: heat_style(claims),
+            style: heat_style(claims, out_of_town),
             label: cell_label(
                 date,
                 day,
@@ -831,10 +830,12 @@ fn inclusive_dates(start: Date, end: Date) -> Option<Vec<Date>> {
     Some(dates)
 }
 
-fn heat_style(claims: u8) -> String {
-    let alpha = match claims {
-        0 => 0,
-        1 => 34,
+fn heat_style(claims: u8, out_of_town: bool) -> String {
+    // Out-of-town-only days share the one-claim fill so the patina dot reads
+    // against the same oxide wash as a normal claim.
+    let alpha = match (claims, out_of_town) {
+        (0, false) => 0,
+        (0 | 1, _) => 34,
         _ => 82,
     };
     format!("--pants-heat-alpha: {alpha}%")

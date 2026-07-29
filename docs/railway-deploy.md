@@ -58,9 +58,10 @@ credential references keep the web and database services aligned without
 duplicating the secret.
 
 Also set on the web service: `SPIRE_SYNC_TOKEN`, `FITNESS_SYNC_TOKEN`,
-`SITE_ORIGIN=https://benjisponge.com`, and, for sign-in
-([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, and
-`GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows
+`PODRICK_SYNC_TOKEN` (Bearer for `GET /api/podrick/seed`, used by local
+Podrick reset — [podrick.md](podrick.md)), `SITE_ORIGIN=https://benjisponge.com`,
+and, for sign-in ([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
+and `GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows
 managed at `/admin/permissions`, not environment variables.
 
 `HOST=0.0.0.0` is baked into the web image; Railway injects `PORT`. Pin it to

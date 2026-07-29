@@ -25,7 +25,7 @@ pub const KWERM_EMOJI: &str = "🪱";
 /// means "and I confirmed it landed". The two states are deliberately separate
 /// so a process that dies between the claim and Discord's response leaves a
 /// retryable row rather than a permanently lost announcement.
-#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue, PartialEq, Eq)]
 pub struct PodrickAnnouncement {
     pub id: String,
     pub workout_id: String,
@@ -59,13 +59,65 @@ pub struct PodrickPantsMessage {
     pub posted_at: i64,
 }
 
+/// Wire shape of one Pants Off source fact in a Podrick DB snapshot.
+///
+/// Deliberately omits the Surreal record id projection: installers key rows
+/// by `message_id`, the same way the worker UPSERTs Discord history.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PantsSeedMessage {
+    pub message_id: String,
+    pub channel_id: String,
+    pub author_id: String,
+    pub posted_at: i64,
+}
+
+impl From<&PodrickPantsMessage> for PantsSeedMessage {
+    fn from(message: &PodrickPantsMessage) -> Self {
+        Self {
+            message_id: message.message_id.clone(),
+            channel_id: message.channel_id.clone(),
+            author_id: message.author_id.clone(),
+            posted_at: message.posted_at,
+        }
+    }
+}
+
+impl PantsSeedMessage {
+    pub fn into_row(self) -> PodrickPantsMessage {
+        PodrickPantsMessage {
+            id: self.message_id.clone(),
+            message_id: self.message_id,
+            channel_id: self.channel_id,
+            author_id: self.author_id,
+            posted_at: self.posted_at,
+        }
+    }
+}
+
+/// Full production `podrick_*` snapshot for local reset.
+///
+/// Local `--podrick-reset` installs this instead of rebuilding state from
+/// Discord / the local workout archive. Meta is a flat key/value map matching
+/// `podrick_meta` rows (announce watermark, pants cursors, source channel).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PodrickSeed {
+    #[serde(default)]
+    pub announcements: Vec<PodrickAnnouncement>,
+    #[serde(default)]
+    pub pants_messages: Vec<PantsSeedMessage>,
+    #[serde(default)]
+    pub pants_actions: Vec<PodrickPantsAction>,
+    #[serde(default)]
+    pub meta: BTreeMap<String, String>,
+}
+
 /// One claimed Discord side effect produced by Pants Off.
 ///
 /// `action_kind` is `post` or `reaction`; `reason` is `infarction`,
 /// `kwerm_am`, `kwerm_pm`, or `asynkwerm`. The database schema constrains
 /// those strings while keeping this transport model compatible with direct
 /// SurrealDB projections.
-#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue, PartialEq, Eq)]
 pub struct PodrickPantsAction {
     pub id: String,
     pub action_kind: String,

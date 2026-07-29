@@ -118,7 +118,13 @@ re-announce a lift you already have locally: delete it (the delete control on
 paste it again. `--podrick-reset` clears every local `podrick_*` row, including
 the local Pants history and action outbox; it exists only on the dev scripts
 and deliberately not on the binary, because production must not grow a reset
-or backfill switch (see Invariants).
+or backfill switch (see Invariants). When `.env.dev` sets `PODRICK_SYNC_TOKEN`
+(and either omits Pants or points it at the production channel), the next
+empty-state pass pulls `GET /api/podrick/seed` — every production
+`podrick_announcements`, `podrick_pants_messages`, `podrick_pants_actions`, and
+`podrick_meta` row — so local mirrors production without re-walking Discord or
+re-seeding the lift watermark from the local archive. Test Pants channels skip
+that path and rebuild as before.
 
 Run `just podrick-local` by hand only alongside `just dev --no-podrick`, or
 two bots poll the same database. Multiple pollers are unsupported: claims
@@ -224,6 +230,11 @@ origin doing its job, not a bug to fix.
   is claimed. Only after the oldest page does `pants_cursor` establish live
   mode; messages posted during the walk are then picked up beyond the original
   head.
+  - Locally, an empty `podrick_*` database may instead install production's
+    full snapshot from `GET /api/podrick/seed` when `PODRICK_SEED_URL` and
+    `PODRICK_SYNC_TOKEN` are set (see Running it → Locally). That path writes
+    announcements, Pants facts, actions, and meta, then continues normally;
+    it is not a production reset or backfill switch.
 - **A live cursor advances only after facts and action claims are durable.**
   Live polling also walks newest-to-oldest until it crosses the numeric
   snowflake cursor, so a burst over 100 messages cannot create a gap. Unknown
@@ -250,6 +261,7 @@ src/app/interests/podrick/
   mod.rs        the /podrick page (site binary)
   heatmap.rs    annual Pants Off heatmaps and leaderboards (site binary)
   status.rs     the page's reads (site binary)
+  seed.rs       GET /api/podrick/seed (site binary)
   db.rs         the worker's reads and writes (podrick binary)
   discord.rs    Discord REST client (podrick binary)
   announce.rs   job 1 (podrick binary)

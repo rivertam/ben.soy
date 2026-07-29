@@ -309,6 +309,64 @@ pub async fn store_pants_message(db: &Db, message: &PodrickPantsMessage) -> surr
     Ok(())
 }
 
+/// Install a production announcement claim during local reset seeding.
+pub async fn store_announcement(
+    db: &Db,
+    announcement: &PodrickAnnouncement,
+) -> surrealdb::Result<()> {
+    db.query(
+        "UPSERT ONLY type::record('podrick_announcements', $workout_id)
+         CONTENT $row
+         RETURN NONE;",
+    )
+    .bind(("workout_id", announcement.workout_id.clone()))
+    .bind(("row", announcement.clone()))
+    .await?
+    .check()?;
+    Ok(())
+}
+
+/// Install a production Pants action row during local reset seeding.
+pub async fn store_pants_action(db: &Db, action: &PodrickPantsAction) -> surrealdb::Result<()> {
+    db.query(
+        "UPSERT ONLY type::record('podrick_pants_actions', $action_id)
+         CONTENT $row
+         RETURN NONE;",
+    )
+    .bind(("action_id", action.id.clone()))
+    .bind(("row", action.clone()))
+    .await?
+    .check()?;
+    Ok(())
+}
+
+/// True when no Podrick cursors/claims exist — the local-reset starting point.
+pub async fn podrick_state_empty(db: &Db) -> surrealdb::Result<bool> {
+    let mut response = db
+        .query(
+            "SELECT count() AS count FROM podrick_meta GROUP ALL;
+             SELECT count() AS count FROM podrick_announcements GROUP ALL;
+             SELECT count() AS count FROM podrick_pants_messages GROUP ALL;
+             SELECT count() AS count FROM podrick_pants_actions GROUP ALL;",
+        )
+        .await?
+        .check()?;
+    let meta: Vec<CountRow> = response.take(0)?;
+    let announcements: Vec<CountRow> = response.take(1)?;
+    let messages: Vec<CountRow> = response.take(2)?;
+    let actions: Vec<CountRow> = response.take(3)?;
+    Ok(count_of(&meta) + count_of(&announcements) + count_of(&messages) + count_of(&actions) == 0)
+}
+
+#[derive(Clone, Debug, Deserialize, SurrealValue)]
+struct CountRow {
+    count: i64,
+}
+
+fn count_of(rows: &[CountRow]) -> i64 {
+    rows.first().map_or(0, |row| row.count)
+}
+
 /// Every stored source fact, oldest first.
 ///
 /// Reconciliation intentionally reads the full set. The immutable action floor
