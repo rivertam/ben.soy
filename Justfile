@@ -6,9 +6,9 @@ install-hooks:
     proto install lefthook
     lefthook install
 
-# Start local SurrealDB and Topcoat with live reload
-dev port="3000":
-    bash scripts/dev.sh "{{port}}"
+# Start local SurrealDB, Topcoat with live reload, and Podrick if .env.dev configures it
+dev *args:
+    bash scripts/dev.sh {{args}}
 
 # Replace local fitness tables and import a Strong CSV (run while `just dev` is active)
 reset-fitness-local csv="/home/benji/Downloads/WorkoutData.csv":
@@ -49,6 +49,18 @@ sync-spire *args:
 # Upload a Strong workout CSV export to the site's fitness database (see --help)
 sync-fitness csv *args:
     cargo run --bin fitness_sync -- "{{csv}}" {{args}}
+
+# Delete one lift and its sets by permanent path; `just delete-lift --help`
+delete-lift *args:
+    bash scripts/delete-lift.sh {{args}}
+
+# Run the Podrick Discord bot (see --help); defaults to the PRODUCTION api
+podrick *args:
+    cargo run --bin podrick -- {{args}}
+
+# Podrick against the local stack by hand; `just dev` already runs it (--no-podrick opts out)
+podrick-local *args:
+    bash scripts/podrick-local.sh {{args}}
 
 # Thought posts: `just thought new`, `just thought publish` (see `just thought`)
 mod thought

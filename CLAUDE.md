@@ -7,12 +7,14 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 
 ## Commands
 
-- `just dev [port]` — start local SurrealDB (docker) + live-reload server (default 3000); run `just reset-fitness-local [csv]` separately to rebuild fitness data; details in `docs/fitness.md`
+- `just dev [port] [--no-podrick] [--podrick-reset]` — start local SurrealDB (docker) + live-reload server (default 3000), plus Podrick when `.env.dev` configures it (`docs/podrick.md`); run `just reset-fitness-local [csv]` separately to rebuild fitness data; details in `docs/fitness.md`
 - `just build` — cargo build + `topcoat asset bundle`; serving without the bundle step panics
 - `just check` — fmt + clippy -D warnings + tests; must pass before claiming done
 - `just deploy` — optional Railway redeploy + Cloudflare cache purge (Railway GitHub App deploys on push to main; CI only runs `just check`). Prod path: `docs/railway-deploy.md` (Dockerfile only — not Railpack); DNS/Tunnel/CDN: `docs/cloudflare-deploy.md`
 - `just sync-spire [--dry-run|--json]` — upload new Slay the Spire 2 runs from this machine's save files to the site's database; idempotent; pipeline details in `docs/railway-deploy.md`
 - `just sync-fitness <csv> [--dry-run|--json]` — idempotent fitness CSV upload; read `docs/fitness.md` before changing its data flow or taxonomy
+- `just delete-lift <path|url> [--api <origin>] [--yes]` — the archive's only destructive operation: `DELETE /api/fitness/workouts/by-path/{path}`; contract in `docs/fitness.md`
+- `just podrick once|run [--dry-run]` — the Discord bot, defaulting to the PRODUCTION api; `just podrick-local` is the local-stack twin (sources `.env.dev`, pins local db + api) and `just dev` already runs it. Read `docs/podrick.md` before touching `src/app/interests/podrick/`
 
 ## Adding a page
 
@@ -36,6 +38,7 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 - Spire runs are data, not content: `/`, `/spire`, `/feed.xml` render them live from `/api/spire/runs` — publish runs with `just sync-spire`, never by editing the repo
 - Fitness sets are database data, not content: never hardcode the CSV; changes spanning `/lifting`, import, API, schema, tags, or local startup must preserve `docs/fitness.md` invariants
 - Records (`/lifting` badges) are derived from set history at snapshot build (`src/app/interests/lifting/archive/records.rs`), never stored or imported — there is deliberately no records table
+- Fitness writes are create-only except `DELETE /api/fitness/workouts/by-path/{path}`, which takes the sync token OR the admin cookie + same-origin. It removes the workout and its sets only — `exercises`/`exercise_tags` orphans are left deliberately (invisible to every count, and they preserve corrected taxonomy across a delete-and-repaste)
 - Muscle-map primary/secondary (`lifting/muscles.rs`) is likewise derived at render — no rank column; a taxonomy change in `exercise_tags()` must keep `PRIMARY_BY_MOVEMENT` aligned
 - The cookie layer drops `Set-Cookie` on `Err` responses — auth routes build `Ok(303)`s by hand; gated pages emit `no-store` before `shell()` or the edge caches one viewer's HTML for a day (`docs/auth.md`)
 - Topcoat discovery allows ONE `#[layer]` per path — a second `#[layer("/")]` panics at router build, and `just check` doesn't boot the router; whole-site response behavior (viewer no-store, em-dash links) all lives in `src/app/response_layer.rs`
@@ -43,3 +46,5 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 - `/diary` is also an installable offline PWA (`src/app/diary/*.js`, stable routes in `pwa.rs`, replay endpoint `POST /api/diary/entries`) — the service worker owns ALL queue flushing and replays dedupe by client-second+body; read the PWA section of `docs/auth.md` before touching any of it
 - Hand-served byte routes (`favicon.rs`, `pwa.rs`) must set Content-Type explicitly — the response layer treats untyped bodies as HTML and runs the em-dash rewriter through them; `/sw.js` must stay a stable un-hashed URL because a service worker's URL is its identity
 - Tailwind scans only `.rs` files, so classes referenced from JS (the diary queue UI) must also appear in some `.rs` file or they render unstyled
+- Podrick (`/podrick`) is an interest that ships a *service*: a fourth Railway service from the same `deploy/Dockerfile` with `startCommand` overridden. Its `podrick_meta:announce_watermark` row is the only thing keeping three years of lifting history out of a Discord channel — never move or clear it in production, and keep `--dry-run` write-free. `just dev --podrick-reset` clears the LOCAL row only, and that escape hatch lives in the dev scripts on purpose: the binary must never grow a backfill switch
+- SurrealDB `CREATE` returns `id` as a record id and `SELECT *` drops `option` fields holding `NONE`; both silently break deserialization into `String`/`Option` model fields — see the result-shape rules in `docs/surrealdb-notes.md`

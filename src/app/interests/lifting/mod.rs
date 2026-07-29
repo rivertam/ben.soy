@@ -3,6 +3,7 @@
 pub(crate) mod archive;
 mod badge;
 mod data;
+mod delete;
 mod filters;
 mod format;
 mod heatmap;
@@ -1138,6 +1139,11 @@ async fn lift_detail(cx: &Cx) -> Result {
     let older_lift_url = detail
         .and_then(|detail| detail.older_workout_path.as_deref())
         .map(workout_url);
+    // The delete control ships only to the admin. The page is already
+    // `no-store` (and `response_layer.rs` forces `private, no-store` on any
+    // cookie-bearing request), so this markup can never reach a shared cache.
+    let can_delete =
+        workout.is_some() && viewer(cx).is_some_and(|current| is_admin(&current.email));
 
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
@@ -1227,6 +1233,14 @@ async fn lift_detail(cx: &Cx) -> Result {
                             <span></span>
                         }
                     </nav>
+                }
+
+                if let Some(workout) = workout.filter(|_| can_delete) {
+                    delete::delete_control(
+                        path: workout.path.as_str(),
+                        set_count: workout.sets.len(),
+                    )
+                    <script type="module" src=(delete::DELETE_LIFT_JS)></script>
                 }
 
                 if share_text.is_some() {

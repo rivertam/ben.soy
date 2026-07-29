@@ -17,6 +17,10 @@ use topcoat::{
 use benjisponge::auth::bearer_authorized;
 use benjisponge::data::Data;
 
+use crate::app::analytics::is_same_origin;
+use crate::app::login::viewer;
+use crate::content::access::is_admin;
+
 use super::db;
 use super::eastern;
 use super::filters::parse_filters;
@@ -175,6 +179,125 @@ async fn workout_by_path(cx: &Cx) -> Result<PublicResponse> {
     })
 }
 
+/// Who may delete a lift. Two callers, deliberately: the sync token for
+/// scripts (`just delete-lift`), and the signed-in admin for a same-origin
+/// browser fetch. A cookie is ambient authority, so that path additionally
+/// demands same-origin evidence; a bearer token is not, so it does not.
+///
+/// Topcoat's session extension already runs `verify_origin` over every
+/// non-safe method, so a cross-site DELETE is refused before this function
+/// sees it. That layer deliberately passes requests carrying neither
+/// `Origin` nor `Sec-Fetch-Site` ("not a browser, so no ambient cookies to
+/// forge with") — which is exactly the shape a cookie replayed by a
+/// non-browser client has, so the check below stays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeleteAuth {
+    Allowed,
+    /// No usable credential at all.
+    Unauthorized,
+    /// A signed-in visitor who is not the admin — answered like a path that
+    /// does not exist, matching `/lifting/upload` and `/diary`.
+    NotFound,
+    /// The admin, but the request did not prove it came from this site.
+    Forbidden,
+}
+
+fn delete_authorized(cx: &Cx) -> DeleteAuth {
+    let authorization = headers(cx)
+        .get("authorization")
+        .and_then(|value| value.to_str().ok());
+    let expected = std::env::var(FITNESS_SYNC_TOKEN_VAR).ok();
+    authorize_delete(
+        bearer_authorized(authorization, expected.as_deref()),
+        viewer(cx).as_ref().map(|current| current.email.as_str()),
+        is_same_origin(headers(cx)),
+    )
+}
+
+/// The decision behind [`delete_authorized`], over the request's relevant
+/// parts. Split out so the matrix is testable without a live `Cx`.
+fn authorize_delete(token_ok: bool, viewer_email: Option<&str>, same_origin: bool) -> DeleteAuth {
+    if token_ok {
+        return DeleteAuth::Allowed;
+    }
+    match viewer_email {
+        None => DeleteAuth::Unauthorized,
+        Some(email) if !is_admin(email) => DeleteAuth::NotFound,
+        Some(_) if !same_origin => DeleteAuth::Forbidden,
+        Some(_) => DeleteAuth::Allowed,
+    }
+}
+
+/// `DELETE` on the workout resource the GET above serves.
+///
+/// Not idempotent-by-404: deleting an absent workout answers 404, the same
+/// as reading one. The alternative — always 204 — would make a typo'd path
+/// indistinguishable from a real delete, and this is the one operation where
+/// "nothing happened" must be visible.
+///
+/// The response carries no `Access-Control-Allow-Origin`, unlike the GET on
+/// the same URL — a wildcard CORS header on a credentialed destructive verb
+/// is exactly the mistake to avoid, and its absence also means no
+/// cross-origin preflight can succeed here.
+#[route(DELETE "/api/fitness/workouts/by-path/{public_workout_path}")]
+async fn delete_workout_by_path(cx: &Cx) -> Result<PrivateResponse> {
+    match delete_authorized(cx) {
+        DeleteAuth::Allowed => {}
+        DeleteAuth::Unauthorized => {
+            return Ok(private_error(StatusCode::UNAUTHORIZED, "unauthorized"));
+        }
+        DeleteAuth::NotFound => return Ok(private_error(StatusCode::NOT_FOUND, "not found")),
+        DeleteAuth::Forbidden => return Ok(private_error(StatusCode::FORBIDDEN, "forbidden")),
+    }
+    if has_query(cx) {
+        return Ok(private_error(
+            StatusCode::BAD_REQUEST,
+            "delete does not accept filters",
+        ));
+    }
+
+    let segment = path_param::<PublicWorkoutPath>(cx);
+    let Some(instant) = eastern::parse_public_path(segment) else {
+        return Ok(private_error(StatusCode::NOT_FOUND, "not found"));
+    };
+
+    let data = app_context::<Data>(cx);
+    let outcome = async {
+        let handle = data.db().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+            db::delete_workout_by_path(&handle, &instant.local, instant.offset_minutes).await?,
+        )
+    }
+    .await;
+
+    Ok(match outcome {
+        Ok(Some(deleted)) => {
+            if let Err(error) = app_context::<FitnessStore>(cx).rebuild().await {
+                // The delete committed. A stale snapshot only delays the
+                // workout disappearing from the pages until the next read's
+                // version check; reporting failure would invite a retry that
+                // now 404s.
+                log_failure("/api/fitness/workouts/by-path", error);
+            }
+            private(
+                StatusCode::OK,
+                to_body(&super::api::DeleteReceipt {
+                    path: segment.to_string(),
+                    workout_id: deleted.workout_id,
+                    source: deleted.source,
+                    sets_deleted: deleted.sets_deleted,
+                    version: deleted.version,
+                }),
+            )
+        }
+        Ok(None) => private_error(StatusCode::NOT_FOUND, "not found"),
+        Err(error) => {
+            log_failure("/api/fitness/workouts/by-path", error);
+            private_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    })
+}
+
 #[route(GET "/api/fitness/ids")]
 async fn list_ids(cx: &Cx) -> Result<PublicResponse> {
     if has_query(cx) {
@@ -307,4 +430,105 @@ async fn unknown_get() -> Result<PublicResponse> {
 #[route(POST "/api/fitness/{*rest}")]
 async fn unknown_post() -> Result<PrivateResponse> {
     Ok(private_error(StatusCode::NOT_FOUND, "not found"))
+}
+
+/// Unauthenticated on purpose, like its GET and POST siblings: it answers
+/// only for paths that have no delete handler, so there is nothing behind it
+/// to protect and a credential check would just confirm which paths exist.
+#[route(DELETE "/api/fitness/{*rest}")]
+async fn unknown_delete() -> Result<PrivateResponse> {
+    Ok(private_error(StatusCode::NOT_FOUND, "not found"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::access::ADMIN_EMAIL;
+
+    const STRANGER: &str = "someone.else@example.com";
+
+    #[test]
+    fn the_sync_token_deletes_without_a_browser() {
+        // Scripts (`just delete-lift`) send a bearer token and no origin
+        // evidence at all. A token is not ambient authority, so that is
+        // enough on its own.
+        assert_eq!(authorize_delete(true, None, false), DeleteAuth::Allowed);
+        // A token still wins when a cookie is also present, whoever it names.
+        assert_eq!(
+            authorize_delete(true, Some(STRANGER), false),
+            DeleteAuth::Allowed
+        );
+    }
+
+    #[test]
+    fn the_admin_deletes_only_from_this_site() {
+        assert_eq!(
+            authorize_delete(false, Some(ADMIN_EMAIL), true),
+            DeleteAuth::Allowed
+        );
+        // A cookie IS ambient authority: without positive same-origin
+        // evidence the request could have been made by someone else's page.
+        assert_eq!(
+            authorize_delete(false, Some(ADMIN_EMAIL), false),
+            DeleteAuth::Forbidden
+        );
+        assert_eq!(
+            authorize_delete(false, Some(&ADMIN_EMAIL.to_uppercase()), true),
+            DeleteAuth::Allowed
+        );
+    }
+
+    #[test]
+    fn everyone_else_is_refused() {
+        assert_eq!(
+            authorize_delete(false, None, true),
+            DeleteAuth::Unauthorized
+        );
+        assert_eq!(
+            authorize_delete(false, None, false),
+            DeleteAuth::Unauthorized
+        );
+        // A signed-in stranger learns nothing about the endpoint — hidden
+        // pages and `/lifting/upload` answer the same way.
+        assert_eq!(
+            authorize_delete(false, Some(STRANGER), true),
+            DeleteAuth::NotFound
+        );
+        // Identity is checked before origin, so a stranger never gets the
+        // 403 that would confirm the admin's cookie is the missing piece.
+        assert_eq!(
+            authorize_delete(false, Some(STRANGER), false),
+            DeleteAuth::NotFound
+        );
+    }
+
+    /// A grant on a hidden page is not a grant to rewrite the archive: only
+    /// `ADMIN_EMAIL` passes, exactly as `/lifting/upload` requires.
+    #[test]
+    fn hidden_page_grantees_cannot_delete() {
+        for email in ["guest@example.com", "", "ben.m.berman@gmail.com.evil.test"] {
+            assert_eq!(
+                authorize_delete(false, Some(email), true),
+                DeleteAuth::NotFound,
+                "{email} must not be able to delete a lift"
+            );
+        }
+    }
+
+    /// Key order is the response contract, like every other payload in
+    /// `api.rs`, and `sets_deleted` must survive as a number.
+    #[test]
+    fn the_receipt_serializes_the_documented_shape() {
+        let body = to_body(&super::super::api::DeleteReceipt {
+            path: "2026-07-27T13-42-00-04-00".to_string(),
+            workout_id: "fitness:2026-07-27T17:42:00".to_string(),
+            source: "manual".to_string(),
+            sets_deleted: 18,
+            version: 141,
+        });
+        assert_eq!(
+            body,
+            r#"{"path":"2026-07-27T13-42-00-04-00","workout_id":"fitness:2026-07-27T17:42:00","source":"manual","sets_deleted":18,"version":141}"#
+        );
+    }
 }

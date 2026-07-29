@@ -64,7 +64,9 @@ file under "API contract".
 - `just dev [port]` delegates to `scripts/dev.sh`: it starts the local
   SurrealDB container, then runs Topcoat with local-only sync tokens. The app
   applies the committed schema on its first data-backed connection. It never
-  imports data.
+  imports data. It also starts the Podrick Discord bot when `.env.dev`
+  configures one (`docs/podrick.md`), which reads fitness tables but never
+  writes them; `just dev --no-podrick` skips it.
 - `just reset-fitness-local [csv]` runs while `just dev` is active. It
   truncates only the local fitness tables, resets the fitness version, and
   imports the CSV; local Spire tables in the shared database remain untouched.
@@ -212,6 +214,43 @@ set IDs are skipped; a conflicting workout ordinal is an error rather than
 being silently ignored. Tags are replaced authoritatively for each exercise
 included in a chunk. The fitness version increments only when sets or
 taxonomy change.
+The delete path is `DELETE /api/fitness/workouts/by-path/{path}` — the same
+resource the GET above serves, addressed by the same canonical path segment.
+It is the explicit replacement operation the append-only rules below reserve
+for corrections: delete, then repaste or resync.
+
+- Two authorizations, either sufficient: `Authorization: Bearer
+  $FITNESS_SYNC_TOKEN` (scripts, no browser evidence needed), or the
+  signed-in `ADMIN_EMAIL` viewer cookie *plus* `is_same_origin` evidence.
+  Hidden-page grants never authorize it. Anyone else gets 401; a signed-in
+  non-admin gets 404, like `/lifting/upload`.
+- 200 returns `{path,workout_id,source,sets_deleted,version}`. `source` is
+  the deleted workout's, because deleting a `workout-data-csv` workout is
+  undone by the next `just sync-fitness` — sync resends any workout holding
+  a missing set. Remove it from the export first, or delete only `manual`
+  workouts.
+- 404 for a malformed path, an unparseable one, or a path with no workout —
+  the same answer the GET gives. Deliberately not idempotent-by-204: a typo'd
+  path must not look like a successful delete.
+- 400 for any query string. The response carries no
+  `Access-Control-Allow-Origin`; the GET on the same URL still does.
+- Removes exactly the `workouts` row, its `sets`, and bumps the version.
+  `exercises` and `exercise_tags` rows survive even when the deleted workout
+  held an exercise's last set: the snapshot never loads the `exercises`
+  table and every public count joins through sets, so orphans are invisible
+  rather than merely harmless, and hand-corrected taxonomy survives a
+  delete-and-repaste. Records need no cleanup — they are derived at snapshot
+  build, so the remaining history re-derives its own podium.
+- The snapshot is rebuilt in-process on success, so `/lifting` reflects the
+  delete immediately. A rebuild failure is logged, not reported: the commit
+  already landed, and a retry would now 404.
+
+```sh
+just delete-lift 2026-07-27T13-42-00-04-00           # prompts, confirms by path
+just delete-lift <workout URL> --yes                 # accepts a pasted /lifting/ URL
+just delete-lift <path> --api http://127.0.0.1:3000  # local
+```
+
 The CSV path is deliberately append-oriented: an already stored set ID is
 immutable. Editing, reordering, or deleting old rows in a later export requires
 an explicit replacement operation rather than silently rewriting history.
@@ -276,10 +315,9 @@ continues to accept only `source='workout-data-csv'`.
   data-backed route so the app installs `src/schema.surql`, then run
   `just sync-fitness`.
 - The CSV corpus uses reset-and-resync rather than an in-place upgrade. Manual
-  workouts are not present in that CSV and must survive replacement. Open an
-  authenticated `/surreal sql` session inside the private Railway database
-  service and run this transaction as one line, then resync from the machine
-  with the CSV:
+  workouts are not present in that CSV and must survive replacement. Run this
+  transaction as one line against the production database (see "Running SQL
+  against production" below), then resync from the machine with the CSV:
 
   ```surql
   BEGIN TRANSACTION; DELETE sets WHERE workout_id IN (SELECT VALUE record::id(id) FROM workouts WHERE source = 'workout-data-csv') RETURN NONE; DELETE workouts WHERE source = 'workout-data-csv' RETURN NONE; UPSERT fitness_meta:version SET k = 'version', v = (v ?? 0) + 1 RETURN NONE; COMMIT TRANSACTION;
@@ -300,9 +338,41 @@ continues to accept only `source='workout-data-csv'`.
   seconds and therefore derive a different ID for the same real workout.
   Until there is an explicit reconciliation key, do not ingest the same
   post-baseline session through both browser paste and CSV sync.
-- There is no edit/delete UI. Manual mutations are intentionally create-only;
-  corrections require an explicit database operation rather than silently
-  rewriting set history and derived records.
+- There is no edit UI, and no delete *button* — deleting is a deliberate
+  command (`just delete-lift`, above), not something a mis-click can do.
+  Writes stay create-only: correcting a workout means deleting it and
+  publishing it again, never editing set history or derived records in
+  place. A delete leaves any Podrick announcement row behind, so a
+  delete-and-repaste does not re-announce to Discord (`docs/podrick.md`).
+
+## Running SQL against production
+
+Reach for this only for what no endpoint covers — deleting one workout is
+`just delete-lift`, not a hand-written transaction.
+
+There is no SQL prompt inside the `surrealdb` service: that image is
+distroless (just the `/surreal` binary, no shell), so `railway ssh` into it
+can never give you one. Go through the **web** service instead. It is
+debian-slim, sits on the same private network, and already holds the five
+`SURREALDB_*` variables. It has no `curl`, so speak SurrealDB's HTTP `/sql`
+endpoint over bash's `/dev/tcp`:
+
+```sh
+railway link --project <project> --environment <env> --service <web>
+railway ssh --service <web> bash -c '
+  SQL="<one-line transaction>"
+  endpoint=${SURREALDB_ENDPOINT#*://}; host=${endpoint%%:*}; port=${endpoint##*:}
+  auth=$(printf "%s:%s" "$SURREALDB_USERNAME" "$SURREALDB_PASSWORD" | base64 -w0)
+  exec 3<>"/dev/tcp/$host/$port"
+  printf "POST /sql HTTP/1.1\r\nHost: %s:%s\r\nAuthorization: Basic %s\r\nAccept: application/json\r\nsurreal-ns: %s\r\nsurreal-db: %s\r\nContent-Type: text/plain\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s" \
+    "$host" "$port" "$auth" "$SURREALDB_NAMESPACE" "$SURREALDB_DATABASE" "${#SQL}" "$SQL" >&3
+  cat <&3'
+```
+
+`railway ssh` needs a registered SSH key on the Railway account. Read the
+response: a statement can report `"status":"OK"` and still have changed
+nothing (see the `DELETE ... IN [..]` rule in `docs/surrealdb-notes.md`), so
+verify row counts afterwards rather than trusting the status.
 
 ## Validation
 
@@ -312,6 +382,7 @@ just build
 node --check src/app/interests/lifting/auto-filter.js
 bash -n scripts/dev.sh
 bash -n scripts/reset-fitness-local.sh
+bash -n scripts/delete-lift.sh
 cd deploy && npx wrangler types --check && npx tsc --noEmit
 ```
 

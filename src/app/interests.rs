@@ -5,6 +5,7 @@ mod drums;
 mod felix;
 mod keyboards;
 pub(crate) mod lifting;
+mod podrick;
 mod puzzles;
 mod simulation;
 pub(crate) mod spire;

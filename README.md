@@ -22,6 +22,10 @@ the application bootstraps its schema on connection. Seed fitness data
 separately with `just reset-fitness-local [csv]` (default
 `/home/benji/Downloads/WorkoutData.csv`). See `docs/fitness.md`.
 
+If `.env.dev` configures the Discord bot, `just dev` runs it too, so a lift
+pasted locally is announced in the test channel; `just dev --no-podrick` skips
+it. See `docs/podrick.md`.
+
 ## Commands
 
 Run `just` or `just --list` to see the available commands.

@@ -122,3 +122,15 @@ pub struct ImportReceipt {
     pub skipped: usize,
     pub version: i64,
 }
+
+/// What `DELETE /api/fitness/workouts/by-path/{path}` reports. `source` is
+/// the deleted workout's, so a caller who removes a `workout-data-csv`
+/// workout can see that the next sync will bring it straight back.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeleteReceipt {
+    pub path: String,
+    pub workout_id: String,
+    pub source: String,
+    pub sets_deleted: usize,
+    pub version: i64,
+}

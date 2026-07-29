@@ -68,8 +68,33 @@ statement failed; omitting `.check()` hides that failure.
 - Keep scaled integer storage where the schema and API contracts use it;
   do not introduce floating-point drift.
 
+Rules that fail *silently* rather than loudly. Each one produced a working
+write that the Rust side then misread:
+
+- **`CREATE`/`CREATE ONLY` return `id` as a record id, not a string.**
+  Deserializing the created record into a model whose `id` is `String` fails
+  even though the row was written — so a successful create looks like a lost
+  race. Return the key explicitly: `RETURN VALUE record::id(id)`.
+- **`SELECT *` omits `option` fields holding `NONE`.** It does not return them
+  as null, so a model with `Option<T>` fields can fail to deserialize on
+  exactly the rows where the value is absent. Project every field explicitly
+  when any of them is optional; an explicit projection does yield null.
+- **`ORDER BY` requires the field to be in the projection.** Ordering by a
+  column the `SELECT` does not return is a parse error ("Missing order idiom"),
+  not a silently ignored sort.
+- **`DELETE ... WHERE field IN [..]` can match nothing where `SELECT` matches.**
+  Observed on `exercise_tags`, whose UNIQUE index is compound
+  (`exercise_name, kind, value`) and whose predicate covered only the leading
+  field: `SELECT count()` returned 1, the `DELETE` reported success and removed
+  nothing. The `=` form deleted the same row correctly. `exercises`, with a
+  single-field index, deleted fine either way. Write deletes as one `=` per
+  value and verify the row count afterwards — a delete that quietly no-ops is
+  indistinguishable from success in the statement results.
+
 The CLI treats separate stdin lines as separate query requests. A transaction
-piped to `/surreal sql` must therefore be a single line. Scripts should request
+piped to `/surreal sql` must therefore be a single line — and so must a `LET`
+and the query that uses it, or the parameter is gone by the time the query
+runs and the filter silently matches nothing. Scripts should request
 machine-readable output and reject unexpected statement results; the local
 fitness reset is the reference.
 

@@ -18,6 +18,8 @@ use tokio::sync::OnceCell;
 pub mod analytics_models;
 #[path = "app/interests/lifting/models.rs"]
 pub mod fitness_models;
+#[path = "app/interests/podrick/models.rs"]
+pub mod podrick_models;
 #[path = "app/interests/spire/models.rs"]
 pub mod spire_models;
 

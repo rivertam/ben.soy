@@ -315,6 +315,89 @@ fn same_manual_workout(workout: &Workout, sets: &[LiftSet], payload: &Payload) -
     })
 }
 
+/// What a delete removed, for the caller's receipt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeletedWorkout {
+    pub workout_id: String,
+    pub source: String,
+    pub sets_deleted: usize,
+    pub version: i64,
+}
+
+/// The one row the public path resolves to. `source` rides along because the
+/// receipt reports it: deleting a `workout-data-csv` workout is undone by the
+/// next `just sync-fitness`, and the caller deserves to be told.
+#[derive(Deserialize, SurrealValue)]
+struct DeletionTarget {
+    id: String,
+    source: String,
+}
+
+/// Delete one workout and its sets, addressed exactly the way the public API
+/// addresses it — by Eastern local start plus offset, the pair `by_path`
+/// matches on. `Ok(None)` means no workout is stored there.
+///
+/// Deliberately narrow: `sets`, the `workouts` row, and the version counter.
+/// Exercise and tag rows are left alone even when this was an exercise's last
+/// set. That is the same invariant the CSV reset relies on — the snapshot
+/// never loads the `exercises` table, and every public count joins through
+/// sets, so an orphan is invisible rather than harmless-but-visible. Keeping
+/// them also preserves hand-corrected taxonomy across a delete-and-repaste.
+///
+/// Records need no cleanup: they are derived at snapshot build, so the
+/// remaining history re-derives its own podium on the next rebuild.
+pub async fn delete_workout_by_path(
+    db: &Db,
+    local: &str,
+    offset_minutes: i32,
+) -> surrealdb::Result<Option<DeletedWorkout>> {
+    let mut response = db
+        .query(
+            "SELECT record::id(id) AS id, source
+             FROM workouts
+             WHERE started_at_local = $local AND eastern_offset_minutes = $offset;",
+        )
+        .bind(("local", local.to_string()))
+        .bind(("offset", i64::from(offset_minutes)))
+        .await?
+        .check()?;
+    let mut targets: Vec<DeletionTarget> = response.take(0)?;
+    let Some(target) = targets.pop() else {
+        return Ok(None);
+    };
+
+    // Counted before the delete rather than returned from it: `DELETE` yields
+    // nothing by default, and `RETURN BEFORE` would hand back records whose
+    // `id` is a record id the model cannot deserialize.
+    let mut response = db
+        .query("SELECT VALUE record::id(id) FROM sets WHERE workout_id = $workout_id;")
+        .bind(("workout_id", target.id.clone()))
+        .await?
+        .check()?;
+    let sets_deleted = response.take::<Vec<String>>(0)?.len();
+
+    // `=` on the whole predicate, never `IN [..]`: on a table carrying a
+    // compound unique index an `IN` delete can match nothing and still report
+    // success (see docs/surrealdb-notes.md).
+    db.query(
+        "BEGIN TRANSACTION;
+         DELETE sets WHERE workout_id = $workout_id;
+         DELETE type::record('workouts', $workout_id);
+         UPSERT fitness_meta:version SET k = 'version', v = (v ?? 0) + 1;
+         COMMIT TRANSACTION;",
+    )
+    .bind(("workout_id", target.id.clone()))
+    .await?
+    .check()?;
+
+    Ok(Some(DeletedWorkout {
+        workout_id: target.id,
+        source: target.source,
+        sets_deleted,
+        version: current_version(db).await?,
+    }))
+}
+
 pub async fn apply_import(
     db: &Db,
     payload: &Payload,

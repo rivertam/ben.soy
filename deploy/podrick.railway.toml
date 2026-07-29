@@ -1,0 +1,20 @@
+# The Podrick Discord bot. Same image as the web service — the Dockerfile
+# builds every bin in the package and copies `podrick` alongside the site —
+# with a different start command. Set this file as the podrick service's
+# Railway config path (docs/podrick.md).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "deploy/Dockerfile"
+
+[deploy]
+startCommand = "/app/podrick run"
+# No HTTP listener, so no health check. The loop already swallows transient
+# failures (unreachable database, Discord 5xx, timeouts) and retries on the
+# next pass, so a non-zero exit always means operator error: a rejected token
+# or a channel the bot cannot post in. Retrying a few times and then staying
+# down is a clearer signal than an endless crash loop.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+# The create-only claim makes a second replica safe, but there is no reason to
+# run one — two workers would just race for the same announcements.
+numReplicas = 1

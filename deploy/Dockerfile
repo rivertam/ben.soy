@@ -25,6 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /build/target/release/benjisponge /app/benjisponge
+# The Podrick Discord bot ships in the same image and runs as its own Railway
+# service with `/app/podrick run` as its start command (docs/podrick.md). It
+# serves no HTTP and needs no assets.
+COPY --from=builder /build/target/release/podrick /app/podrick
 # AssetBundle::load() walks up from the exe looking for assets/manifest.toml
 COPY --from=builder /build/target/assets /app/assets
 ENV HOST=0.0.0.0 PORT=8080

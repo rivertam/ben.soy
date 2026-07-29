@@ -2,13 +2,13 @@
 name = "benjisponge"
 version = "0.1.0"
 edition = "2024"
-# Three bins live here (the site and two sync CLIs); plain
+# Four bins live here (the site, two sync CLIs, and the Discord bot); plain
 # `cargo run` and `topcoat dev` need to keep resolving to the site.
 default-run = "benjisponge"
 
-# The sync CLIs are standalone crates that live WITH their interests —
-# delete an interest folder and its importer goes too. They are not part
-# of the site binary's module tree.
+# The sync CLIs and the bot are standalone crates that live WITH their
+# interests — delete an interest folder and its importer goes too. They are
+# not part of the site binary's module tree.
 [[bin]]
 name = "fitness_sync"
 path = "src/app/interests/lifting/fitness_sync.rs"
@@ -16,6 +16,12 @@ path = "src/app/interests/lifting/fitness_sync.rs"
 [[bin]]
 name = "spire_sync"
 path = "src/app/interests/spire/spire_sync.rs"
+
+# Unlike the sync CLIs this one is a long-running service, deployed from the
+# same image as the site with its own start command (docs/podrick.md).
+[[bin]]
+name = "podrick"
+path = "src/app/interests/podrick/podrick.rs"
 
 [dependencies]
 anyhow = "1.0.104"

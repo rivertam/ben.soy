@@ -301,3 +301,47 @@ DEFINE FIELD OVERWRITE first_submitted_at ON analytics_identities TYPE int
 DEFINE FIELD OVERWRITE updated_at ON analytics_identities TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799
         AND $value >= first_submitted_at;
+
+-- Podrick, the Discord bot (docs/podrick.md). Both tables are written only by
+-- the `podrick` binary; the site reads them to render /podrick and never
+-- writes them.
+
+-- One row per workout Podrick has taken responsibility for announcing. The
+-- record key IS the workout id, so the claim is create-only: exactly one
+-- worker can ever own a given workout's announcement. A row with no
+-- `message_id` is a claim whose Discord POST did not confirm — the next tick
+-- retries it, which is what makes a crash mid-post safe rather than a lost or
+-- duplicated announcement.
+DEFINE TABLE OVERWRITE podrick_announcements SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON podrick_announcements TYPE string;
+DEFINE FIELD OVERWRITE workout_id ON podrick_announcements TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 128;
+-- The workout's canonical public path segment, stored rather than derived so
+-- the site can link an announcement without reopening the Eastern projection.
+DEFINE FIELD OVERWRITE workout_path ON podrick_announcements TYPE string
+    ASSERT string::matches($value,
+        '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$');
+DEFINE FIELD OVERWRITE channel_id ON podrick_announcements TYPE string
+    ASSERT string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE message_id ON podrick_announcements TYPE option<string>
+    ASSERT $value IS NONE OR string::matches($value, '^[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE claimed_at ON podrick_announcements TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE posted_at ON podrick_announcements TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 253402300799);
+DEFINE FIELD OVERWRITE attempts ON podrick_announcements TYPE int
+    ASSERT $value >= 0 AND $value <= 1000000;
+DEFINE INDEX OVERWRITE podrick_announcements_claimed_at
+    ON podrick_announcements FIELDS claimed_at;
+
+-- String-valued cursors, keyed by `k`. `announce_watermark` holds the newest
+-- workout `started_at_utc` that already existed the first time Podrick ran;
+-- nothing at or before it is ever announced. That single row is what keeps
+-- three years of imported history out of the channel, and because it lives in
+-- the database rather than in memory, a restart cannot replay the archive.
+DEFINE TABLE OVERWRITE podrick_meta SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON podrick_meta TYPE string;
+DEFINE FIELD OVERWRITE k ON podrick_meta TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 64;
+DEFINE FIELD OVERWRITE v ON podrick_meta TYPE string
+    ASSERT string::len($value) <= 256;
