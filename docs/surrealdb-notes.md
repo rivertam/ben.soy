@@ -82,6 +82,17 @@ write that the Rust side then misread:
 - **`ORDER BY` requires the field to be in the projection.** Ordering by a
   column the `SELECT` does not return is a parse error ("Missing order idiom"),
   not a silently ignored sort.
+- **Two writes to one record in the same instant abort one of them.** The loser
+  gets "There was a problem with the key-value store: Transaction conflict:
+  Resource busy. This transaction can be retried". Measured 1 failure in 120 for
+  two racers and 171 in 800 for eight. The SDK flattens it to a message with no
+  typed variant, so recognizing it means matching that string — upstream's own
+  tests do the same. `analytics/db.rs::retrying_conflicts` is the reference
+  handling: every analytics beacon from one visitor upserts the same
+  `analytics_sessions` row, so this is that module's ordinary case rather than a
+  rare one. Any new write on a record several requests share needs the same
+  wrapper, and it must be a *retry*, not a swallow — the losing write did not
+  happen.
 - **`DELETE ... WHERE field IN [..]` can match nothing where `SELECT` matches.**
   Observed on `exercise_tags`, whose UNIQUE index is compound
   (`exercise_name, kind, value`) and whose predicate covered only the leading

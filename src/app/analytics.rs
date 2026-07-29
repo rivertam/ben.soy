@@ -1066,15 +1066,33 @@ fn response(
         .expect("analytics response uses static headers")
 }
 
-fn log_failure(path: &str, error: impl std::fmt::Display) {
+/// Log the whole error chain, not just its outermost layer.
+///
+/// These errors reach here as `Box<dyn Error>`, which renders as only the last
+/// context that was attached. That reported "analytics session upsert failed"
+/// and silently dropped the datastore's own "Transaction conflict ... can be
+/// retried" underneath it — the half of the message that says what is actually
+/// wrong. Boxing flattens `anyhow`'s contexts onto `source()`, so walking it
+/// puts them back.
+fn log_failure(path: &str, error: impl Into<Box<dyn std::error::Error + Send + Sync>>) {
     eprintln!(
         "{}",
         serde_json::json!({
             "message": "analytics operation failed",
             "path": path,
-            "error": error.to_string(),
+            "error": error_chain(error.into().as_ref()),
         })
     );
+}
+
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut chain = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(current) = source {
+        chain.push(current.to_string());
+        source = current.source();
+    }
+    chain.join(": ")
 }
 
 fn epoch_seconds() -> i64 {
@@ -1330,5 +1348,33 @@ mod tests {
                 .headers()
                 .contains_key("access-control-allow-origin")
         );
+    }
+
+    /// The bug this exists to prevent: the log said only "analytics session
+    /// upsert failed" and threw away the datastore's reason underneath it.
+    #[test]
+    fn a_logged_failure_keeps_the_cause_under_its_context() {
+        let boxed: Box<dyn std::error::Error + Send + Sync> =
+            anyhow::Error::new(surrealdb::Error::internal(
+                "There was a problem with the key-value store: Transaction conflict: \
+                 Resource busy. This transaction can be retried"
+                    .to_string(),
+            ))
+            .context("analytics session upsert failed")
+            .into();
+
+        let chain = error_chain(boxed.as_ref());
+
+        assert!(
+            chain.starts_with("analytics session upsert failed"),
+            "{chain}"
+        );
+        assert!(chain.contains("Transaction conflict"), "{chain}");
+    }
+
+    #[test]
+    fn an_error_without_a_cause_logs_just_itself() {
+        let plain = std::io::Error::other("connection reset");
+        assert_eq!(error_chain(&plain), "connection reset");
     }
 }
