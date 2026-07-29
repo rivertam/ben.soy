@@ -63,11 +63,6 @@ async fn podrick(cx: &Cx) -> Result {
     if uri(cx).query() != canonical_query.as_deref() {
         return Err(redirect(&heatmap::year_path(selected_year, current_year)).into());
     }
-    let announced = match summary.posted {
-        0 => "no lifts announced yet".to_string(),
-        1 => "1 lift announced".to_string(),
-        posted => format!("{posted} lifts announced"),
-    };
 
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
@@ -88,20 +83,6 @@ async fn podrick(cx: &Cx) -> Result {
                     earliest_year: earliest_year,
                     current_year: current_year
                 )
-            )
-
-            rail_section(
-                class: "mt-4",
-                stamp: "announcements",
-                <p class="font-meta text-sm text-ink2">
-                    (announced)
-                    if let Some(latest) = summary.latest.as_ref() {
-                        " · most recently "
-                        <a class="quiet-link" href=(format!("/lifting/{}", latest.workout_path))>
-                            "this one →"
-                        </a>
-                    }
-                </p>
             )
 
             back_link(href: "/interests", label: "all interests")

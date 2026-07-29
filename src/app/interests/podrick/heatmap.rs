@@ -82,9 +82,6 @@ pub(super) async fn pants_heatmaps(
                     >
                         (format!("{selected_year} claims"))
                     </h2>
-                    <p class=(class!(NOTE, "mt-1"))>
-                        "America/New_York · one claim each at 6:07 AM and 6:07 PM"
-                    </p>
                     <nav
                         class="mt-3 flex flex-wrap items-center gap-[0.35rem] \
                              font-meta text-[0.7rem] leading-none"
