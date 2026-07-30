@@ -151,10 +151,19 @@ impl FitnessStore {
             .db()
             .await
             .map_err(|error| StoreError(error.to_string()))?;
-        let (version, workouts, sets, tags) = db::load_archive(&handle)
+        // Seed default weights for any exercise that has none before reading;
+        // insert-only, so in steady state this writes nothing (archive/db.rs).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs() as i64)
+            .unwrap_or(0);
+        db::reconcile_muscle_weights(&handle, now)
             .await
             .map_err(|error| StoreError(error.to_string()))?;
-        snapshot::build(version, workouts, sets, tags)
+        let (version, workouts, sets, tags, weights) = db::load_archive(&handle)
+            .await
+            .map_err(|error| StoreError(error.to_string()))?;
+        snapshot::build(version, workouts, sets, tags, weights)
             .map(Arc::new)
             .map_err(|error| StoreError(error.to_string()))
     }

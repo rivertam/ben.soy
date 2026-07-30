@@ -4,9 +4,12 @@ pub(crate) mod archive;
 mod badge;
 mod data;
 mod delete;
+mod exercise;
 mod filters;
 mod format;
 mod heatmap;
+mod muscle_seed;
+mod muscle_taxonomy;
 mod muscles;
 mod results;
 mod share;
@@ -1177,11 +1180,11 @@ async fn lift_detail(cx: &Cx) -> Result {
     let meta = interest("lifting");
     let detail = loaded.as_ref().ok().map(|(detail, _)| detail);
     let workout = detail.and_then(|detail| detail.workout.as_ref());
-    let involvement = loaded.as_ref().ok().and_then(|(detail, tags)| {
+    let involvement = loaded.as_ref().ok().and_then(|(detail, weights)| {
         detail
             .workout
             .as_ref()
-            .map(|workout| muscles::workout_involvement(workout, tags))
+            .map(|workout| muscles::workout_involvement(workout, weights))
     });
     let share_text =
         workout.map(|workout| share::share_text(workout, share::request_origin(cx).as_deref()));
@@ -1446,7 +1449,15 @@ async fn workout_detail_block(block: &results::ExerciseBlock<'_>) -> Result {
             for group in block.groups.iter() {
                 <section class="rail-row rail-row-top">
                     <div class="rail-stamp sm:pt-[0.2rem]">
-                        <h2 class="font-semibold text-ink2">(group.name)</h2>
+                        <h2 class="font-semibold text-ink2">
+                            <a
+                                class="hover:text-oxide hover:underline \
+                                     hover:decoration-oxide/45 underline-offset-[0.2em]"
+                                href=(exercise::page_url(group.name))
+                            >
+                                (group.name)
+                            </a>
+                        </h2>
                         <p>(format!(
                             "{} {}", group.rows.len(), plural(group.rows.len(), "set", "sets"),
                         ))</p>
@@ -1492,7 +1503,13 @@ async fn workout_body_block(block: &results::ExerciseBlock<'_>) -> Result {
                 <section class="mt-3">
                     <div class="flex items-end justify-between gap-[0.7rem] pb-[0.35rem]">
                         <h4 class="text-[0.9rem] font-semibold leading-[1.3]">
-                            (group.name)
+                            <a
+                                class="hover:text-oxide hover:underline \
+                                     hover:decoration-oxide/45 underline-offset-[0.2em]"
+                                href=(exercise::page_url(group.name))
+                            >
+                                (group.name)
+                            </a>
                         </h4>
                         <span class=(META_SMALL)>
                             (format!(

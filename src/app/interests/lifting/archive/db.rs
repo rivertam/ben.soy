@@ -9,11 +9,13 @@ use std::{
 use anyhow::Context;
 use benjisponge::data::{
     Db,
-    fitness_models::{Exercise, ExerciseTag, LiftSet, Workout},
+    fitness_models::{Exercise, ExerciseMuscle, ExerciseTag, LiftSet, Workout},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use surrealdb::types::SurrealValue;
 
+use super::super::{muscle_seed, muscle_taxonomy};
 use super::import::{IncomingTag, Payload, tag_signature};
 
 /// The data version; 0 when the row does not exist yet.
@@ -32,13 +34,20 @@ struct ArchiveRows {
     workouts: Vec<Workout>,
     sets: Vec<LiftSet>,
     tags: Vec<ExerciseTag>,
+    weights: Vec<ExerciseMuscle>,
 }
 
 /// The version and everything its snapshot needs from one read transaction.
 /// Row order is irrelevant because the snapshot sorts.
 pub async fn load_archive(
     db: &Db,
-) -> anyhow::Result<(i64, Vec<Workout>, Vec<LiftSet>, Vec<ExerciseTag>)> {
+) -> anyhow::Result<(
+    i64,
+    Vec<Workout>,
+    Vec<LiftSet>,
+    Vec<ExerciseTag>,
+    Vec<ExerciseMuscle>,
+)> {
     let mut response = db
         .query(
             "RETURN {
@@ -47,6 +56,10 @@ pub async fn load_archive(
                  sets: (SELECT *, record::id(id) AS id FROM sets),
                  tags: (
                      SELECT exercise_name, kind, value FROM exercise_tags
+                 ),
+                 weights: (
+                     SELECT exercise_name, muscle, ratio_hundredths
+                     FROM exercise_muscles
                  )
              };",
         )
@@ -54,7 +67,253 @@ pub async fn load_archive(
         .check()?;
     let rows: Option<ArchiveRows> = response.take(0)?;
     let rows = rows.context("fitness archive query returned no snapshot")?;
-    Ok((rows.version, rows.workouts, rows.sets, rows.tags))
+    Ok((
+        rows.version,
+        rows.workouts,
+        rows.sets,
+        rows.tags,
+        rows.weights,
+    ))
+}
+
+/// The deterministic record key for an (exercise, muscle) pair: sha-256 of
+/// both, newline-separated (exercise names are validated printable text, so
+/// the separator is unambiguous). Mirrors `content::access::grant_id` — a hex
+/// key sidesteps record-id escaping for names containing spaces and parens.
+pub fn exercise_muscle_id(exercise_name: &str, muscle: &str) -> String {
+    Sha256::digest(format!("{exercise_name}\n{muscle}"))
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// One `muscles` vocabulary row, mirroring `muscle_taxonomy::MUSCLE_GROUPS`.
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue, PartialEq, Eq)]
+struct MuscleRow {
+    name: String,
+    label: String,
+    muscle_group: String,
+    ordinal: i64,
+}
+
+/// One `exercise_muscles` row as written (reads drop `source`/`updated_at`).
+#[derive(Clone, Debug, Serialize, SurrealValue)]
+struct WeightWrite {
+    id: String,
+    exercise_name: String,
+    muscle: String,
+    ratio_hundredths: i64,
+    source: String,
+    updated_at: i64,
+}
+
+/// Reconcile the muscle vocabulary and seed default weights, insert-only at
+/// exercise granularity: an exercise with any stored weight row — `seed`,
+/// `derived`, or `admin` — is never touched, so hand-tuned ratios survive
+/// every future reconcile the way hand-corrected taxonomy survives imports.
+/// Exercises with no rows get the researched seed table, else ratios derived
+/// from their stored taxonomy tags. Runs at the top of every snapshot load;
+/// in steady state it reads, finds nothing missing, and writes nothing.
+/// Deliberately no version bump: the same call builds the snapshot that
+/// reads these rows.
+pub async fn reconcile_muscle_weights(db: &Db, updated_at: i64) -> anyhow::Result<()> {
+    let expected: Vec<MuscleRow> = muscle_taxonomy::MUSCLE_GROUPS
+        .iter()
+        .flat_map(|(group, _, members)| members.iter().map(move |(id, label)| (group, id, label)))
+        .enumerate()
+        .map(|(ordinal, (group, id, label))| MuscleRow {
+            name: (*id).to_string(),
+            label: (*label).to_string(),
+            muscle_group: (*group).to_string(),
+            ordinal: ordinal as i64,
+        })
+        .collect();
+    let mut response = db
+        .query("SELECT name, label, muscle_group, ordinal FROM muscles;")
+        .await?
+        .check()?;
+    let mut stored_muscles: Vec<MuscleRow> = response.take(0)?;
+    stored_muscles.sort_by_key(|row| row.ordinal);
+    if stored_muscles != expected {
+        db.query(
+            "FOR $muscle IN $muscles {
+                 UPSERT ONLY type::record('muscles', $muscle.name)
+                     CONTENT $muscle RETURN NONE;
+             };",
+        )
+        .bind(("muscles", expected))
+        .await?
+        .check()?;
+    }
+
+    let mut response = db
+        .query(
+            "RETURN {
+                 exercises: (SELECT VALUE name FROM exercises),
+                 weighted: (SELECT VALUE exercise_name FROM exercise_muscles)
+             };",
+        )
+        .await?
+        .check()?;
+    #[derive(Deserialize, SurrealValue)]
+    struct SeedScan {
+        exercises: Vec<String>,
+        weighted: Vec<String>,
+    }
+    let scan: Option<SeedScan> = response.take(0)?;
+    let scan = scan.context("exercise/weight scan returned no result")?;
+    let weighted: HashSet<String> = scan.weighted.into_iter().collect();
+    let unweighted: Vec<String> = scan
+        .exercises
+        .into_iter()
+        .filter(|name| !weighted.contains(name))
+        .collect();
+    if unweighted.is_empty() {
+        return Ok(());
+    }
+
+    let mut response = db
+        .query(
+            "SELECT exercise_name, kind, value
+             FROM exercise_tags
+             WHERE exercise_name IN $names;",
+        )
+        .bind(("names", unweighted.clone()))
+        .await?
+        .check()?;
+    let tag_rows: Vec<ExerciseTag> = response.take(0)?;
+    let mut tags_by_exercise: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for tag in tag_rows {
+        tags_by_exercise
+            .entry(tag.exercise_name)
+            .or_default()
+            .push((tag.kind, tag.value));
+    }
+
+    let mut rows: Vec<WeightWrite> = Vec::new();
+    for name in &unweighted {
+        let tags = tags_by_exercise
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for (muscle, ratio, source) in muscle_seed::default_weights(name, tags) {
+            rows.push(WeightWrite {
+                id: exercise_muscle_id(name, muscle),
+                exercise_name: name.clone(),
+                muscle: muscle.to_string(),
+                ratio_hundredths: i64::from(ratio),
+                source: source.to_string(),
+                updated_at,
+            });
+        }
+    }
+    if rows.is_empty() {
+        return Ok(());
+    }
+    db.query(
+        "BEGIN TRANSACTION;
+         FOR $row IN $rows {
+             UPSERT ONLY type::record('exercise_muscles', $row.id)
+                 CONTENT $row RETURN NONE;
+         };
+         COMMIT TRANSACTION;",
+    )
+    .bind(("rows", rows))
+    .await?
+    .check()?;
+    Ok(())
+}
+
+/// The stored weights for one exercise, with provenance — the exercise page's
+/// read. Canonical muscle order is applied by the caller.
+pub async fn exercise_weights(
+    db: &Db,
+    exercise_name: &str,
+) -> surrealdb::Result<Vec<(String, i64, String)>> {
+    #[derive(Deserialize, SurrealValue)]
+    struct Row {
+        muscle: String,
+        ratio_hundredths: i64,
+        source: String,
+    }
+    let mut response = db
+        .query(
+            "SELECT muscle, ratio_hundredths, source
+             FROM exercise_muscles
+             WHERE exercise_name = $name;",
+        )
+        .bind(("name", exercise_name.to_string()))
+        .await?
+        .check()?;
+    let rows: Vec<Row> = response.take(0)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.muscle, row.ratio_hundredths, row.source))
+        .collect())
+}
+
+/// Authoritatively replace one exercise's weights from the admin form.
+/// Removed pairs are deleted with one `=` predicate each (compound-unique
+/// table — an `IN [..]` delete can silently no-op, docs/surrealdb-notes.md),
+/// kept pairs are UPSERTs of the same deterministic record, and the version
+/// bumps so every reader recomputes. Returns the new version.
+pub async fn replace_exercise_weights(
+    db: &Db,
+    exercise_name: &str,
+    weights: &[(String, u32)],
+    updated_at: i64,
+) -> surrealdb::Result<i64> {
+    let mut response = db
+        .query("SELECT VALUE muscle FROM exercise_muscles WHERE exercise_name = $name;")
+        .bind(("name", exercise_name.to_string()))
+        .await?
+        .check()?;
+    let stored: Vec<String> = response.take(0)?;
+    let kept: HashSet<&str> = weights.iter().map(|(muscle, _)| muscle.as_str()).collect();
+    #[derive(Serialize, SurrealValue)]
+    struct RemovedPair {
+        exercise_name: String,
+        muscle: String,
+    }
+    let removed: Vec<RemovedPair> = stored
+        .into_iter()
+        .filter(|muscle| !kept.contains(muscle.as_str()))
+        .map(|muscle| RemovedPair {
+            exercise_name: exercise_name.to_string(),
+            muscle,
+        })
+        .collect();
+    let rows: Vec<WeightWrite> = weights
+        .iter()
+        .map(|(muscle, ratio)| WeightWrite {
+            id: exercise_muscle_id(exercise_name, muscle),
+            exercise_name: exercise_name.to_string(),
+            muscle: muscle.clone(),
+            ratio_hundredths: i64::from(*ratio),
+            source: "admin".to_string(),
+            updated_at,
+        })
+        .collect();
+
+    db.query(
+        "BEGIN TRANSACTION;
+         FOR $pair IN $removed {
+             DELETE exercise_muscles
+                 WHERE exercise_name = $pair.exercise_name
+                     AND muscle = $pair.muscle;
+         };
+         FOR $row IN $rows {
+             UPSERT ONLY type::record('exercise_muscles', $row.id)
+                 CONTENT $row RETURN NONE;
+         };
+         UPSERT fitness_meta:version SET k = 'version', v = (v ?? 0) + 1;
+         COMMIT TRANSACTION;",
+    )
+    .bind(("removed", removed))
+    .bind(("rows", rows))
+    .await?
+    .check()?;
+    current_version(db).await
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

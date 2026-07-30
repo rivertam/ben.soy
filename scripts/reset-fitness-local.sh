@@ -35,6 +35,7 @@ printf 'reset-fitness-local: deleting the local fitness records\n'
 # success check before the import is allowed to continue.
 reset_query='BEGIN TRANSACTION; DELETE sets RETURN NONE;'\
 ' DELETE exercise_tags RETURN NONE; DELETE exercises RETURN NONE;'\
+' DELETE exercise_muscles RETURN NONE; DELETE muscles RETURN NONE;'\
 ' DELETE workouts RETURN NONE;'\
 ' UPSERT fitness_meta:version SET k = "version", v = 0 RETURN NONE; COMMIT TRANSACTION;'
 reset_output="$(
@@ -48,7 +49,7 @@ reset_output="$(
             --json \
             --hide-welcome
 )"
-if [[ "${reset_output}" != '[null,[],[],[],[],[],null]' ]]; then
+if [[ "${reset_output}" != '[null,[],[],[],[],[],[],[],null]' ]]; then
     printf 'reset-fitness-local: database reset failed:\n%s\n' "${reset_output}" >&2
     exit 1
 fi

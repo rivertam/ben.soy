@@ -39,6 +39,16 @@ pub struct ExerciseTag {
     pub value: String,
 }
 
+/// One weighted exercise↔muscle connection: `ratio_hundredths` (1..=100)
+/// scales a set's volume points into that muscle's credit. Absence of a row
+/// means no credit.
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
+pub struct ExerciseMuscle {
+    pub exercise_name: String,
+    pub muscle: String,
+    pub ratio_hundredths: i64,
+}
+
 /// One performed set. There is deliberately no stored records table: badges
 /// are derived from the full set history (`archive/records.rs`), so this
 /// stays the only source of truth a future manual-logging write path needs.

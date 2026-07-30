@@ -262,13 +262,15 @@ async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result 
         };
     }
 
-    let tags = snapshot.exercise_tag_map();
+    let weights = snapshot.exercise_weight_map();
     let mut volume_points = 0_u32;
     let mut workouts = Vec::with_capacity(summaries.len());
     for summary in summaries {
         volume_points = volume_points.saturating_add(summary.volume_points);
-        let involvement =
-            muscles::involvement_for_exercises(summary.exercises.iter().map(String::as_str), tags);
+        let involvement = muscles::involvement_for_exercises(
+            summary.exercises.iter().map(String::as_str),
+            weights,
+        );
         workouts.push(ShardWorkout {
             title: summary.title,
             href: workout_url(&summary.path),

@@ -33,14 +33,16 @@ pub fn is_trackable_route(path: &str) -> bool {
         return true;
     }
 
-    ["/felix/", "/swing/", "/lifting/"].iter().any(|prefix| {
-        path.strip_prefix(prefix).is_some_and(|segment| {
-            !segment.is_empty()
-                && segment.len() <= 220
-                && !segment.contains('/')
-                && !segment.chars().any(char::is_control)
+    ["/felix/", "/swing/", "/lifting/", "/lifting/exercise/"]
+        .iter()
+        .any(|prefix| {
+            path.strip_prefix(prefix).is_some_and(|segment| {
+                !segment.is_empty()
+                    && segment.len() <= 220
+                    && !segment.contains('/')
+                    && !segment.chars().any(char::is_control)
+            })
         })
-    })
 }
 
 #[cfg(test)]
@@ -53,7 +55,9 @@ mod tests {
         assert!(is_trackable_route("/felix/2025-rug"));
         assert!(is_trackable_route("/swing/with-eileen"));
         assert!(is_trackable_route("/lifting/2026-07-18T16-19-36-04-00"));
+        assert!(is_trackable_route("/lifting/exercise/Bench%20Press"));
         assert!(!is_trackable_route("/private-canary/alice"));
         assert!(!is_trackable_route("/felix/one/two"));
+        assert!(!is_trackable_route("/lifting/exercise/one/two"));
     }
 }

@@ -1,12 +1,11 @@
 //! Muscle involvement for one workout, derived at render time.
 //!
-//! The archive stores flat `(kind, value)` exercise tags — there is
-//! deliberately no primary/secondary column (`docs/fitness.md`). The
-//! split is derived here the same way records are derived at snapshot
-//! build: `PRIMARY_BY_MOVEMENT` mirrors which muscles each
-//! `taxonomy::exercise_tags` movement rule co-emits as the movers,
-//! and any remaining muscle tag on the exercise renders as secondary.
-//! Keep that table aligned with the importer's taxonomy rules.
+//! The archive stores weighted exercise↔muscle connections
+//! (`exercise_muscles`, ratio in hundredths); the body map derives its
+//! shading from those ratios alone: at or above [`PRIMARY_THRESHOLD`] a
+//! muscle shades as primary, any smaller stored ratio as secondary, and a
+//! muscle with no row stays inactive. Nothing here is stored — like
+//! records, the split recomputes whenever the ratios change.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -15,42 +14,20 @@ use topcoat::{
     view::{class, component, view},
 };
 
-use super::{META_LABEL, archive::api as fitness, filters::MUSCLES};
+use super::{META_LABEL, archive::api as fitness, muscle_taxonomy};
 
-type ExerciseTags = HashMap<String, Vec<(String, String)>>;
+/// `(granular muscle id, ratio_hundredths)` per exercise, from
+/// `Snapshot::exercise_weight_map`.
+type ExerciseWeights = HashMap<String, Vec<(&'static str, u32)>>;
 
-/// The muscles a movement pattern trains as prime movers, out of the
-/// muscles the taxonomy tags alongside it. Intersected with each
-/// exercise's actual muscle tags, so e.g. `dip` only claims chest on
-/// exercises the importer tagged with chest.
-const PRIMARY_BY_MOVEMENT: &[(&str, &[&str])] = &[
-    ("squat-type", &["quads", "glutes"]),
-    ("hinge", &["glutes", "hamstrings"]),
-    ("horizontal-push", &["chest"]),
-    ("vertical-push", &["shoulders"]),
-    ("horizontal-pull", &["back"]),
-    ("vertical-pull", &["back"]),
-    ("shoulder-extension", &["back"]),
-    ("fly", &["chest"]),
-    ("shoulder-abduction", &["shoulders"]),
-    ("shoulder-flexion", &["shoulders"]),
-    ("rear-delt", &["shoulders"]),
-    ("elbow-flexion", &["biceps"]),
-    ("elbow-extension", &["triceps"]),
-    ("dip", &["triceps", "chest"]),
-    ("knee-extension", &["quads"]),
-    ("knee-flexion", &["hamstrings"]),
-    ("hip-abduction", &["glutes"]),
-    ("hip-adduction", &["adductors"]),
-    ("calf-raise", &["calves"]),
-    ("shrug", &["traps"]),
-    ("core", &["core"]),
-    ("grip-wrist", &["forearms"]),
-];
+/// Ratio at which a muscle shades as a prime mover. Seed defaults put
+/// movers at 100 and synergists at 50, so this reproduces the pre-weight
+/// primary/secondary shading; it is purely a display constant.
+pub(super) const PRIMARY_THRESHOLD: u32 = 75;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct MuscleInvolvement {
-    /// Canonical muscle ids in `MUSCLES` order.
+    /// Canonical granular muscle ids in taxonomy display order.
     pub(super) primary: Vec<&'static str>,
     pub(super) secondary: Vec<&'static str>,
 }
@@ -75,11 +52,11 @@ impl MuscleInvolvement {
 /// promoted to primary by any exercise stays primary for the workout.
 pub(super) fn workout_involvement(
     workout: &fitness::Workout,
-    tags: &ExerciseTags,
+    weights: &ExerciseWeights,
 ) -> MuscleInvolvement {
     involvement_for_exercises(
         workout.sets.iter().map(|set| set.exercise_name.as_str()),
-        tags,
+        weights,
     )
 }
 
@@ -87,7 +64,7 @@ pub(super) fn workout_involvement(
 /// raw exercise-name stream (duplicates are ignored).
 pub(super) fn involvement_for_exercises<'a>(
     exercises: impl IntoIterator<Item = &'a str>,
-    tags: &ExerciseTags,
+    weights: &ExerciseWeights,
 ) -> MuscleInvolvement {
     let mut primary = BTreeSet::new();
     let mut secondary = BTreeSet::new();
@@ -96,12 +73,16 @@ pub(super) fn involvement_for_exercises<'a>(
         if !seen.insert(name) {
             continue;
         }
-        let Some(pairs) = tags.get(name) else {
+        let Some(pairs) = weights.get(name) else {
             continue;
         };
-        let (exercise_primary, exercise_secondary) = exercise_emphasis(pairs);
-        primary.extend(exercise_primary);
-        secondary.extend(exercise_secondary);
+        for (muscle, ratio) in pairs {
+            if *ratio >= PRIMARY_THRESHOLD {
+                primary.insert(*muscle);
+            } else {
+                secondary.insert(*muscle);
+            }
+        }
     }
     MuscleInvolvement {
         primary: canonical_order(&primary),
@@ -109,57 +90,16 @@ pub(super) fn involvement_for_exercises<'a>(
     }
 }
 
-/// One exercise's split: primaries are its muscle tags claimed by any of
-/// its movement tags; the rest of its muscle tags are secondary. An
-/// exercise whose movements claim nothing (or that has no movement tag)
-/// counts every tagged muscle as primary — with no mover to compare
-/// against, "secondary" would be an invention.
-pub(super) fn exercise_emphasis(
-    pairs: &[(String, String)],
-) -> (BTreeSet<&'static str>, BTreeSet<&'static str>) {
-    let muscles: BTreeSet<&'static str> = pairs
-        .iter()
-        .filter(|(kind, _)| kind == "muscle")
-        .filter_map(|(_, value)| canonical_muscle(value))
-        .collect();
-    let claimed: BTreeSet<&'static str> = pairs
-        .iter()
-        .filter(|(kind, _)| kind == "movement")
-        .flat_map(|(_, value)| {
-            PRIMARY_BY_MOVEMENT
-                .iter()
-                .find(|(movement, _)| movement == value)
-                .map(|(_, movers)| movers.iter().copied())
-                .into_iter()
-                .flatten()
-        })
-        .collect();
-    let primary: BTreeSet<&'static str> = muscles.intersection(&claimed).copied().collect();
-    if primary.is_empty() {
-        return (muscles, BTreeSet::new());
-    }
-    let secondary = muscles.difference(&primary).copied().collect();
-    (primary, secondary)
-}
-
-/// Map a stored tag value onto the site's canonical muscle vocabulary.
-fn canonical_muscle(value: &str) -> Option<&'static str> {
-    MUSCLES
-        .iter()
-        .find_map(|(id, _)| (*id == value).then_some(*id))
-}
-
 fn canonical_order(muscles: &BTreeSet<&'static str>) -> Vec<&'static str> {
-    MUSCLES
-        .iter()
-        .filter_map(|(id, _)| muscles.contains(id).then_some(*id))
-        .collect()
+    let mut ordered: Vec<&'static str> = muscles.iter().copied().collect();
+    ordered.sort_unstable_by_key(|muscle| muscle_taxonomy::muscle_order(muscle));
+    ordered
 }
 
 fn label_list(muscles: &[&'static str]) -> String {
     muscles
         .iter()
-        .filter_map(|id| super::filters::lookup(MUSCLES, id))
+        .filter_map(|id| muscle_taxonomy::muscle_label(id))
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -177,59 +117,117 @@ const LEGEND_SWATCH_BASE: &str = "inline-block size-[0.7rem] flex-none rounded-[
 const LEGEND_SWATCH_PRIMARY: &str = "bg-oxide/85 border-oxide";
 const LEGEND_SWATCH_SECONDARY: &str = "bg-oxide/30 border-oxide/55";
 
-struct MusclePath {
+pub(super) struct MusclePath {
     muscle: &'static str,
     d: &'static str,
 }
 
 /// Both figures share one stylized silhouette; muscle regions are drawn
-/// per side so left/right shade together.
+/// per side so left/right shade together. Regions are granular — delt
+/// heads, traps thirds, chest bands — and overlapping neighbors are drawn
+/// later so they sit on top.
 const SILHOUETTE: &str = "M100 8 C 91 8 85 15 85 24 C 85 31 87 36 91 40 C 91 44 90 47 86 49 C 74 53 64 58 60 66 C 55 76 53 88 53 98 C 53 110 51 122 48 132 C 45 142 43 154 43 166 C 43 175 45 182 47 187 L 58 184 C 60 176 61 168 62 160 C 64 172 64 184 63 194 C 62 210 63 228 66 244 C 69 260 71 276 70 292 C 69 308 68 322 69 334 C 70 346 72 356 74 362 L 90 362 C 91 354 91 344 90 332 C 89 318 90 304 92 292 C 94 278 96 262 97 248 L 100 232 L 103 248 C 104 262 106 278 108 292 C 110 304 111 318 110 332 C 109 344 109 354 110 362 L 126 362 C 128 356 130 346 131 334 C 132 322 131 308 130 292 C 129 276 131 260 134 244 C 137 228 138 210 137 194 C 136 184 136 172 138 160 C 139 168 140 176 142 184 L 153 187 C 155 182 157 175 157 166 C 157 154 155 142 152 132 C 149 122 147 110 147 98 C 147 88 145 76 140 66 C 136 58 126 53 114 49 C 110 47 109 44 109 40 C 113 36 115 31 115 24 C 115 15 109 8 100 8 Z";
 
-const FRONT_PATHS: &[MusclePath] = &[
+pub(super) const FRONT_PATHS: &[MusclePath] = &[
     MusclePath {
-        muscle: "traps",
+        muscle: "upper-traps",
         d: "M86 50 C 78 53 71 56 67 60 C 76 58 85 57 92 57 C 91 54 88 52 86 50 Z",
     },
     MusclePath {
-        muscle: "traps",
+        muscle: "upper-traps",
         d: "M114 50 C 122 53 129 56 133 60 C 124 58 115 57 108 57 C 109 54 112 52 114 50 Z",
     },
     MusclePath {
-        muscle: "shoulders",
-        d: "M60 66 C 66 61 73 60 78 62 C 74 70 71 80 70 89 C 65 87 60 83 57 78 C 57 73 58 69 60 66 Z",
+        muscle: "lateral-delts",
+        d: "M60 66 C 63 63 68 61 72 61 C 69 67 67 75 66 83 C 62 81 59 80 57 78 C 57 73 58 69 60 66 Z",
     },
     MusclePath {
-        muscle: "shoulders",
-        d: "M140 66 C 134 61 127 60 122 62 C 126 70 129 80 130 89 C 135 87 140 83 143 78 C 143 73 142 69 140 66 Z",
+        muscle: "lateral-delts",
+        d: "M140 66 C 137 63 132 61 128 61 C 131 67 133 75 134 83 C 138 81 141 80 143 78 C 143 73 142 69 140 66 Z",
     },
     MusclePath {
-        muscle: "chest",
-        d: "M80 63 C 88 60 96 60 99 61 L 99 92 C 92 96 83 95 77 90 C 73 86 72 76 74 69 C 75 66 77 64 80 63 Z",
+        muscle: "anterior-delts",
+        d: "M78 62 C 74 70 71 80 70 89 C 68 88 67 86 66 84 C 67 74 70 66 73 61 C 75 61 77 61 78 62 Z",
     },
     MusclePath {
-        muscle: "chest",
-        d: "M120 63 C 112 60 104 60 101 61 L 101 92 C 108 96 117 95 123 90 C 127 86 128 76 126 69 C 125 66 123 64 120 63 Z",
+        muscle: "anterior-delts",
+        d: "M122 62 C 126 70 129 80 130 89 C 132 88 133 86 134 84 C 133 74 130 66 127 61 C 125 61 123 61 122 62 Z",
+    },
+    MusclePath {
+        muscle: "upper-chest",
+        d: "M80 63 C 88 60 96 60 99 61 L 99 72 L 74 72 C 74 71 74 70 74 69 C 75 66 77 64 80 63 Z",
+    },
+    MusclePath {
+        muscle: "upper-chest",
+        d: "M120 63 C 112 60 104 60 101 61 L 101 72 L 126 72 C 126 71 126 70 126 69 C 125 66 123 64 120 63 Z",
+    },
+    MusclePath {
+        muscle: "mid-chest",
+        d: "M74 72 L 99 72 L 99 84 C 92 86 80 86 74 84 C 73 80 73 76 74 72 Z",
+    },
+    MusclePath {
+        muscle: "mid-chest",
+        d: "M126 72 L 101 72 L 101 84 C 108 86 120 86 126 84 C 127 80 127 76 126 72 Z",
+    },
+    MusclePath {
+        muscle: "lower-chest",
+        d: "M74 84 C 80 86 92 86 99 84 L 99 92 C 92 96 83 95 77 90 C 75 88 74 86 74 84 Z",
+    },
+    MusclePath {
+        muscle: "lower-chest",
+        d: "M126 84 C 120 86 108 86 101 84 L 101 92 C 108 96 117 95 123 90 C 125 88 126 86 126 84 Z",
+    },
+    MusclePath {
+        muscle: "serratus-anterior",
+        d: "M75 92 C 78 95 81 96 83 97 C 82 103 80 108 78 111 C 76 107 74 99 75 92 Z",
+    },
+    MusclePath {
+        muscle: "serratus-anterior",
+        d: "M125 92 C 122 95 119 96 117 97 C 118 103 120 108 122 111 C 124 107 126 99 125 92 Z",
     },
     MusclePath {
         muscle: "biceps",
-        d: "M58 92 C 62 96 67 99 70 100 C 70 112 68 122 65 130 C 61 129 57 126 55 122 C 54 112 55 100 58 92 Z",
+        d: "M58 92 C 62 96 67 99 70 100 C 70 110 69 118 67 124 C 63 123 59 120 56 116 C 55 108 56 98 58 92 Z",
     },
     MusclePath {
         muscle: "biceps",
-        d: "M142 92 C 138 96 133 99 130 100 C 130 112 132 122 135 130 C 139 129 143 126 145 122 C 146 112 145 100 142 92 Z",
+        d: "M142 92 C 138 96 133 99 130 100 C 130 110 131 118 133 124 C 137 123 141 120 144 116 C 145 108 144 98 142 92 Z",
     },
     MusclePath {
-        muscle: "forearms",
+        muscle: "brachialis",
+        d: "M56 118 C 59 122 63 124 66 125 C 66 127 65 129 65 130 C 61 129 57 126 55 122 C 55 121 56 119 56 118 Z",
+    },
+    MusclePath {
+        muscle: "brachialis",
+        d: "M144 118 C 141 122 137 124 134 125 C 134 127 135 129 135 130 C 139 129 143 126 145 122 C 145 121 144 119 144 118 Z",
+    },
+    MusclePath {
+        muscle: "forearm-flexors",
         d: "M54 130 C 57 134 61 136 64 137 C 62 150 59 162 56 172 C 53 174 50 175 47 175 C 46 165 48 148 54 130 Z",
     },
     MusclePath {
-        muscle: "forearms",
+        muscle: "forearm-flexors",
         d: "M146 130 C 143 134 139 136 136 137 C 138 150 141 162 144 172 C 147 174 150 175 153 175 C 154 165 152 148 146 130 Z",
     },
     MusclePath {
-        muscle: "core",
-        d: "M84 98 C 89 101 95 102 100 102 C 105 102 111 101 116 98 C 119 110 120 124 118 138 C 114 152 108 162 100 168 C 92 162 86 152 82 138 C 80 124 81 110 84 98 Z",
+        muscle: "obliques",
+        d: "M84 98 C 86 99 88 100 90 101 C 88 114 88 132 90 145 C 87 143 84 140 82 136 C 80 123 81 109 84 98 Z",
+    },
+    MusclePath {
+        muscle: "obliques",
+        d: "M116 98 C 114 99 112 100 110 101 C 112 114 112 132 110 145 C 113 143 116 140 118 136 C 120 123 119 109 116 98 Z",
+    },
+    MusclePath {
+        muscle: "abs",
+        d: "M90 100 C 93 101 97 102 100 102 C 103 102 107 101 110 100 C 112 112 112 130 110 144 C 107 156 104 163 100 167 C 96 163 93 156 90 144 C 88 130 88 112 90 100 Z",
+    },
+    MusclePath {
+        muscle: "hip-flexors",
+        d: "M88 168 C 92 172 96 176 98 180 C 96 184 93 186 90 187 C 87 181 86 174 88 168 Z",
+    },
+    MusclePath {
+        muscle: "hip-flexors",
+        d: "M112 168 C 108 172 104 176 102 180 C 104 184 107 186 110 187 C 113 181 114 174 112 168 Z",
     },
     MusclePath {
         muscle: "quads",
@@ -248,38 +246,54 @@ const FRONT_PATHS: &[MusclePath] = &[
         d: "M103 186 L 103 226 C 107 218 109 202 109 191 C 107 188 105 187 103 186 Z",
     },
     MusclePath {
-        muscle: "calves",
+        muscle: "gastrocnemius",
         d: "M73 290 C 77 286 82 284 86 285 C 87 298 86 312 83 324 C 80 325 76 324 74 321 C 72 312 72 300 73 290 Z",
     },
     MusclePath {
-        muscle: "calves",
+        muscle: "gastrocnemius",
         d: "M127 290 C 123 286 118 284 114 285 C 113 298 114 312 117 324 C 120 325 124 324 126 321 C 128 312 128 300 127 290 Z",
     },
 ];
 
-const BACK_PATHS: &[MusclePath] = &[
+pub(super) const BACK_PATHS: &[MusclePath] = &[
     MusclePath {
-        muscle: "traps",
-        d: "M100 48 C 94 52 88 56 78 60 C 86 62 93 66 96 72 C 98 80 99 90 100 98 C 101 90 102 80 104 72 C 107 66 114 62 122 60 C 112 56 106 52 100 48 Z",
+        muscle: "upper-traps",
+        d: "M100 48 C 94 52 88 56 78 60 C 84 62 90 64 94 66 C 98 68 102 68 106 66 C 110 64 116 62 122 60 C 112 56 106 52 100 48 Z",
     },
     MusclePath {
-        muscle: "shoulders",
+        muscle: "mid-traps",
+        d: "M92 64 C 97 67 103 67 108 64 C 106 72 105 78 104 84 C 101 86 99 86 96 84 C 95 78 94 72 92 64 Z",
+    },
+    MusclePath {
+        muscle: "lower-traps",
+        d: "M96 86 C 99 88 101 88 104 86 C 103 91 102 96 100 100 C 98 96 97 91 96 86 Z",
+    },
+    MusclePath {
+        muscle: "posterior-delts",
         d: "M60 66 C 66 61 73 60 78 62 C 74 70 71 80 70 89 C 65 87 60 83 57 78 C 57 73 58 69 60 66 Z",
     },
     MusclePath {
-        muscle: "shoulders",
+        muscle: "posterior-delts",
         d: "M140 66 C 134 61 127 60 122 62 C 126 70 129 80 130 89 C 135 87 140 83 143 78 C 143 73 142 69 140 66 Z",
     },
     MusclePath {
-        muscle: "back",
+        muscle: "lats",
         d: "M78 64 C 83 70 88 80 92 90 C 95 104 97 122 97 138 C 90 134 82 126 77 116 C 73 106 72 88 74 74 C 75 70 76 66 78 64 Z",
     },
     MusclePath {
-        muscle: "back",
+        muscle: "lats",
         d: "M122 64 C 117 70 112 80 108 90 C 105 104 103 122 103 138 C 110 134 118 126 123 116 C 127 106 128 88 126 74 C 125 70 124 66 122 64 Z",
     },
     MusclePath {
-        muscle: "back",
+        muscle: "rhomboids",
+        d: "M88 68 C 91 70 94 72 96 74 C 96 80 95 86 94 90 C 91 88 88 85 86 82 C 86 77 87 72 88 68 Z",
+    },
+    MusclePath {
+        muscle: "rhomboids",
+        d: "M112 68 C 109 70 106 72 104 74 C 104 80 105 86 106 90 C 109 88 112 85 114 82 C 114 77 113 72 112 68 Z",
+    },
+    MusclePath {
+        muscle: "spinal-erectors",
         d: "M96 104 L 104 104 C 105 122 105 140 104 156 L 96 156 C 95 140 95 122 96 104 Z",
     },
     MusclePath {
@@ -291,20 +305,28 @@ const BACK_PATHS: &[MusclePath] = &[
         d: "M142 92 C 138 96 133 99 130 100 C 130 112 132 122 135 130 C 139 129 143 126 145 122 C 146 112 145 100 142 92 Z",
     },
     MusclePath {
-        muscle: "forearms",
+        muscle: "forearm-extensors",
         d: "M54 130 C 57 134 61 136 64 137 C 62 150 59 162 56 172 C 53 174 50 175 47 175 C 46 165 48 148 54 130 Z",
     },
     MusclePath {
-        muscle: "forearms",
+        muscle: "forearm-extensors",
         d: "M146 130 C 143 134 139 136 136 137 C 138 150 141 162 144 172 C 147 174 150 175 153 175 C 154 165 152 148 146 130 Z",
     },
     MusclePath {
-        muscle: "glutes",
-        d: "M80 160 C 86 158 93 158 98 160 C 100 170 100 180 98 188 C 92 194 83 194 77 188 C 74 180 75 168 80 160 Z",
+        muscle: "glute-med",
+        d: "M80 160 C 85 158 92 158 97 159 C 97 162 97 165 96 167 C 90 165 84 165 79 167 C 79 164 79 162 80 160 Z",
     },
     MusclePath {
-        muscle: "glutes",
-        d: "M120 160 C 114 158 107 158 102 160 C 100 170 100 180 102 188 C 108 194 117 194 123 188 C 126 180 125 168 120 160 Z",
+        muscle: "glute-med",
+        d: "M120 160 C 115 158 108 158 103 159 C 103 162 103 165 104 167 C 110 165 116 165 121 167 C 121 164 121 162 120 160 Z",
+    },
+    MusclePath {
+        muscle: "glute-max",
+        d: "M79 168 C 84 166 90 166 96 168 C 98 175 97 182 96 188 C 90 193 83 193 78 188 C 75 181 76 173 79 168 Z",
+    },
+    MusclePath {
+        muscle: "glute-max",
+        d: "M121 168 C 116 166 110 166 104 168 C 102 175 103 182 104 188 C 110 193 117 193 122 188 C 125 181 124 173 121 168 Z",
     },
     MusclePath {
         muscle: "hamstrings",
@@ -315,12 +337,20 @@ const BACK_PATHS: &[MusclePath] = &[
         d: "M131 200 C 125 197 117 196 110 198 C 107 212 107 230 110 246 C 113 258 118 266 124 268 C 129 260 133 244 133 226 C 133 216 132 207 131 200 Z",
     },
     MusclePath {
-        muscle: "calves",
-        d: "M72 288 C 77 282 84 280 89 282 C 91 296 90 312 86 326 C 82 328 77 327 74 323 C 71 312 70 298 72 288 Z",
+        muscle: "gastrocnemius",
+        d: "M72 288 C 77 282 84 280 89 282 C 90 290 90 300 89 308 C 84 310 77 310 73 308 C 71 301 71 294 72 288 Z",
     },
     MusclePath {
-        muscle: "calves",
-        d: "M128 288 C 123 282 116 280 111 282 C 109 296 110 312 114 326 C 118 328 123 327 126 323 C 129 312 130 298 128 288 Z",
+        muscle: "gastrocnemius",
+        d: "M128 288 C 123 282 116 280 111 282 C 110 290 110 300 111 308 C 116 310 123 310 127 308 C 129 301 129 294 128 288 Z",
+    },
+    MusclePath {
+        muscle: "soleus",
+        d: "M73 310 C 78 312 84 312 89 310 C 88 316 87 322 86 326 C 82 328 77 327 74 323 C 73 319 73 314 73 310 Z",
+    },
+    MusclePath {
+        muscle: "soleus",
+        d: "M127 310 C 122 312 116 312 111 310 C 112 316 113 322 114 326 C 118 328 123 327 126 323 C 127 319 127 314 127 310 Z",
     },
 ];
 
@@ -336,7 +366,7 @@ pub(super) async fn muscle_map(involvement: &MuscleInvolvement) -> Result {
         <section aria-label="Muscles worked">
             if involvement.is_empty() {
                 <p class="max-w-[32rem] font-meta text-[0.72rem] leading-[1.55] text-muted">
-                    "These exercises are not in the muscle taxonomy yet, so there is no map to draw."
+                    "These exercises have no muscle weights yet, so there is no map to draw."
                 </p>
             } else {
                 // At the workout page's gutter breakpoint the map lives in
@@ -436,7 +466,7 @@ pub(super) async fn muscle_map_compact(involvement: &MuscleInvolvement) -> Resul
 }
 
 #[component]
-async fn muscle_figure(
+pub(super) async fn muscle_figure(
     paths: &'static [MusclePath],
     caption: &str,
     involvement: &MuscleInvolvement,
@@ -473,8 +503,11 @@ async fn muscle_figure(
 mod tests {
     use super::*;
 
-    fn tag(kind: &str, value: &str) -> (String, String) {
-        (kind.to_string(), value.to_string())
+    fn weights(entries: &[(&str, &[(&'static str, u32)])]) -> ExerciseWeights {
+        entries
+            .iter()
+            .map(|(name, pairs)| ((*name).to_string(), pairs.to_vec()))
+            .collect()
     }
 
     fn workout_with(exercises: &[&str]) -> fitness::Workout {
@@ -515,132 +548,79 @@ mod tests {
     }
 
     #[test]
-    fn movement_rules_split_primary_from_secondary() {
-        let (primary, secondary) = exercise_emphasis(&[
-            tag("equipment", "barbell"),
-            tag("movement", "horizontal-push"),
-            tag("muscle", "chest"),
-            tag("muscle", "triceps"),
-        ]);
-        assert_eq!(primary.into_iter().collect::<Vec<_>>(), vec!["chest"]);
-        assert_eq!(secondary.into_iter().collect::<Vec<_>>(), vec!["triceps"]);
-
-        // Hinge claims both of its co-emitted muscles as movers.
-        let (primary, secondary) = exercise_emphasis(&[
-            tag("movement", "hinge"),
-            tag("muscle", "glutes"),
-            tag("muscle", "hamstrings"),
-        ]);
-        assert_eq!(primary.len(), 2);
-        assert!(secondary.is_empty());
-    }
-
-    #[test]
-    fn unclaimed_muscles_default_to_primary() {
-        // No movement tag at all: the muscle list is the whole story.
-        let (primary, secondary) = exercise_emphasis(&[tag("muscle", "chest")]);
-        assert_eq!(primary.into_iter().collect::<Vec<_>>(), vec!["chest"]);
-        assert!(secondary.is_empty());
-
-        // A movement the table does not claim muscles for (e.g. carry)
-        // behaves the same way.
-        let (primary, secondary) =
-            exercise_emphasis(&[tag("movement", "carry"), tag("muscle", "forearms")]);
-        assert_eq!(primary.into_iter().collect::<Vec<_>>(), vec!["forearms"]);
-        assert!(secondary.is_empty());
+    fn threshold_splits_primary_from_secondary_at_seventy_five() {
+        let map = weights(&[(
+            "Bench Press",
+            &[("mid-chest", 100), ("upper-chest", 75), ("triceps", 74)],
+        )]);
+        let involvement = involvement_for_exercises(["Bench Press"], &map);
+        assert_eq!(involvement.primary, vec!["upper-chest", "mid-chest"]);
+        assert_eq!(involvement.secondary, vec!["triceps"]);
     }
 
     #[test]
     fn workout_union_promotes_primary_over_secondary() {
+        let map = weights(&[
+            (
+                "Overhead Press (Barbell)",
+                &[("anterior-delts", 100), ("triceps", 50)],
+            ),
+            ("Skull Crusher", &[("triceps", 100)]),
+            // "Leg Press" stays unweighted, mirroring a real seeding gap.
+        ]);
         let workout = workout_with(&["Overhead Press (Barbell)", "Skull Crusher", "Leg Press"]);
-        let mut tags = ExerciseTags::new();
-        tags.insert(
-            "Overhead Press (Barbell)".into(),
-            vec![
-                tag("movement", "vertical-push"),
-                tag("muscle", "shoulders"),
-                tag("muscle", "triceps"),
-            ],
-        );
-        tags.insert(
-            "Skull Crusher".into(),
-            vec![tag("movement", "elbow-extension"), tag("muscle", "triceps")],
-        );
-        // "Leg Press" stays untagged, mirroring the real taxonomy gap.
-
-        let involvement = workout_involvement(&workout, &tags);
+        let involvement = workout_involvement(&workout, &map);
         assert_eq!(
             involvement.primary,
-            vec!["shoulders", "triceps"],
+            vec!["anterior-delts", "triceps"],
             "triceps is secondary for the press but primary for the extension"
         );
         assert!(involvement.secondary.is_empty());
     }
 
     #[test]
-    fn output_follows_the_site_muscle_order_and_empty_reports_empty() {
+    fn output_follows_the_taxonomy_order_and_empty_reports_empty() {
+        let map = weights(&[
+            (
+                "Deadlift (Barbell)",
+                &[("hamstrings", 100), ("glute-max", 100), ("upper-traps", 40)],
+            ),
+            (
+                "Bench Press (Barbell)",
+                &[("triceps", 55), ("mid-chest", 100)],
+            ),
+        ]);
         let workout = workout_with(&["Deadlift (Barbell)", "Bench Press (Barbell)"]);
-        let mut tags = ExerciseTags::new();
-        tags.insert(
-            "Deadlift (Barbell)".into(),
-            vec![
-                tag("movement", "hinge"),
-                tag("muscle", "hamstrings"),
-                tag("muscle", "glutes"),
-            ],
-        );
-        tags.insert(
-            "Bench Press (Barbell)".into(),
-            vec![
-                tag("movement", "horizontal-push"),
-                tag("muscle", "triceps"),
-                tag("muscle", "chest"),
-            ],
-        );
-        let involvement = workout_involvement(&workout, &tags);
+        let involvement = workout_involvement(&workout, &map);
         assert_eq!(
             involvement.primary,
-            vec!["glutes", "hamstrings", "chest"],
-            "MUSCLES order, not alphabetical"
+            vec!["mid-chest", "hamstrings", "glute-max"],
+            "taxonomy display order, not alphabetical"
         );
-        assert_eq!(involvement.secondary, vec!["triceps"]);
+        assert_eq!(involvement.secondary, vec!["upper-traps", "triceps"]);
         assert!(!involvement.is_empty());
 
-        let untagged = workout_involvement(&workout_with(&["Leg Press"]), &ExerciseTags::new());
-        assert!(untagged.is_empty());
+        let unweighted =
+            workout_involvement(&workout_with(&["Leg Press"]), &ExerciseWeights::new());
+        assert!(unweighted.is_empty());
     }
 
     #[test]
-    fn every_diagram_path_and_movement_rule_uses_canonical_ids() {
-        for (movement, movers) in PRIMARY_BY_MOVEMENT {
-            assert!(
-                super::super::filters::MOVEMENTS
-                    .iter()
-                    .chain(super::super::filters::MOVEMENT_DETAILS)
-                    .any(|(id, _)| id == movement),
-                "unknown movement {movement}"
-            );
-            for mover in *movers {
-                assert!(
-                    canonical_muscle(mover).is_some(),
-                    "unknown muscle {mover} for {movement}"
-                );
-            }
-        }
+    fn every_diagram_path_uses_canonical_ids_and_covers_the_vocabulary() {
         for path in FRONT_PATHS.iter().chain(BACK_PATHS) {
             assert!(
-                canonical_muscle(path.muscle).is_some(),
+                muscle_taxonomy::canonical_muscle(path.muscle).is_some(),
                 "unknown muscle {} in diagram",
                 path.muscle
             );
         }
-        // Every site muscle appears somewhere on the two figures.
-        for (muscle, _) in MUSCLES {
+        // Every granular muscle appears somewhere on the two figures.
+        for (muscle, _) in muscle_taxonomy::muscles() {
             assert!(
                 FRONT_PATHS
                     .iter()
                     .chain(BACK_PATHS)
-                    .any(|path| path.muscle == *muscle),
+                    .any(|path| path.muscle == muscle),
                 "muscle {muscle} missing from the diagram"
             );
         }

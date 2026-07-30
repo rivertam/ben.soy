@@ -31,22 +31,35 @@ file under "API contract".
   chrome is `heatmap-preview.js`; click-to-open still works via native
   `popovertarget`. Previews remain full-day even when filters only lit the
   cell, and never widen the calendar JSON.
-- Workout pages derive a muscle map (front/back SVG plus text lists) at
-  render time: `muscles.rs` intersects each exercise's stored muscle tags
-  with `PRIMARY_BY_MOVEMENT`, a static table mirroring which muscles each
-  `taxonomy::exercise_tags` movement rule treats as the movers; leftover
-  muscle tags render as secondary. No rank is stored anywhere — like
-  records, the split is derived, and the wire contract is unchanged (tags
-  reach the page through `Snapshot::exercise_tag_map`, not JSON).
-- `/lifting` derives its muscle-load and next-focus panel from that same
-  snapshot and taxonomy; it is page-only, not a stored record or public API
-  field. The past seven Eastern calendar days receive the archive's existing
-  effort-weighted volume points, credited fully to primary muscles and at
-  half weight to secondary muscles. Each muscle is compared with its own
-  weekly pace over the immediately preceding eight weeks (including rest
-  weeks), so the recommendation names the largest gap among muscles not
-  touched today or yesterday, plus familiar movement types/exercises that
-  address it. It does not impose generic per-muscle targets.
+- Muscle involvement is driven by stored weighted connections, not tags:
+  `exercise_muscles` rows carry `(exercise_name, granular muscle,
+  ratio_hundredths 1..=100)`; absence of a row means no credit. The
+  granular vocabulary (28 muscles in 9 display groups — delt heads, traps
+  thirds, chest bands, …) lives in `muscle_taxonomy.rs`; the schema ASSERT
+  lists mirror it and a test keeps them aligned. Workout pages derive the
+  front/back SVG map at render time from those ratios alone: at or above
+  `muscles::PRIMARY_THRESHOLD` (75) a muscle shades primary, any smaller
+  stored ratio secondary. No rank is stored — like records, the split is
+  derived, and weights reach pages through `Snapshot::exercise_weight_map`,
+  never JSON.
+- `/lifting/exercise/{urlencoded-name}` shows one exercise's ratios, tags,
+  and history; the signed-in `ADMIN_EMAIL` sees the same page with editable
+  0–100 inputs. `POST /lifting/exercise/{name}` repeats the admin check,
+  requires same-origin evidence, bounds and strictly decodes the form
+  (exactly one field per canonical muscle), rejects all-zero saves (they
+  would re-open the exercise to reseeding), replaces the exercise's rows
+  with `source='admin'` in one transaction, bumps the fitness version, and
+  rebuilds the snapshot — every page reflects an edit immediately.
+- `/lifting` derives its muscle-load and next-focus panel from those same
+  weights; it is page-only, not a stored record or public API field. Credit
+  accumulates in exact integer centi-points (`set volume points ×
+  ratio_hundredths`, `scoring::muscle_credit_centi`); display divides by
+  100 once, rounding half-away-from-zero. The past seven Eastern days are
+  compared per granular muscle with its own weekly pace over the preceding
+  eight weeks, and the panel renders group header rows with one bar per
+  granular muscle. Load rows link to the log through the granular→coarse
+  tag mapping (`muscle_taxonomy::coarse_tag_for`) because the `muscle`
+  facet deliberately keeps the original 13-value tag vocabulary.
 - Workout pages also render a plain-text share block (`share.rs` +
   `share.js`): a Strong-style set list ending in the workout's permanent
   URL, built from the request's Host/`x-forwarded-proto` like the planes
@@ -60,8 +73,10 @@ file under "API contract".
   (SurrealDB). Records are derived in `archive/records.rs` at snapshot build —
   there is deliberately no records table and no records field in the import
   payload.
-- Schema: `src/schema.surql` — five fitness tables:
-  `workouts`, `exercises`, `exercise_tags`, `sets`, and `fitness_meta`.
+- Schema: `src/schema.surql` — seven fitness tables: `workouts`,
+  `exercises`, `exercise_tags`, `sets`, `fitness_meta`, `muscles` (the
+  granular vocabulary as data), and `exercise_muscles` (weighted
+  connections, deterministic record key = sha-256 of `exercise\nmuscle`).
 - CSV parsing, stable IDs, taxonomy, chunking:
   `src/app/interests/lifting/fitness_sync.rs`; taxonomy shared by that binary
   and browser uploads lives in `src/app/interests/lifting/taxonomy.rs`.
@@ -252,12 +267,13 @@ for corrections: delete, then repaste or resync.
 - 400 for any query string. The response carries no
   `Access-Control-Allow-Origin`; the GET on the same URL still does.
 - Removes exactly the `workouts` row, its `sets`, and bumps the version.
-  `exercises` and `exercise_tags` rows survive even when the deleted workout
-  held an exercise's last set: the snapshot never loads the `exercises`
-  table and every public count joins through sets, so orphans are invisible
-  rather than merely harmless, and hand-corrected taxonomy survives a
-  delete-and-repaste. Records need no cleanup — they are derived at snapshot
-  build, so the remaining history re-derives its own podium.
+  `exercises`, `exercise_tags`, and `exercise_muscles` rows survive even
+  when the deleted workout held an exercise's last set: the snapshot never
+  loads the `exercises` table and every public count joins through sets, so
+  orphans are invisible rather than merely harmless, and hand-corrected
+  taxonomy and weights survive a delete-and-repaste. Records need no
+  cleanup — they are derived at snapshot build, so the remaining history
+  re-derives its own podium.
 - The snapshot is rebuilt in-process on success, so `/lifting` reflects the
   delete immediately. A rebuild failure is logged, not reported: the commit
   already landed, and a retry would now 404.
@@ -310,6 +326,35 @@ continues to accept only `source='workout-data-csv'`.
   This replaces local fitness data only; it never affects production or local
   Spire fixtures. It also removes manual workouts from the local archive; they
   cannot be reconstructed from the CSV.
+
+## Muscle weights
+
+- Seeding is insert-only at exercise granularity:
+  `db::reconcile_muscle_weights` runs at the top of every snapshot load,
+  upserts the `muscles` vocabulary rows, and gives weight rows only to
+  exercises that have none — the researched `muscle_seed::SEED_WEIGHTS`
+  table first (source `seed`), else ratios derived from the exercise's
+  taxonomy tags at the old primary=100/secondary=50 split expanded to
+  granular constituents (source `derived`). Any existing row — including
+  `admin` — suppresses seeding for that whole exercise, so hand-tuned
+  ratios are authoritative forever, the same invariant hand-corrected
+  taxonomy has. In steady state reconcile reads and writes nothing; it
+  never bumps the version (the same call builds the snapshot).
+- Pure-cardio exercises (Running, Rowing, Stair Stepper) are deliberately
+  absent from the seed table and stay unseeded: no weights, no muscle
+  credit. The admin form rejects an all-zero save for the same reason — it
+  would delete every row and re-open the exercise to reseeding.
+- New exercises arriving via CSV sync or Lyfta paste get weights on the
+  next snapshot load (the post-write `rebuild()` triggers it); neither
+  wire contract changed.
+- `exercise_muscles` carries a compound UNIQUE `(exercise_name, muscle)`
+  index: deletes must use one `=` predicate per pair, never `IN [..]`
+  (docs/surrealdb-notes.md).
+- The muscle facet filter and `exercise_tags` are unchanged — tags answer
+  "does this exercise involve X" at the coarse 13-value scale, weights
+  answer "how much" at the granular scale. An admin weight for a muscle
+  whose coarse tag the exercise lacks will not surface in the filter;
+  accepted drift, audited by `.claude/skills/audit-muscle-weights`.
 
 ## Changing taxonomy or filters
 

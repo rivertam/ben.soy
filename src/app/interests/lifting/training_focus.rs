@@ -1,10 +1,11 @@
 //! Page-only muscle load and next-focus guidance for `/lifting`.
 //!
 //! This is intentionally an approximation, not a hypertrophy prescription.
-//! It reuses the archive's effort-weighted volume score, credits a set fully
-//! to its primary muscles and half to its secondary muscles, then compares
+//! It scales the archive's effort-weighted volume score by each exercise's
+//! stored muscle ratios (`exercise_muscles`, in hundredths), then compares
 //! the last seven Eastern dates with this archive's own pace over the eight
-//! preceding weeks.
+//! preceding weeks. Credit accumulates in exact integer centi-points
+//! (points × ratio_hundredths); display rounds once, half away from zero.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -17,8 +18,8 @@ use topcoat::{
 use super::{
     META_LABEL,
     archive::scoring,
-    filters::{LOG_PATH, MOVEMENT_DETAILS, MOVEMENTS, MUSCLES, lookup},
-    muscles::exercise_emphasis,
+    filters::{LOG_PATH, MOVEMENT_DETAILS, MOVEMENTS, lookup},
+    muscle_taxonomy,
 };
 use crate::util::urlencode;
 
@@ -29,14 +30,17 @@ const MIN_BASELINE_TRAINING_DAYS: usize = 4;
 const MIN_MUSCLE_BASELINE_DAYS: usize = 2;
 
 /// One immutable snapshot set projected into the small input this derivation
-/// needs. Tags are the same stored pairs used by the archive filters and the
-/// per-workout muscle map.
+/// needs. Tags still ride along for movement suggestions; muscle credit
+/// comes entirely from the stored weights.
 pub(super) struct TrainingSet<'a> {
     pub(super) date: &'a str,
     pub(super) exercise_name: &'a str,
     pub(super) set_type: &'a str,
     pub(super) effort_hundredths: Option<u64>,
     pub(super) tags: Option<&'a [(String, String)]>,
+    /// `(granular muscle id, ratio_hundredths)` in canonical order, from
+    /// `Snapshot::exercise_weight_map`.
+    pub(super) weights: Option<&'a [(&'static str, u32)]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,18 +61,19 @@ pub(super) struct TrainingFocus {
 pub(super) struct MuscleLoad {
     pub(super) id: &'static str,
     pub(super) label: &'static str,
-    /// Half-points keep secondary credit exact without floats.
-    pub(super) recent_half_points: u32,
-    /// Total half-points across all eight baseline weeks. Divide by eight to
-    /// compare it with one recent week.
-    pub(super) baseline_half_points: u32,
+    /// Centi-points (volume points × ratio_hundredths) keep weighted credit
+    /// exact without floats.
+    pub(super) recent_centi_points: u32,
+    /// Total centi-points across all eight baseline weeks. Divide by eight
+    /// to compare it with one recent week.
+    pub(super) baseline_centi_points: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FocusRecommendation {
     pub(super) muscle_id: &'static str,
     pub(super) muscle_label: &'static str,
-    /// `baseline_half_points - recent_half_points * 8`; kept on the common
+    /// `baseline_centi_points - recent_centi_points * 8`; kept on the common
     /// eight-week scale so ranking never rounds.
     pub(super) deficit_scaled: u32,
     pub(super) movements: Vec<MovementSuggestion>,
@@ -88,10 +93,10 @@ struct PeriodVolume {
 }
 
 impl PeriodVolume {
-    fn add(&mut self, period: Period, half_points: u32) {
+    fn add(&mut self, period: Period, centi_points: u32) {
         match period {
-            Period::Recent => self.recent = self.recent.saturating_add(half_points),
-            Period::Baseline => self.baseline = self.baseline.saturating_add(half_points),
+            Period::Recent => self.recent = self.recent.saturating_add(centi_points),
+            Period::Baseline => self.baseline = self.baseline.saturating_add(centi_points),
         }
     }
 
@@ -149,14 +154,13 @@ pub(super) fn derive<'a>(
             baseline_training_dates.insert(date);
         }
 
-        let Some(tags) = set.tags else {
-            continue;
-        };
-        let (primary, secondary) = exercise_emphasis(tags);
-        if primary.is_empty() && secondary.is_empty() {
+        let weights = set.weights.unwrap_or_default();
+        if weights.is_empty() {
             continue;
         }
-        let movements: BTreeSet<&'static str> = tags
+        let movements: BTreeSet<&'static str> = set
+            .tags
+            .unwrap_or_default()
             .iter()
             .filter(|(kind, _)| kind == "movement")
             .filter_map(|(_, value)| canonical_movement(value))
@@ -166,48 +170,45 @@ pub(super) fn derive<'a>(
             .or_default()
             .extend(&movements);
 
-        for (muscle, half_points) in primary
-            .iter()
-            .map(|muscle| (*muscle, points.saturating_mul(2)))
-            .chain(secondary.iter().map(|muscle| (*muscle, points)))
-        {
+        for (muscle, ratio) in weights {
+            let centi_points =
+                scoring::muscle_credit_centi(set.set_type, set.effort_hundredths, *ratio);
             by_muscle
-                .entry(muscle)
+                .entry(*muscle)
                 .or_default()
-                .add(period, half_points);
+                .add(period, centi_points);
             if matches!(period, Period::Baseline) {
                 baseline_dates_by_muscle
-                    .entry(muscle)
+                    .entry(*muscle)
                     .or_default()
                     .insert(date);
             } else {
                 last_recent_date_by_muscle
-                    .entry(muscle)
+                    .entry(*muscle)
                     .and_modify(|last| *last = (*last).max(date))
                     .or_insert(date);
             }
             for movement in &movements {
                 movement_by_muscle
-                    .entry((muscle, *movement))
+                    .entry((*muscle, *movement))
                     .or_default()
-                    .add(period, half_points);
+                    .add(period, centi_points);
             }
             exercise_by_muscle
-                .entry((muscle, set.exercise_name.to_string()))
+                .entry((*muscle, set.exercise_name.to_string()))
                 .or_default()
-                .add(period, half_points);
+                .add(period, centi_points);
         }
     }
 
-    let muscles: Vec<MuscleLoad> = MUSCLES
-        .iter()
+    let muscles: Vec<MuscleLoad> = muscle_taxonomy::muscles()
         .filter_map(|(id, label)| {
             let volume = by_muscle.get(id).copied().unwrap_or_default();
             (volume.recent > 0 || volume.baseline > 0).then_some(MuscleLoad {
                 id,
                 label,
-                recent_half_points: volume.recent,
-                baseline_half_points: volume.baseline,
+                recent_centi_points: volume.recent,
+                baseline_centi_points: volume.baseline,
             })
         })
         .collect();
@@ -223,8 +224,8 @@ pub(super) fn derive<'a>(
             .get(muscle.id)
             .is_some_and(|dates| dates.len() >= MIN_MUSCLE_BASELINE_DAYS)
             && PeriodVolume {
-                recent: muscle.recent_half_points,
-                baseline: muscle.baseline_half_points,
+                recent: muscle.recent_centi_points,
+                baseline: muscle.baseline_centi_points,
             }
             .deficit_scaled()
                 > 0
@@ -244,8 +245,8 @@ pub(super) fn derive<'a>(
                 })
                 .filter_map(|(index, muscle)| {
                     let volume = PeriodVolume {
-                        recent: muscle.recent_half_points,
-                        baseline: muscle.baseline_half_points,
+                        recent: muscle.recent_centi_points,
+                        baseline: muscle.baseline_centi_points,
                     };
                     let deficit = volume.deficit_scaled();
                     (deficit > 0).then_some((index, muscle, deficit))
@@ -361,37 +362,48 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
         .iter()
         .map(|muscle| {
             muscle
-                .recent_half_points
+                .recent_centi_points
                 .saturating_mul(BASELINE_WEEKS)
-                .max(muscle.baseline_half_points)
+                .max(muscle.baseline_centi_points)
         })
         .max()
         .unwrap_or(1)
         .max(1);
-    let rows: Vec<LoadRow> = focus
-        .muscles
+    // Group headers with granular bars beneath, in taxonomy display order;
+    // a group with no touched muscle is omitted entirely.
+    let groups: Vec<LoadGroup> = muscle_taxonomy::MUSCLE_GROUPS
         .iter()
-        .map(|muscle| {
-            let recent_scaled = muscle.recent_half_points.saturating_mul(BASELINE_WEEKS);
-            let recent_percent = percent(recent_scaled, scale);
-            let usual_percent = percent(muscle.baseline_half_points, scale);
-            let recent = format_half_points(muscle.recent_half_points);
-            let usual = format_ratio(muscle.baseline_half_points, BASELINE_WEEKS * 2);
-            LoadRow {
-                label: muscle.label,
-                href: muscle_url(muscle.id),
-                recent: recent.clone(),
-                usual: usual.clone(),
-                style: format!(
-                    "--muscle-recent-width: {recent_percent}%; \
-                     --muscle-usual-left: {usual_percent}%"
-                ),
-                accessible: format!(
-                    "Recent load {recent} volume points in the past seven days; \
-                     usual weekly pace {usual} points"
-                ),
-                has_baseline: muscle.baseline_half_points > 0,
-            }
+        .filter_map(|(_, group_label, members)| {
+            let rows: Vec<LoadRow> = members
+                .iter()
+                .filter_map(|(id, _)| focus.muscles.iter().find(|muscle| muscle.id == *id))
+                .map(|muscle| {
+                    let recent_scaled = muscle.recent_centi_points.saturating_mul(BASELINE_WEEKS);
+                    let recent_percent = percent(recent_scaled, scale);
+                    let usual_percent = percent(muscle.baseline_centi_points, scale);
+                    let recent = format_ratio(muscle.recent_centi_points, 100);
+                    let usual = format_ratio(muscle.baseline_centi_points, BASELINE_WEEKS * 100);
+                    LoadRow {
+                        label: muscle.label,
+                        href: muscle_url(muscle.id),
+                        recent: recent.clone(),
+                        usual: usual.clone(),
+                        style: format!(
+                            "--muscle-recent-width: {recent_percent}%; \
+                             --muscle-usual-left: {usual_percent}%"
+                        ),
+                        accessible: format!(
+                            "Recent load {recent} volume points in the past seven days; \
+                             usual weekly pace {usual} points"
+                        ),
+                        has_baseline: muscle.baseline_centi_points > 0,
+                    }
+                })
+                .collect();
+            (!rows.is_empty()).then_some(LoadGroup {
+                label: group_label,
+                rows,
+            })
         })
         .collect();
     let through = focus.through_date.strftime("%b %-d").to_string();
@@ -414,7 +426,7 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                 </h2>
                 <p class="mt-2 text-[0.8rem] leading-[1.55] text-ink2">
                     "Largest rested gap: about "
-                    (format_ratio(recommendation.deficit_scaled, BASELINE_WEEKS * 2))
+                    (format_ratio(recommendation.deficit_scaled, BASELINE_WEEKS * 100))
                     " volume points below its usual weekly pace."
                 </p>
                 if !recommendation.movements.is_empty() {
@@ -498,8 +510,10 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                         "now / usual"
                     </p>
                 </header>
-                <ul class="mt-3 space-y-2.5">
-                    for row in &rows {
+                for group in &groups {
+                    <p class=(format!("{META_LABEL} mt-3"))>(group.label)</p>
+                    <ul class="mt-1.5 space-y-2.5">
+                    for row in &group.rows {
                         <li>
                             <div class="flex items-baseline justify-between gap-2">
                                 <a
@@ -537,7 +551,8 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                             </div>
                         </li>
                     }
-                </ul>
+                    </ul>
+                }
                 <p class="mt-4 font-meta text-[0.6rem] leading-[1.5] text-muted">
                     <span class="text-oxide">"bar"</span>
                     " = now · "
@@ -547,6 +562,11 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
             </div>
         </section>
     }
+}
+
+struct LoadGroup {
+    label: &'static str,
+    rows: Vec<LoadRow>,
 }
 
 struct LoadRow {
@@ -568,14 +588,6 @@ fn percent(value: u32, scale: u32) -> u32 {
         .min(100)
 }
 
-fn format_half_points(half_points: u32) -> String {
-    if half_points.is_multiple_of(2) {
-        (half_points / 2).to_string()
-    } else {
-        format!("{}.5", half_points / 2)
-    }
-}
-
 /// Format `numerator / denominator` to at most one decimal, rounding
 /// half-away-from-zero like the rest of the site's reader-facing numbers.
 fn format_ratio(numerator: u32, denominator: u32) -> String {
@@ -591,8 +603,13 @@ fn format_ratio(numerator: u32, denominator: u32) -> String {
     }
 }
 
+/// Granular muscles link through their coarse tag facet — tags deliberately
+/// stay at the original 13-value scale (`muscle_taxonomy::coarse_tag_for`).
 fn muscle_url(id: &str) -> String {
-    format!("{LOG_PATH}?muscle={}#volume", urlencode(id))
+    match muscle_taxonomy::coarse_tag_for(id) {
+        Some(coarse) => format!("{LOG_PATH}?muscle={}#volume", urlencode(coarse)),
+        None => format!("{LOG_PATH}#volume"),
+    }
 }
 
 fn movement_url(id: &str) -> String {
@@ -614,6 +631,7 @@ mod tests {
         set_type: &'static str,
         effort: Option<u64>,
         tags: Vec<(String, String)>,
+        weights: Vec<(&'static str, u32)>,
     }
 
     impl OwnedSet {
@@ -624,6 +642,7 @@ mod tests {
                 set_type: self.set_type,
                 effort_hundredths: self.effort,
                 tags: Some(&self.tags),
+                weights: Some(&self.weights),
             }
         }
     }
@@ -638,11 +657,8 @@ mod tests {
             exercise: "Bench Press",
             set_type,
             effort,
-            tags: vec![
-                tag("movement", "horizontal-push"),
-                tag("muscle", "chest"),
-                tag("muscle", "triceps"),
-            ],
+            tags: vec![tag("movement", "horizontal-push")],
+            weights: vec![("mid-chest", 100), ("triceps", 50)],
         }
     }
 
@@ -652,11 +668,8 @@ mod tests {
             exercise: "Full Squat",
             set_type: "NORMAL_SET",
             effort: Some(1000),
-            tags: vec![
-                tag("movement", "squat-type"),
-                tag("muscle", "quads"),
-                tag("muscle", "glutes"),
-            ],
+            tags: vec![tag("movement", "squat-type")],
+            weights: vec![("quads", 100), ("glute-max", 100)],
         }
     }
 
@@ -666,7 +679,8 @@ mod tests {
             exercise,
             set_type: "NORMAL_SET",
             effort: Some(1000),
-            tags: vec![tag("movement", movement), tag("muscle", "shoulders")],
+            tags: vec![tag("movement", movement)],
+            weights: vec![("lateral-delts", 100)],
         }
     }
 
@@ -676,7 +690,8 @@ mod tests {
             exercise,
             set_type: "NORMAL_SET",
             effort: Some(1000),
-            tags: vec![tag("muscle", muscle)],
+            tags: Vec::new(),
+            weights: vec![(muscle, 100)],
         }
     }
 
@@ -696,15 +711,16 @@ mod tests {
     }
 
     #[test]
-    fn primary_gets_full_credit_secondary_half_and_warmups_zero() {
+    fn ratios_scale_credit_and_warmups_earn_zero() {
         let focus = derive_owned(&[
             bench("2026-07-29", "NORMAL_SET", Some(1000)),
             bench("2026-07-29", "WARMUP_SET", Some(1000)),
             bench("2026-07-23", "FAILURE_SET", None),
         ]);
 
-        assert_eq!(muscle(&focus, "chest").recent_half_points, 22);
-        assert_eq!(muscle(&focus, "triceps").recent_half_points, 11);
+        // 5 + 0 + 6 = 11 points; mid-chest rides at 100, triceps at 50.
+        assert_eq!(muscle(&focus, "mid-chest").recent_centi_points, 1100);
+        assert_eq!(muscle(&focus, "triceps").recent_centi_points, 550);
         assert_eq!(focus.through_date.to_string(), "2026-07-29");
     }
 
@@ -718,8 +734,8 @@ mod tests {
             bench("2026-07-30", "FAILURE_SET", None),
         ]);
 
-        assert_eq!(muscle(&focus, "chest").recent_half_points, 6);
-        assert_eq!(muscle(&focus, "chest").baseline_half_points, 18);
+        assert_eq!(muscle(&focus, "mid-chest").recent_centi_points, 300);
+        assert_eq!(muscle(&focus, "mid-chest").baseline_centi_points, 900);
     }
 
     #[test]
@@ -802,7 +818,7 @@ mod tests {
         ]);
         let recommendation = focus.recommendation.expect("rested runner-up");
 
-        assert_eq!(recommendation.muscle_id, "chest");
+        assert_eq!(recommendation.muscle_id, "mid-chest");
         assert!(!focus.recovery_limited);
     }
 
@@ -852,14 +868,15 @@ mod tests {
         assert!(!sparse.baseline_ready);
         assert!(sparse.recommendation.is_none());
 
-        let untagged = [OwnedSet {
+        let unweighted = [OwnedSet {
             date: "2026-07-29",
             exercise: "Mystery lift",
             set_type: "FAILURE_SET",
             effort: None,
             tags: Vec::new(),
+            weights: Vec::new(),
         }];
-        let focus = derive_owned(&untagged);
+        let focus = derive_owned(&unweighted);
         assert!(focus.muscles.is_empty());
         assert!(focus.recommendation.is_none());
     }
@@ -868,9 +885,9 @@ mod tests {
     fn unrelated_one_off_days_do_not_establish_a_muscle_baseline() {
         let focus = derive_owned(&[
             isolated("2026-06-01", "Quad one-off", "quads"),
-            isolated("2026-06-08", "Chest one-off", "chest"),
-            isolated("2026-06-15", "Back one-off", "back"),
-            isolated("2026-06-22", "Core one-off", "core"),
+            isolated("2026-06-08", "Chest one-off", "mid-chest"),
+            isolated("2026-06-15", "Back one-off", "lats"),
+            isolated("2026-06-22", "Core one-off", "abs"),
         ]);
 
         assert!(!focus.baseline_ready);

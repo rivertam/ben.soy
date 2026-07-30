@@ -10,13 +10,14 @@
 
 use std::collections::HashMap;
 
-use benjisponge::data::fitness_models::{ExerciseTag, LiftSet, Workout};
+use benjisponge::data::fitness_models::{ExerciseMuscle, ExerciseTag, LiftSet, Workout};
 
 use super::api;
 use super::eastern::{self, EasternInstant, InvalidTimestamp};
 use super::filters::Filters;
 use super::records::{self, SetSource};
 use super::scoring;
+use crate::app::interests::lifting::muscle_taxonomy;
 use crate::app::interests::lifting::training_focus::{self, TrainingFocus, TrainingSet};
 
 const PUBLISHED_WORKOUT_SOURCE: &str = "manual";
@@ -25,6 +26,9 @@ pub struct Snapshot {
     pub version: i64,
     workouts: Vec<SnapWorkout>,
     tags_by_exercise: HashMap<String, Vec<(String, String)>>,
+    /// Weighted muscle credit per exercise: `(granular muscle id,
+    /// ratio_hundredths)` in canonical muscle order, ratios clamped 1..=100.
+    weights_by_exercise: HashMap<String, Vec<(&'static str, u32)>>,
     facets: api::Facets,
     calendar: api::Calendar,
     ids: api::SetIds,
@@ -38,6 +42,16 @@ pub struct PublishedWorkout {
     pub workout: api::Workout,
     pub date: String,
     pub start_time: i64,
+}
+
+/// The exercise page's history summary, derived from the joined set history
+/// like every other public count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExerciseProfile {
+    pub set_count: usize,
+    pub workout_count: usize,
+    pub first_date: String,
+    pub last_date: String,
 }
 
 /// Compact fields the heatmap day popover needs — deliberately not a full
@@ -83,6 +97,7 @@ pub fn build(
     workout_rows: Vec<Workout>,
     set_rows: Vec<LiftSet>,
     tag_rows: Vec<ExerciseTag>,
+    weight_rows: Vec<ExerciseMuscle>,
 ) -> Result<Snapshot, InvalidTimestamp> {
     // `/api/fitness/ids` is the one read with no workout join: it sees
     // every stored set, sorted by id (byte order).
@@ -215,6 +230,24 @@ pub fn build(
             .push((tag.kind, tag.value));
     }
 
+    // Canonicalize weights defensively: strangers are dropped, ratios clamp
+    // to 1..=100, and each exercise's list lands in canonical muscle order.
+    let mut weights_by_exercise: HashMap<String, Vec<(&'static str, u32)>> = HashMap::new();
+    for weight in weight_rows {
+        let Some(muscle) = muscle_taxonomy::canonical_muscle(&weight.muscle) else {
+            continue;
+        };
+        let ratio = u32::try_from(weight.ratio_hundredths.clamp(1, 100)).unwrap_or(1);
+        weights_by_exercise
+            .entry(weight.exercise_name)
+            .or_default()
+            .push((muscle, ratio));
+    }
+    for weights in weights_by_exercise.values_mut() {
+        weights.sort_unstable_by_key(|(muscle, _)| muscle_taxonomy::muscle_order(muscle));
+        weights.dedup_by_key(|(muscle, _)| *muscle);
+    }
+
     let facets = build_facets(version, &workouts, &tags_by_exercise);
     let calendar = build_calendar(version, &workouts);
 
@@ -222,6 +255,7 @@ pub fn build(
         version,
         workouts,
         tags_by_exercise,
+        weights_by_exercise,
         facets,
         calendar,
         ids,
@@ -426,6 +460,10 @@ impl Snapshot {
                         .tags_by_exercise
                         .get(&set.wire.exercise_name)
                         .map(Vec::as_slice),
+                    weights: self
+                        .weights_by_exercise
+                        .get(&set.wire.exercise_name)
+                        .map(Vec::as_slice),
                 })
             }),
             today,
@@ -468,6 +506,49 @@ impl Snapshot {
     /// public wire.
     pub fn exercise_tag_map(&self) -> &HashMap<String, Vec<(String, String)>> {
         &self.tags_by_exercise
+    }
+
+    /// Weighted muscle credit keyed by canonical exercise name: `(granular
+    /// muscle id, ratio_hundredths)` in canonical order. Pages derive the
+    /// body map and per-exercise breakdowns from this; it never rides the
+    /// public wire.
+    pub fn exercise_weight_map(&self) -> &HashMap<String, Vec<(&'static str, u32)>> {
+        &self.weights_by_exercise
+    }
+
+    /// The exercise page's history line: how often and how recently one
+    /// exercise (exact name) was performed. `None` when the archive has no
+    /// sets for it.
+    pub fn exercise_profile(&self, name: &str) -> Option<ExerciseProfile> {
+        let mut set_count = 0usize;
+        let mut workout_count = 0usize;
+        let mut first_date: Option<&str> = None;
+        let mut last_date: Option<&str> = None;
+        for workout in &self.workouts {
+            let sets_here = workout
+                .sets
+                .iter()
+                .filter(|set| set.wire.exercise_name == name)
+                .count();
+            if sets_here == 0 {
+                continue;
+            }
+            set_count += sets_here;
+            workout_count += 1;
+            let date = workout.local_date.as_str();
+            if first_date.is_none_or(|current| date < current) {
+                first_date = Some(date);
+            }
+            if last_date.is_none_or(|current| date > current) {
+                last_date = Some(date);
+            }
+        }
+        (set_count > 0).then(|| ExerciseProfile {
+            set_count,
+            workout_count,
+            first_date: first_date.unwrap_or_default().to_string(),
+            last_date: last_date.unwrap_or_default().to_string(),
+        })
     }
 
     /// Compact heatmap-day summaries for one Eastern local date, newest-first.
@@ -824,7 +905,24 @@ mod tests {
                 value: "quads".into(),
             },
         ];
-        build(7, workouts, sets, tags).unwrap()
+        let weights = vec![
+            ExerciseMuscle {
+                exercise_name: "Squat (Barbell)".into(),
+                muscle: "glute-max".into(),
+                ratio_hundredths: 80,
+            },
+            ExerciseMuscle {
+                exercise_name: "Squat (Barbell)".into(),
+                muscle: "quads".into(),
+                ratio_hundredths: 100,
+            },
+            ExerciseMuscle {
+                exercise_name: "Squat (Barbell)".into(),
+                muscle: "not-a-muscle".into(),
+                ratio_hundredths: 100,
+            },
+        ];
+        build(7, workouts, sets, tags, weights).unwrap()
     }
 
     #[test]
@@ -984,6 +1082,29 @@ mod tests {
     }
 
     #[test]
+    fn weight_map_is_canonicalized_and_profiles_join_through_sets() {
+        let snap = snapshot();
+        let weights = snap.exercise_weight_map();
+        assert_eq!(
+            weights.get("Squat (Barbell)"),
+            Some(&vec![("quads", 100_u32), ("glute-max", 80_u32)]),
+            "canonical order, strangers dropped"
+        );
+        assert!(!weights.contains_key("Bench Press"));
+
+        let profile = snap.exercise_profile("Squat (Barbell)").expect("history");
+        assert_eq!(profile.set_count, 2);
+        assert_eq!(profile.workout_count, 2);
+        assert_eq!(profile.first_date, "2026-07-20");
+        assert_eq!(profile.last_date, "2026-07-21");
+        assert!(snap.exercise_profile("Mystery lift").is_none());
+        assert!(
+            snap.exercise_profile("squat (barbell)").is_none(),
+            "profiles match the exact stored name"
+        );
+    }
+
+    #[test]
     fn workouts_on_date_keeps_exercise_order_without_set_payloads() {
         let snap = snapshot();
         let day = snap.workouts_on_date("2026-07-21");
@@ -1028,7 +1149,7 @@ mod tests {
                 Some(5),
             ),
         ];
-        let snap = build(8, vec![csv, manual], sets, Vec::new()).unwrap();
+        let snap = build(8, vec![csv, manual], sets, Vec::new(), Vec::new()).unwrap();
 
         let published = snap.published_workouts();
         assert_eq!(published.len(), 1, "CSV history stays out of the feed");

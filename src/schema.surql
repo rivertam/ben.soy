@@ -87,6 +87,64 @@ DEFINE FIELD OVERWRITE id ON fitness_meta TYPE string;
 DEFINE FIELD OVERWRITE k ON fitness_meta TYPE string;
 DEFINE FIELD OVERWRITE v ON fitness_meta TYPE int;
 
+-- The granular muscle vocabulary as data. Rust's
+-- lifting::muscle_taxonomy::MUSCLE_GROUPS stays the rendering source of
+-- truth (order, labels, grouping); these rows mirror it so weighted
+-- connections have a referent, reconciled idempotently at snapshot load.
+-- The ASSERT lists below are test-enforced against that module.
+DEFINE TABLE OVERWRITE muscles SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON muscles TYPE string;
+DEFINE FIELD OVERWRITE name ON muscles TYPE string
+    ASSERT $value IN ['anterior-delts', 'lateral-delts', 'posterior-delts',
+        'upper-traps', 'mid-traps', 'lower-traps',
+        'lats', 'rhomboids', 'spinal-erectors',
+        'upper-chest', 'mid-chest', 'lower-chest', 'serratus-anterior',
+        'biceps', 'brachialis', 'triceps', 'forearm-flexors', 'forearm-extensors',
+        'abs', 'obliques', 'hip-flexors',
+        'quads', 'hamstrings', 'adductors',
+        'glute-max', 'glute-med',
+        'gastrocnemius', 'soleus'];
+DEFINE FIELD OVERWRITE label ON muscles TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 40;
+DEFINE FIELD OVERWRITE muscle_group ON muscles TYPE string
+    ASSERT $value IN ['shoulders', 'traps', 'back', 'chest', 'arms',
+        'core', 'legs', 'glutes', 'calves'];
+DEFINE FIELD OVERWRITE ordinal ON muscles TYPE int
+    ASSERT $value >= 0 AND $value <= 100;
+DEFINE INDEX OVERWRITE muscles_name ON muscles FIELDS name UNIQUE;
+
+-- One weighted exercise↔muscle connection. ratio_hundredths scales a set's
+-- volume points for that muscle: 100 = full credit, 50 = half. Absence of a
+-- row means no credit; zero is not storable. The record key is
+-- lifting::archive::db::exercise_muscle_id(exercise_name, muscle), so the
+-- pair is the identity and rewriting a ratio is an UPSERT of the same
+-- record. `source` records provenance — seeding is insert-only at exercise
+-- granularity and only the admin form writes 'admin' rows, which are
+-- authoritative and never reseeded.
+DEFINE TABLE OVERWRITE exercise_muscles SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON exercise_muscles TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE exercise_name ON exercise_muscles TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 200;
+DEFINE FIELD OVERWRITE muscle ON exercise_muscles TYPE string
+    ASSERT $value IN ['anterior-delts', 'lateral-delts', 'posterior-delts',
+        'upper-traps', 'mid-traps', 'lower-traps',
+        'lats', 'rhomboids', 'spinal-erectors',
+        'upper-chest', 'mid-chest', 'lower-chest', 'serratus-anterior',
+        'biceps', 'brachialis', 'triceps', 'forearm-flexors', 'forearm-extensors',
+        'abs', 'obliques', 'hip-flexors',
+        'quads', 'hamstrings', 'adductors',
+        'glute-max', 'glute-med',
+        'gastrocnemius', 'soleus'];
+DEFINE FIELD OVERWRITE ratio_hundredths ON exercise_muscles TYPE int
+    ASSERT $value >= 1 AND $value <= 100;
+DEFINE FIELD OVERWRITE source ON exercise_muscles TYPE string
+    ASSERT $value IN ['seed', 'derived', 'admin'];
+DEFINE FIELD OVERWRITE updated_at ON exercise_muscles TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE INDEX OVERWRITE exercise_muscles_identity
+    ON exercise_muscles FIELDS exercise_name, muscle UNIQUE;
+
 -- Hidden-page allowlists (docs/auth.md). One row grants one email one page;
 -- the record key is content::access::grant_id(page_path, email), so the pair
 -- is the identity and re-granting is an UPSERT of the same record. Emails are

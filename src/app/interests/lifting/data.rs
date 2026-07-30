@@ -114,18 +114,18 @@ pub async fn load_home(
     }
 }
 
-/// Movement/muscle/equipment tags for the exercises one workout used,
-/// keyed by canonical exercise name. Snapshot-derived and page-only —
-/// deliberately not part of any public JSON envelope.
-pub type ExerciseTags = std::collections::HashMap<String, Vec<(String, String)>>;
+/// Weighted muscle credit for the exercises one workout used, keyed by
+/// canonical exercise name. Snapshot-derived and page-only — deliberately
+/// not part of any public JSON envelope.
+pub type ExerciseWeights = std::collections::HashMap<String, Vec<(&'static str, u32)>>;
 
 /// Resolve a canonical public path. Rejections mirror the API's 404s.
-/// The tags come from the same snapshot as the workout, so the muscle
+/// The weights come from the same snapshot as the workout, so the muscle
 /// summary always describes exactly the sets on the page.
 pub async fn load_workout_by_path(
     store: &FitnessStore,
     path: &str,
-) -> Result<(WorkoutDetail, ExerciseTags), LoadError> {
+) -> Result<(WorkoutDetail, ExerciseWeights), LoadError> {
     let Some(instant) = eastern::parse_public_path(path) else {
         return Err(LoadError::NotFound("not found".to_string()));
     };
@@ -136,18 +136,18 @@ pub async fn load_workout_by_path(
     let detail = snapshot
         .by_path(&instant)
         .ok_or_else(|| LoadError::NotFound("not found".to_string()))?;
-    let mut tags = ExerciseTags::new();
+    let mut weights = ExerciseWeights::new();
     if let Some(workout) = &detail.workout {
-        let map = snapshot.exercise_tag_map();
+        let map = snapshot.exercise_weight_map();
         for set in &workout.sets {
-            if !tags.contains_key(&set.exercise_name)
+            if !weights.contains_key(&set.exercise_name)
                 && let Some(pairs) = map.get(&set.exercise_name)
             {
-                tags.insert(set.exercise_name.clone(), pairs.clone());
+                weights.insert(set.exercise_name.clone(), pairs.clone());
             }
         }
     }
-    Ok((detail, tags))
+    Ok((detail, weights))
 }
 
 #[cfg(test)]
