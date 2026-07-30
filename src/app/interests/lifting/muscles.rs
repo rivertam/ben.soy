@@ -8,18 +8,16 @@
 //! and any remaining muscle tag on the exercise renders as secondary.
 //! Keep that table aligned with the importer's taxonomy rules.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use topcoat::{
     Result,
     view::{class, component, view},
 };
 
-use super::{
-    META_LABEL,
-    data::{self as fitness, ExerciseTags},
-    filters::MUSCLES,
-};
+use super::{META_LABEL, archive::api as fitness, filters::MUSCLES};
+
+type ExerciseTags = HashMap<String, Vec<(String, String)>>;
 
 /// The muscles a movement pattern trains as prime movers, out of the
 /// muscles the taxonomy tags alongside it. Intersected with each
@@ -104,7 +102,7 @@ pub(super) fn workout_involvement(
 /// exercise whose movements claim nothing (or that has no movement tag)
 /// counts every tagged muscle as primary — with no mover to compare
 /// against, "secondary" would be an invention.
-fn exercise_emphasis(
+pub(super) fn exercise_emphasis(
     pairs: &[(String, String)],
 ) -> (BTreeSet<&'static str>, BTreeSet<&'static str>) {
     let muscles: BTreeSet<&'static str> = pairs

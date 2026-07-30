@@ -11,6 +11,7 @@ use std::fmt;
 use super::archive::eastern;
 use super::archive::filters::parse_filters;
 use super::archive::store::FitnessStore;
+use super::training_focus::TrainingFocus;
 
 pub use super::archive::api::{
     Calendar, CalendarDay, Facets, Record, Set, SetPage, Workout, WorkoutDetail,
@@ -91,12 +92,21 @@ pub async fn load_home(
 ) -> (
     Result<Calendar, LoadError>,
     Result<WorkoutDetail, LoadError>,
+    Result<TrainingFocus, LoadError>,
 ) {
     match store.snapshot().await {
-        Ok(snapshot) => (Ok(snapshot.calendar()), Ok(snapshot.latest())),
+        Ok(snapshot) => {
+            let today = eastern::eastern_date(jiff::Timestamp::now());
+            (
+                Ok(snapshot.calendar()),
+                Ok(snapshot.latest()),
+                Ok(snapshot.training_focus(today)),
+            )
+        }
         Err(error) => {
             let message = error.to_string();
             (
+                Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message)),
             )

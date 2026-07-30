@@ -11,6 +11,7 @@ mod muscles;
 mod results;
 mod share;
 mod taxonomy;
+mod training_focus;
 
 use self::archive::store::FitnessStore;
 use topcoat::{
@@ -261,15 +262,22 @@ async fn lifting(cx: &Cx) -> Result {
 
     let meta = interest("lifting");
     let can_upload = viewer(cx).is_some_and(|current| is_admin(&current.email));
-    let (calendar, latest) = fitness::load_home(app_context::<FitnessStore>(cx)).await;
+    let (calendar, latest, focus) = fitness::load_home(app_context::<FitnessStore>(cx)).await;
     if let Err(error) = &calendar {
         eprintln!("fitness calendar fetch failed: {error}");
     }
     if let Err(error) = &latest {
         eprintln!("fitness latest workout fetch failed: {error}");
     }
+    if let Err(error) = &focus {
+        eprintln!("fitness training focus failed: {error}");
+    }
 
     let calendar_days = calendar.ok().map(|calendar| calendar.days);
+    let focus_summary = focus
+        .as_ref()
+        .ok()
+        .filter(|summary| !summary.muscles.is_empty());
     let latest_error = latest.as_ref().err();
     let latest_workout = latest
         .as_ref()
@@ -298,19 +306,67 @@ async fn lifting(cx: &Cx) -> Result {
                     }
                 </div>
             </header>
-            <div>
+            <div
+                class=(class!(
+                    "relative",
+                    "min-[90rem]:min-h-[40rem]" if focus_summary.is_some(),
+                ))
+            >
+                if let Some(focus) = focus_summary {
+                    <details class="group mt-8 min-[90rem]:hidden">
+                        <summary
+                            class="flex min-h-11 w-full cursor-pointer list-none items-center \
+                                 justify-between gap-4 rounded-[0.2rem] border border-oxide px-4 \
+                                 py-2.5 font-meta text-xs text-oxide \
+                                 after:text-base after:leading-none after:content-['+'] \
+                                 group-open:after:content-['−'] \
+                                 group-open:bg-oxide group-open:text-card \
+                                 hover:bg-oxide hover:text-card \
+                                 focus-visible:outline-solid focus-visible:outline-2 \
+                                 focus-visible:outline-oxide focus-visible:outline-offset-2 \
+                                 [&::-webkit-details-marker]:hidden"
+                        >
+                            <span class="group-open:hidden">
+                                "show muscle load + next focus"
+                            </span>
+                            <span class="hidden group-open:inline">
+                                "hide muscle load + next focus"
+                            </span>
+                        </summary>
+                        <div class="mt-3 rounded-[0.2rem] border border-hairline bg-card p-4">
+                            training_focus::panel(
+                                focus: focus,
+                                heading_id: "training-focus-mobile"
+                            )
+                        </div>
+                    </details>
+                    <aside
+                        class="hidden border-t border-hairline pt-4 \
+                             min-[90rem]:absolute min-[90rem]:left-full min-[90rem]:top-10 \
+                             min-[90rem]:ml-8 min-[90rem]:block min-[90rem]:w-[14.5rem]"
+                        aria-label="Muscle load and next focus"
+                    >
+                        training_focus::panel(
+                            focus: focus,
+                            heading_id: "training-focus-desktop"
+                        )
+                    </aside>
+                }
+
                 rail_section(
                     class: "mt-10",
                     stamp: "volume",
-                    if let Some(days) = calendar_days {
-                        heatmap::calendar_heatmap(days: days)
-                    } else {
-                        <section class="p-4 bg-card border border-hairline">
-                            <p class=(EMPTY_COPY)>
-                                "Daily volume is unavailable right now."
-                            </p>
-                        </section>
-                    }
+                    <header id="volume">
+                        if let Some(days) = calendar_days {
+                            heatmap::calendar_heatmap(days: days)
+                        } else {
+                            <section class="p-4 bg-card border border-hairline">
+                                <p class=(EMPTY_COPY)>
+                                    "Daily volume is unavailable right now."
+                                </p>
+                            </section>
+                        }
+                    </header>
                 )
 
                 rail_section(
@@ -975,11 +1031,13 @@ async fn lifting_log(cx: &Cx) -> Result {
                     rail_section(
                         class: "mt-12",
                         stamp: "volume",
-                        heatmap::calendar_heatmap(
-                            days: days,
-                            link_query: day_link_query,
-                            filtered: !active_filters.is_empty()
-                        )
+                        <div id="volume">
+                            heatmap::calendar_heatmap(
+                                days: days,
+                                link_query: day_link_query,
+                                filtered: !active_filters.is_empty()
+                            )
+                        </div>
                     )
                 }
 

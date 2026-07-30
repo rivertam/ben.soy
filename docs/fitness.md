@@ -30,6 +30,15 @@ file under "API contract".
   muscle tags render as secondary. No rank is stored anywhere — like
   records, the split is derived, and the wire contract is unchanged (tags
   reach the page through `Snapshot::exercise_tag_map`, not JSON).
+- `/lifting` derives its muscle-load and next-focus panel from that same
+  snapshot and taxonomy; it is page-only, not a stored record or public API
+  field. The past seven Eastern calendar days receive the archive's existing
+  effort-weighted volume points, credited fully to primary muscles and at
+  half weight to secondary muscles. Each muscle is compared with its own
+  weekly pace over the immediately preceding eight weeks (including rest
+  weeks), so the recommendation names the largest gap among muscles not
+  touched today or yesterday, plus familiar movement types/exercises that
+  address it. It does not impose generic per-muscle targets.
 - Workout pages also render a plain-text share block (`share.rs` +
   `share.js`): a Strong-style set list ending in the workout's permanent
   URL, built from the request's Host/`x-forwarded-proto` like the planes

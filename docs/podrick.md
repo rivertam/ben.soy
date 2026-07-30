@@ -259,7 +259,13 @@ origin doing its job, not a bug to fix.
 ```text
 src/app/interests/podrick/
   mod.rs        the /podrick page (site binary)
-  heatmap.rs    annual Pants Off heatmaps and leaderboards (site binary)
+  heatmap/      annual Pants Off calendars and yearbook boards (site binary)
+    mod.rs      page section, year window, shared chrome
+    person.rs   one participant's heatmap
+    claims.rs   most-claims board (own query + ranks)
+    streak.rs   longest-streak board (own query + ranks)
+    doubles.rs  most-doubles board (own query + ranks)
+    crew.rs     kwerm / asynkwerm crew totals
   status.rs     the page's reads (site binary)
   seed.rs       GET /api/podrick/seed (site binary)
   db.rs         the worker's reads and writes (podrick binary)

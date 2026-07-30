@@ -17,6 +17,7 @@ use super::eastern::{self, EasternInstant, InvalidTimestamp};
 use super::filters::Filters;
 use super::records::{self, SetSource};
 use super::scoring;
+use crate::app::interests::lifting::training_focus::{self, TrainingFocus, TrainingSet};
 
 const PUBLISHED_WORKOUT_SOURCE: &str = "manual";
 
@@ -392,6 +393,30 @@ impl Snapshot {
 
     pub fn calendar(&self) -> api::Calendar {
         self.calendar.clone()
+    }
+
+    /// Page-only rolling muscle load and next-focus guidance. It is derived
+    /// at request time because "the last seven days" advances even when no
+    /// import rebuilds this immutable snapshot.
+    pub(in crate::app::interests::lifting) fn training_focus(
+        &self,
+        today: jiff::civil::Date,
+    ) -> TrainingFocus {
+        training_focus::derive(
+            self.workouts.iter().flat_map(|workout| {
+                workout.sets.iter().map(|set| TrainingSet {
+                    date: workout.local_date.as_str(),
+                    exercise_name: set.wire.exercise_name.as_str(),
+                    set_type: set.wire.set_type.as_str(),
+                    effort_hundredths: set.wire.effort_hundredths,
+                    tags: self
+                        .tags_by_exercise
+                        .get(&set.wire.exercise_name)
+                        .map(Vec::as_slice),
+                })
+            }),
+            today,
+        )
     }
 
     /// Daily volume points over only the sets a filter admits, using the

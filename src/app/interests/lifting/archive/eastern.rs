@@ -11,7 +11,7 @@
 use std::sync::OnceLock;
 
 use jiff::Timestamp;
-use jiff::civil::DateTime;
+use jiff::civil::{Date, DateTime};
 use jiff::tz::TimeZone;
 
 /// An Eastern wall-clock projection of a UTC instant.
@@ -93,6 +93,13 @@ pub fn eastern_instant(utc: &str, add_seconds: i64) -> Result<EasternInstant, In
     let instant = Timestamp::from_second(start.as_second() + add_seconds)
         .map_err(|_| InvalidTimestamp(utc.to_string()))?;
     Ok(project(instant))
+}
+
+/// The America/New_York calendar date containing an instant. Page-only
+/// rolling summaries use this so their notion of "today" matches workout
+/// buckets and filters around midnight.
+pub fn eastern_date(instant: Timestamp) -> Date {
+    instant.to_zoned(eastern_tz().clone()).date()
 }
 
 fn project(instant: Timestamp) -> EasternInstant {
@@ -234,6 +241,14 @@ mod tests {
             eastern_instant("2026-07-22 04:00:00", 0).unwrap(),
             instant("2026-07-22 00:00:00", -240),
         );
+    }
+
+    #[test]
+    fn eastern_date_uses_the_same_midnight_boundary() {
+        let before_midnight = utc_timestamp("2026-07-22 03:59:59").unwrap();
+        let at_midnight = utc_timestamp("2026-07-22 04:00:00").unwrap();
+        assert_eq!(eastern_date(before_midnight).to_string(), "2026-07-21");
+        assert_eq!(eastern_date(at_midnight).to_string(), "2026-07-22");
     }
 
     #[test]
