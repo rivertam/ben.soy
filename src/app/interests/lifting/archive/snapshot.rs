@@ -40,6 +40,19 @@ pub struct PublishedWorkout {
     pub start_time: i64,
 }
 
+/// Compact fields the heatmap day popover needs — deliberately not a full
+/// wire workout. Built by scanning set exercise names and volume points
+/// without cloning set rows into the page payload.
+#[derive(Clone, Debug)]
+pub struct HeatmapWorkoutSummary {
+    pub title: String,
+    pub path: String,
+    pub duration_seconds: u64,
+    pub set_count: usize,
+    pub volume_points: u32,
+    pub exercises: Vec<String>,
+}
+
 struct SnapWorkout {
     /// Wire shape with `sets` left empty; responses clone it and fill in
     /// the sets the request's filters admit.
@@ -455,6 +468,38 @@ impl Snapshot {
     /// public wire.
     pub fn exercise_tag_map(&self) -> &HashMap<String, Vec<(String, String)>> {
         &self.tags_by_exercise
+    }
+
+    /// Compact heatmap-day summaries for one Eastern local date, newest-first.
+    /// Page-only — the day popover shard loads these on demand so the calendar
+    /// SSR never clones set payloads. Never rides the public calendar JSON.
+    pub fn workouts_on_date(&self, date: &str) -> Vec<HeatmapWorkoutSummary> {
+        self.workouts
+            .iter()
+            .filter(|snap| snap.local_date == date)
+            .map(|snap| {
+                let mut seen = std::collections::BTreeSet::new();
+                let mut exercises = Vec::new();
+                let mut volume_points = 0_u32;
+                for set in &snap.sets {
+                    volume_points = volume_points.saturating_add(scoring::set_volume_points(
+                        set.wire.set_type.as_str(),
+                        set.wire.effort_hundredths,
+                    ));
+                    if seen.insert(set.wire.exercise_name.as_str()) {
+                        exercises.push(set.wire.exercise_name.clone());
+                    }
+                }
+                HeatmapWorkoutSummary {
+                    title: snap.wire.title.clone(),
+                    path: snap.wire.path.clone(),
+                    duration_seconds: snap.wire.duration_seconds,
+                    set_count: snap.sets.len(),
+                    volume_points,
+                    exercises,
+                }
+            })
+            .collect()
     }
 
     pub fn ids(&self) -> api::SetIds {
@@ -936,6 +981,20 @@ mod tests {
             !tags.contains_key("Bench Press"),
             "untagged exercise absent"
         );
+    }
+
+    #[test]
+    fn workouts_on_date_keeps_exercise_order_without_set_payloads() {
+        let snap = snapshot();
+        let day = snap.workouts_on_date("2026-07-21");
+        assert_eq!(day.len(), 1);
+        assert_eq!(
+            day[0].exercises,
+            vec!["Squat (Barbell)".to_string(), "Bench Press".to_string()]
+        );
+        assert_eq!(day[0].set_count, 2);
+        assert!(day[0].volume_points > 0);
+        assert!(snap.workouts_on_date("1999-01-01").is_empty());
     }
 
     #[test]

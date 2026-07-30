@@ -1,25 +1,35 @@
-//! A no-JavaScript, local-date calendar view of the lifting archive's daily
-//! volume points. The Worker groups sets by the workout's source-local date;
-//! this module only lays those already-aggregated days into calendar weeks.
+//! A local-date calendar of lifting volume points. Logged days open a shared
+//! popover whose body is a Topcoat shard — the heatmap SSR stays light; the
+//! day's lifts and muscle maps load on demand when the reader hovers or
+//! clicks. `heatmap-preview.js` handles hover/pin chrome; the shard owns the
+//! data. Arguments to the shard are untrusted and validated server-side.
 
 use std::collections::BTreeMap;
 
 use jiff::{ToSpan, civil::Date};
 use topcoat::{
     Result,
+    asset::{Asset, asset},
+    context::{Cx, app_context},
+    runtime::{Event, shard},
     view::{class, component, view},
 };
 
-use super::{META_LABEL, data::CalendarDay};
+use super::{
+    META_LABEL,
+    archive::store::FitnessStore,
+    data::CalendarDay,
+    format::{format_duration, plural},
+    muscles,
+    results::workout_url,
+};
 
 const WEEK_COUNT: usize = 53;
 const DAYS_PER_WEEK: usize = 7;
 const CELL_COUNT: usize = WEEK_COUNT * DAYS_PER_WEEK;
+const PREVIEW_POPOVER_ID: &str = "heatmap-day-preview";
 
-// Tailwind vocab for the calendar. Utilities stay whole per line for the
-// build-time class scanner.
 const HEAT_NOTE: &str = "font-meta text-[0.7rem] leading-[1.55] text-muted";
-/// Day squares tint oxide by the `--fitness-heat-alpha` each cell sets inline.
 const HEAT_FILL: &str =
     "bg-[color-mix(in_srgb,var(--color-oxide)_var(--fitness-heat-alpha,0%),var(--color-card))]";
 const LEGEND_CELL: &str = "w-[0.625rem] h-[0.625rem] sm:w-[0.72rem] sm:h-[0.72rem] \
@@ -27,33 +37,35 @@ const LEGEND_CELL: &str = "w-[0.625rem] h-[0.625rem] sm:w-[0.72rem] sm:h-[0.72re
 const CELL: &str = "block rounded-[0.12rem] border \
      transition-[background-color,border-color,box-shadow,transform] duration-[140ms] ease-[ease]";
 const CELL_BORDER: &str = "border-hairline/88";
-/// A logged day whose sets scored zero points keeps a visible dashed ring.
 const CELL_BORDER_ZERO: &str = "border-dashed \
      border-[color-mix(in_srgb,var(--color-oxide)_55%,var(--color-hairline))]";
 const CELL_HOVER: &str = "hover:border-oxide \
      hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-oxide)_25%,transparent)] \
      hover:-translate-y-px focus-visible:z-[1] focus-visible:outline-solid \
      focus-visible:outline-2 focus-visible:outline-oxide focus-visible:outline-offset-2";
+const CELL_BUTTON: &str = "appearance-none p-0 size-full cursor-pointer";
+const PREVIEW_WORKOUT_TITLE: &str = "font-display text-[0.95rem] font-semibold leading-[1.25] \
+     text-ink decoration-oxide/45 decoration-1 underline-offset-[0.18em] \
+     hover:text-oxide hover:decoration-current focus-visible:text-oxide \
+     focus-visible:decoration-current";
+const PREVIEW_EXERCISE: &str = "font-meta text-[0.68rem] leading-[1.45] text-ink2";
+const PREVIEW_LOG_LINK: &str = "mt-[0.75rem] inline-block font-meta text-[0.72rem] text-oxide \
+     decoration-oxide/45 decoration-1 underline-offset-[0.18em] hover:decoration-current \
+     focus-visible:decoration-current";
 
-/// The volume calendar. It is deliberately an owned prop: callers can pass
-/// the successful calendar API payload straight through without adding a
-/// browser runtime or serializing data into the page.
-///
-/// `link_query` carries the log page's active filters (already canonical,
-/// minus `from`/`to`/`page`): day cells then link to that filtered log
-/// narrowed to their date. `filtered` — passed separately because the two
-/// disagree in both directions (`from`/`to` narrow the calendar but leave
-/// the day links, `per_page` rides the day links but filters nothing) —
-/// says whether the days really are a filtered subset, and drives the
-/// subtitle, aria wording, and empty state. The landing page passes
-/// neither and keeps the archive-wide behavior.
+const HEATMAP_PREVIEW_JS: Asset = asset!("./heatmap-preview.js");
+
+/// Volume calendar. `link_query` carries the log page's active filters
+/// (canonical, minus `from`/`to`/`page`) into the preview's day-log link.
+/// Day lift bodies are not embedded here — they load through
+/// [`day_preview_shard`] when `preview_day` is set.
 #[component]
 pub(super) async fn calendar_heatmap(
     days: Vec<CalendarDay>,
     #[default(String::new())] link_query: String,
     #[default(false)] filtered: bool,
 ) -> Result {
-    let Some(calendar) = Calendar::from_days(&days, &link_query) else {
+    let Some(calendar) = Calendar::from_days(&days) else {
         return view! {
             <section aria-labelledby="fitness-heatmap-title">
                 <header
@@ -89,19 +101,27 @@ pub(super) async fn calendar_heatmap(
     };
     let navigation_label = if filtered {
         format!(
-            "Volume points from sets matching the active filters, by day, for the 53 weeks ending {ending}. {} matching days are links to their lifts.",
+            "Volume points from sets matching the active filters, by day, for the 53 weeks ending {ending}. {} matching days open a preview of that day's lifts.",
             calendar.logged_days,
         )
     } else {
         format!(
-            "Volume points by day for the 53 weeks ending {ending}. {} logged days are links to their lifts.",
+            "Volume points by day for the 53 weeks ending {ending}. {} logged days open a preview of that day's lifts.",
             calendar.logged_days,
         )
     };
     let legend_styles: Vec<String> = (0..=4).map(heat_style).collect();
+    let shard_link_query = link_query.clone();
 
     view! {
-        <section aria-labelledby="fitness-heatmap-title">
+        <section aria-labelledby="fitness-heatmap-title" data-heatmap-previews="">
+            signal preview_day = String::new();
+            <input
+                type="hidden"
+                data-heatmap-day-input=""
+                :value=$(preview_day.get())
+                @input=$(|e: Event| preview_day.set(e.target.value))
+            />
             <header class="flex flex-wrap items-end justify-between gap-y-[0.8rem] gap-x-5">
                 <div>
                     <p class=(META_LABEL)>"training volume"</p>
@@ -132,10 +152,6 @@ pub(super) async fn calendar_heatmap(
                 </div>
             </header>
 
-            // When the chart's minimum width overflows a narrow screen, the
-            // rtl scroll direction starts the view at the newest (rightmost)
-            // days; the chart flips back to ltr so its dates still run
-            // normally.
             <div
                 class="mt-[0.9rem] overflow-x-auto overscroll-x-contain pt-[0.1rem] \
                      pb-[0.45rem] [direction:rtl]"
@@ -179,32 +195,210 @@ pub(super) async fn calendar_heatmap(
                         aria-label=(navigation_label.as_str())
                     >
                         for cell in calendar.cells.iter() {
-                            if let Some(href) = &cell.href {
-                                <a
-                                    class=(class!(CELL, HEAT_FILL, cell.border, CELL_HOVER))
-                                    href=(href.as_str())
-                                    title=(cell.label.as_str())
-                                    aria-label=(cell.label.as_str())
-                                    style=(cell.style.as_str())
-                                >
-
-                                </a>
-                            } else {
-                                <span
-                                    class=(class!(CELL, HEAT_FILL, cell.border))
-                                    title=(cell.label.as_str())
-                                    aria-hidden="true"
-                                    style=(cell.style.as_str())
-                                >
-
-                                </span>
-                            }
+                            day_cell(cell: cell)
                         }
                     </nav>
                 </div>
             </div>
+
+            <div
+                id=(PREVIEW_POPOVER_ID)
+                class="inline-popover-panel"
+                popover="auto"
+                data-heatmap-panel=""
+            >
+                <button
+                    type="button"
+                    class="inline-popover-close"
+                    popovertarget=(PREVIEW_POPOVER_ID)
+                    popovertargetaction="hide"
+                    aria-label="Close preview"
+                >"×"</button>
+                day_preview_shard(
+                    date: $(preview_day.get()),
+                    link_query: $(shard_link_query.to_owned())
+                )
+            </div>
+            <script type="module" src=(HEATMAP_PREVIEW_JS)></script>
         </section>
     }
+}
+
+/// On-demand body for a heatmap day popover. `date` and `link_query` arrive
+/// from the browser and are validated before touching the archive.
+#[shard]
+async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result {
+    if date.is_empty() {
+        return view! {};
+    }
+    let Ok(parsed) = date.parse::<Date>() else {
+        return view! {
+            <p class=(HEAT_NOTE)>"That day could not be loaded."</p>
+        };
+    };
+    let date = parsed.to_string();
+    let link_query = sanitize_link_query(&link_query);
+    let href = if link_query.is_empty() {
+        format!("/lifting/log?from={date}&to={date}#set-log")
+    } else {
+        format!("/lifting/log?{link_query}&from={date}&to={date}#set-log")
+    };
+
+    let store = app_context::<FitnessStore>(cx);
+    let snapshot = match store.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return view! {
+                <p class=(HEAT_NOTE)>"The workout archive is unavailable right now."</p>
+            };
+        }
+    };
+    let summaries = snapshot.workouts_on_date(&date);
+    if summaries.is_empty() {
+        return view! {
+            <span class="inline-popover-kicker">(format_long(parsed).as_str())</span>
+            <p class=(HEAT_NOTE)>"No lifts are stored for this day."</p>
+            <a class=(PREVIEW_LOG_LINK) href=(href.as_str())>"view day in log →"</a>
+        };
+    }
+
+    let tags = snapshot.exercise_tag_map();
+    let mut volume_points = 0_u32;
+    let mut workouts = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        volume_points = volume_points.saturating_add(summary.volume_points);
+        let involvement =
+            muscles::involvement_for_exercises(summary.exercises.iter().map(String::as_str), tags);
+        workouts.push(ShardWorkout {
+            title: summary.title,
+            href: workout_url(&summary.path),
+            duration: format_duration(summary.duration_seconds),
+            set_count: summary.set_count,
+            exercises: summary.exercises,
+            involvement,
+        });
+    }
+    let heading = format_long(parsed);
+    let points_label = format!(
+        "{volume_points} volume {}",
+        if volume_points == 1 {
+            "point"
+        } else {
+            "points"
+        }
+    );
+
+    view! {
+        <span class="inline-popover-kicker">(heading.as_str())</span>
+        <span class="inline-popover-detail">(points_label.as_str())</span>
+        <div class="space-y-[0.75rem]">
+            for workout in workouts.iter() {
+                workout_block(workout: workout)
+            }
+        </div>
+        <a class=(PREVIEW_LOG_LINK) href=(href.as_str())>"view day in log →"</a>
+    }
+}
+
+#[component]
+async fn workout_block(workout: &ShardWorkout) -> Result {
+    let exercises = workout.exercises.join(" · ");
+    let meta = format!(
+        "{} · {} {}",
+        workout.duration,
+        workout.set_count,
+        plural(workout.set_count, "set", "sets"),
+    );
+    let title_label = format!("Open {} workout", workout.title);
+    view! {
+        <article class="border-t border-hairline pt-[0.65rem] first:border-t-0 first:pt-0">
+            <header class="flex items-baseline justify-between gap-3">
+                <a
+                    class=(PREVIEW_WORKOUT_TITLE)
+                    href=(workout.href.as_str())
+                    aria-label=(title_label.as_str())
+                >
+                    (workout.title.as_str())
+                </a>
+                <span class="flex-none font-meta text-[0.62rem] leading-[1.4] text-muted">
+                    (meta.as_str())
+                </span>
+            </header>
+            if !exercises.is_empty() {
+                <p class=(class!(PREVIEW_EXERCISE, "mt-[0.3rem]"))>(exercises.as_str())</p>
+            }
+            if !workout.involvement.is_empty() {
+                muscles::muscle_map_compact(involvement: &workout.involvement)
+            }
+        </article>
+    }
+}
+
+struct ShardWorkout {
+    title: String,
+    href: String,
+    duration: String,
+    set_count: usize,
+    exercises: Vec<String>,
+    involvement: muscles::MuscleInvolvement,
+}
+
+#[component]
+async fn day_cell(cell: &HeatmapCell) -> Result {
+    if let Some(date_key) = &cell.date_key {
+        // Named CSS anchor so the shared day popover can sit beside this
+        // cell — `heatmap-preview.js` points `position-anchor` at it on show.
+        let style = format!("{}; anchor-name: --heatmap-day-{date_key};", cell.style);
+        view! {
+            <button
+                type="button"
+                class=(class!(CELL, HEAT_FILL, cell.border, CELL_HOVER, CELL_BUTTON))
+                popovertarget=(PREVIEW_POPOVER_ID)
+                popovertargetaction="show"
+                data-heatmap-trigger=""
+                data-heatmap-date=(date_key.as_str())
+                aria-label=(cell.label.as_str())
+                style=(style.as_str())
+            >
+
+            </button>
+        }
+    } else {
+        view! {
+            <span
+                class=(class!(CELL, HEAT_FILL, cell.border))
+                title=(cell.label.as_str())
+                aria-hidden="true"
+                style=(cell.style.as_str())
+            >
+
+            </span>
+        }
+    }
+}
+
+/// Query strings we echo into the day-log link must stay filter-shaped —
+/// shard args are attacker-controlled.
+fn sanitize_link_query(raw: &str) -> &str {
+    if raw.is_empty() {
+        return "";
+    }
+    let ok = raw.bytes().all(|byte| {
+        matches!(
+            byte,
+            b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'0'..=b'9'
+                | b'='
+                | b'&'
+                | b'%'
+                | b'.'
+                | b'-'
+                | b'_'
+                | b'+'
+        )
+    });
+    if ok { raw } else { "" }
 }
 
 struct Calendar {
@@ -215,7 +409,7 @@ struct Calendar {
 }
 
 impl Calendar {
-    fn from_days(days: &[CalendarDay], link_query: &str) -> Option<Self> {
+    fn from_days(days: &[CalendarDay]) -> Option<Self> {
         let mut points_by_day = BTreeMap::new();
         for day in days {
             let date: Date = day.date.parse().ok()?;
@@ -223,9 +417,6 @@ impl Calendar {
             *points = points.saturating_add(day.volume_points);
         }
         let latest = *points_by_day.last_key_value()?.0;
-        // End on Saturday so every Sunday–Saturday column means what its
-        // weekday labels say. Dates after the latest logged day remain visibly
-        // empty padding in that final week.
         let end_offset =
             DAYS_PER_WEEK as i64 - 1 - i64::from(latest.weekday().to_sunday_zero_offset());
         let end = latest.checked_add(end_offset.days()).ok()?;
@@ -239,7 +430,7 @@ impl Calendar {
             if has_lift {
                 logged_days += 1;
             }
-            cells.push(HeatmapCell::new(date, points, has_lift, link_query));
+            cells.push(HeatmapCell::new(date, points, has_lift));
         }
         let month_labels = MonthLabel::from_cells(&cells);
         Some(Self {
@@ -253,14 +444,14 @@ impl Calendar {
 
 struct HeatmapCell {
     date: Date,
+    date_key: Option<String>,
     border: &'static str,
-    href: Option<String>,
     label: String,
     style: String,
 }
 
 impl HeatmapCell {
-    fn new(date: Date, points: u32, has_lift: bool, link_query: &str) -> Self {
+    fn new(date: Date, points: u32, has_lift: bool) -> Self {
         let intensity = intensity(points);
         let border = if has_lift && points == 0 {
             CELL_BORDER_ZERO
@@ -273,23 +464,14 @@ impl HeatmapCell {
             if points == 1 { "point" } else { "points" }
         );
         let label = if has_lift {
-            format!("{date_label}: {points_label}. View lifts from this day.")
+            format!("{date_label}: {points_label}. Preview lifts from this day.")
         } else {
             format!("{date_label}: no volume points")
         };
-        // Day links keep the log's other filters; `from`/`to`/`page` were
-        // already stripped from `link_query` so the day itself wins.
-        let href = has_lift.then(|| {
-            if link_query.is_empty() {
-                format!("/lifting/log?from={date}&to={date}#set-log")
-            } else {
-                format!("/lifting/log?{link_query}&from={date}&to={date}#set-log")
-            }
-        });
         Self {
             date,
+            date_key: has_lift.then(|| date.to_string()),
             border,
-            href,
             label,
             style: heat_style(intensity),
         }
@@ -308,9 +490,6 @@ impl MonthLabel {
         for (index, cell) in cells.iter().enumerate() {
             let column = index / DAYS_PER_WEEK;
             let starts_month = column == 0 || cell.date.day() == 1;
-            // A label needs about three week columns to remain legible. This
-            // naturally skips a month that starts immediately after the chart
-            // range begins while keeping later labels in their real column.
             let has_room = last_column.is_none_or(|previous| column >= previous + 3);
             if starts_month && has_room {
                 labels.push(Self {
@@ -324,10 +503,6 @@ impl MonthLabel {
     }
 }
 
-/// Four fixed bands keep the color meaning stable when the archive grows or a
-/// reader follows a day link. They place the audited archive's typical day in
-/// the middle of the scale instead of letting one unusually long workout wash
-/// every other cell out.
 fn intensity(points: u32) -> u8 {
     match points {
         0 => 0,
@@ -349,12 +524,10 @@ fn heat_style(intensity: u8) -> String {
     format!("--fitness-heat-alpha: {alpha}%")
 }
 
-/// "Jul 21, 2026"
 fn format_short(date: Date) -> String {
     date.strftime("%b %-d, %Y").to_string()
 }
 
-/// "Tuesday, Jul 21, 2026"
 fn format_long(date: Date) -> String {
     date.strftime("%A, %b %-d, %Y").to_string()
 }
@@ -372,7 +545,7 @@ mod tests {
 
     #[test]
     fn grid_is_53_complete_sunday_to_saturday_weeks_anchored_to_latest_day() {
-        let calendar = Calendar::from_days(&[day("2026-07-21", 42)], "").expect("calendar");
+        let calendar = Calendar::from_days(&[day("2026-07-21", 42)]).expect("calendar");
 
         assert_eq!(calendar.cells.len(), 371);
         assert_eq!(calendar.latest.to_string(), "2026-07-21");
@@ -391,13 +564,10 @@ mod tests {
         );
         assert_eq!(
             calendar.cells[366].label,
-            "Tuesday, Jul 21, 2026: 42 volume points. View lifts from this day."
+            "Tuesday, Jul 21, 2026: 42 volume points. Preview lifts from this day."
         );
-        assert_eq!(
-            calendar.cells[366].href.as_deref(),
-            Some("/lifting/log?from=2026-07-21&to=2026-07-21#set-log")
-        );
-        assert!(calendar.cells[367].href.is_none());
+        assert_eq!(calendar.cells[366].date_key.as_deref(), Some("2026-07-21"));
+        assert!(calendar.cells[367].date_key.is_none());
     }
 
     #[test]
@@ -414,32 +584,25 @@ mod tests {
     }
 
     #[test]
-    fn filtered_day_links_keep_the_active_filters() {
-        let calendar =
-            Calendar::from_days(&[day("2026-07-21", 12)], "movement=squat-type&per_page=40")
-                .expect("calendar");
-        assert_eq!(
-            calendar.cells[366].href.as_deref(),
-            Some(
-                "/lifting/log?movement=squat-type&per_page=40&from=2026-07-21&to=2026-07-21#set-log"
-            )
-        );
-    }
-
-    #[test]
     fn duplicate_calendar_days_sum_without_losing_their_link() {
-        let calendar = Calendar::from_days(&[day("2024-02-29", 20), day("2024-02-29", 25)], "")
-            .expect("calendar");
+        let calendar =
+            Calendar::from_days(&[day("2024-02-29", 20), day("2024-02-29", 25)]).expect("calendar");
         let leap_day = calendar
             .cells
             .iter()
-            .find(|cell| {
-                cell.href
-                    .as_deref()
-                    .is_some_and(|href| href.contains("2024-02-29"))
-            })
+            .find(|cell| cell.date_key.as_deref() == Some("2024-02-29"))
             .expect("leap day cell");
         assert!(leap_day.label.contains("45 volume points"));
         assert_eq!(leap_day.style, heat_style(3));
+    }
+
+    #[test]
+    fn link_query_sanitizer_rejects_schemes_and_junk() {
+        assert_eq!(
+            sanitize_link_query("movement=squat-type"),
+            "movement=squat-type"
+        );
+        assert_eq!(sanitize_link_query("javascript:alert(1)"), "");
+        assert_eq!(sanitize_link_query("a b"), "");
     }
 }

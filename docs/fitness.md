@@ -9,7 +9,8 @@ file under "API contract".
 - Page, filter/query handling, API reader, and HTML rendering:
   `src/app/interests/lifting/`; styles are Tailwind utilities inline in those
   views (no section stylesheet). `/lifting` is the
-  no-JavaScript landing view (daily volume heatmap plus the newest lift),
+  landing view (daily volume heatmap plus the newest lift; the heatmap day
+  preview uses the Topcoat runtime + a shard),
   `/lifting/log` is the filterable full archive, and
   `/lifting/YYYY-MM-DDTHH-MM-SS-04-00` (or `-05-00`) is a complete permanent
   workout page. Its timestamp is the `America/New_York` projection of the
@@ -22,7 +23,14 @@ file under "API contract".
   `Snapshot::calendar_filtered` in-process (the same per-set predicate as the
   set log); the public `/api/fitness/calendar` endpoint deliberately still
   accepts no query parameters. Heatmap day cells carry the active filters
-  (minus `from`/`to`/`page`) into their day links.
+  (minus `from`/`to`/`page`) into their day-log links. A logged day opens a
+  shared popover whose body is a Topcoat shard (`day_preview_shard`): the
+  calendar SSR stays volume-only, and the day's titles / exercise names /
+  compact muscle maps load on hover or click. Shard args are untrusted and
+  validated (`YYYY-MM-DD` plus a filter-shaped `link_query`). Hover/pin
+  chrome is `heatmap-preview.js`; click-to-open still works via native
+  `popovertarget`. Previews remain full-day even when filters only lit the
+  cell, and never widen the calendar JSON.
 - Workout pages derive a muscle map (front/back SVG plus text lists) at
   render time: `muscles.rs` intersects each exercise's stored muscle tags
   with `PRIMARY_BY_MOVEMENT`, a static table mirroring which muscles each

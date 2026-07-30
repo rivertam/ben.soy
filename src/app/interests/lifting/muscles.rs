@@ -48,7 +48,7 @@ const PRIMARY_BY_MOVEMENT: &[(&str, &[&str])] = &[
     ("grip-wrist", &["forearms"]),
 ];
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct MuscleInvolvement {
     /// Canonical muscle ids in `MUSCLES` order.
     pub(super) primary: Vec<&'static str>,
@@ -77,14 +77,26 @@ pub(super) fn workout_involvement(
     workout: &fitness::Workout,
     tags: &ExerciseTags,
 ) -> MuscleInvolvement {
+    involvement_for_exercises(
+        workout.sets.iter().map(|set| set.exercise_name.as_str()),
+        tags,
+    )
+}
+
+/// Same split as [`workout_involvement`], from an already-deduped or
+/// raw exercise-name stream (duplicates are ignored).
+pub(super) fn involvement_for_exercises<'a>(
+    exercises: impl IntoIterator<Item = &'a str>,
+    tags: &ExerciseTags,
+) -> MuscleInvolvement {
     let mut primary = BTreeSet::new();
     let mut secondary = BTreeSet::new();
     let mut seen = BTreeSet::new();
-    for set in &workout.sets {
-        if !seen.insert(set.exercise_name.as_str()) {
+    for name in exercises {
+        if !seen.insert(name) {
             continue;
         }
-        let Some(pairs) = tags.get(&set.exercise_name) else {
+        let Some(pairs) = tags.get(name) else {
             continue;
         };
         let (exercise_primary, exercise_secondary) = exercise_emphasis(pairs);
@@ -334,12 +346,14 @@ pub(super) async fn muscle_map(involvement: &MuscleInvolvement) -> Result {
                     muscle_figure(
                         paths: FRONT_PATHS,
                         caption: "front",
-                        involvement: involvement
+                        involvement: involvement,
+                        compact: false
                     )
                     muscle_figure(
                         paths: BACK_PATHS,
                         caption: "back",
-                        involvement: involvement
+                        involvement: involvement,
+                        compact: false
                     )
                     <dl class="min-w-[11rem] flex-1 space-y-3 sm:pt-2">
                         if !involvement.primary.is_empty() {
@@ -379,17 +393,67 @@ pub(super) async fn muscle_map(involvement: &MuscleInvolvement) -> Result {
     }
 }
 
+/// Compact front/back figures for heatmap day preview popovers. One-line
+/// primary/secondary labels replace the full legend; empty involvement
+/// renders nothing so the card can skip the muscles block entirely.
+#[component]
+pub(super) async fn muscle_map_compact(involvement: &MuscleInvolvement) -> Result {
+    if involvement.is_empty() {
+        return view! {};
+    }
+    let primary_list = label_list(&involvement.primary);
+    let secondary_list = label_list(&involvement.secondary);
+    view! {
+        <div class="mt-[0.55rem]" aria-hidden="true">
+            <div class="flex items-start gap-x-3">
+                muscle_figure(
+                    paths: FRONT_PATHS,
+                    caption: "front",
+                    involvement: involvement,
+                    compact: true
+                )
+                muscle_figure(
+                    paths: BACK_PATHS,
+                    caption: "back",
+                    involvement: involvement,
+                    compact: true
+                )
+            </div>
+            if !involvement.primary.is_empty() {
+                <p class="mt-[0.4rem] font-meta text-[0.62rem] leading-[1.4] text-ink2">
+                    <span class="text-muted">"primary · "</span>
+                    (primary_list.as_str())
+                </p>
+            }
+            if !involvement.secondary.is_empty() {
+                <p class="mt-[0.15rem] font-meta text-[0.62rem] leading-[1.4] text-ink2">
+                    <span class="text-muted">"secondary · "</span>
+                    (secondary_list.as_str())
+                </p>
+            }
+        </div>
+    }
+}
+
 #[component]
 async fn muscle_figure(
     paths: &'static [MusclePath],
     caption: &str,
     involvement: &MuscleInvolvement,
+    #[default(false)] compact: bool,
 ) -> Result {
+    let figure_class = if compact {
+        "m-0 w-[4.4rem] flex-none"
+    } else {
+        "m-0 w-[8.5rem] flex-none sm:w-[9.5rem] min-[90rem]:w-[6.6rem]"
+    };
+    let caption_class = if compact {
+        "mt-1 text-center font-meta text-[0.55rem] leading-none tracking-[0.13em] uppercase text-muted"
+    } else {
+        FIGURE_CAPTION
+    };
     view! {
-        <figure
-            class="m-0 w-[8.5rem] flex-none sm:w-[9.5rem] min-[90rem]:w-[6.6rem]"
-            aria-hidden="true"
-        >
+        <figure class=(figure_class) aria-hidden="true">
             <svg viewBox="0 0 200 380">
                 <path class=(DIAGRAM_SILHOUETTE) stroke-width="1.5" d=(SILHOUETTE)></path>
                 for path in paths.iter() {
@@ -400,7 +464,7 @@ async fn muscle_figure(
                     ></path>
                 }
             </svg>
-            <figcaption class=(FIGURE_CAPTION)>(caption)</figcaption>
+            <figcaption class=(caption_class)>(caption)</figcaption>
         </figure>
     }
 }

@@ -294,7 +294,7 @@ async fn lifting(cx: &Cx) -> Result {
         shell(
             title: meta.title,
             active: "interests",
-            runtime: false,
+            runtime: true,
             <header class="rail-row mt-16">
                 <p class="rail-stamp rail-stamp-label">(meta.slug)</p>
                 <div class="flex min-w-0 items-start justify-between gap-4">
@@ -508,7 +508,7 @@ async fn lifting_log(cx: &Cx) -> Result {
         shell(
             title: meta.title,
             active: "interests",
-            runtime: false,
+            runtime: true,
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             <div>
                 rail_section(
