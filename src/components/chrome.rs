@@ -47,8 +47,8 @@ const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 /// everywhere else keeps the public site from advertising an install.
 ///
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
-/// join the interests dropdown, and a barely-there "signed in" line sits at
-/// the footer's bottom right. Both personalize the HTML, which is why
+/// join the interests dropdown, and a barely-there "signed in" line replaces
+/// the footer's login link. Both personalize the HTML, which is why
 /// `response_layer.rs` forces `private, no-store` whenever the viewer cookie
 /// rides the request — the header below only governs anonymous renders.
 #[component]
@@ -196,6 +196,10 @@ pub async fn shell(
                             }
                             <button type="submit" class="quiet-link cursor-pointer">"sign out"</button>
                         </form>
+                    } else {
+                        <p class="mt-2 text-right font-meta text-[11px] text-muted opacity-60 transition-opacity hover:opacity-100">
+                            <a class="quiet-link" href="/login">"log in with google"</a>
+                        </p>
                     }
                 </footer>
             </body>
