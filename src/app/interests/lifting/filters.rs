@@ -12,6 +12,7 @@ pub(super) const MOVEMENTS: &[(&str, &str)] = &[
     ("vertical-push", "vertical push"),
     ("horizontal-pull", "horizontal pull"),
     ("vertical-pull", "vertical pull"),
+    ("dip", "dip"),
     ("core", "core"),
     ("carry", "carry"),
     ("cardio", "cardio"),
@@ -19,10 +20,9 @@ pub(super) const MOVEMENTS: &[(&str, &str)] = &[
 ];
 
 pub(super) const MOVEMENT_DETAILS: &[(&str, &str)] = &[
-    ("dip", "dip"),
     ("fly", "fly"),
-    ("elbow-flexion", "elbow flexion"),
-    ("elbow-extension", "elbow extension"),
+    ("elbow-flexion", "curls"),
+    ("elbow-extension", "triceps"),
     ("shoulder-abduction", "shoulder abduction"),
     ("shoulder-flexion", "shoulder flexion"),
     ("shoulder-extension", "shoulder extension"),
