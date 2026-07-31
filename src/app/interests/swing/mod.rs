@@ -37,13 +37,13 @@ struct Media {
     height: u16,
 }
 
-const SWING_GALLERY_JS: Asset = asset!("./swing/swing-gallery.js");
+const SWING_GALLERY_JS: Asset = asset!("./swing-gallery.js");
 
 const MEDIA: &[Media] = &[
     Media {
         slug: "guggenheim-olivia",
-        src: asset!("./swing/guggenheim-olivia.webp"),
-        preview: asset!("./swing/guggenheim-olivia.webp"),
+        src: asset!("./guggenheim-olivia.webp"),
+        preview: asset!("./guggenheim-olivia.webp"),
         kind: MediaKind::Photo,
         alt: "Ben swing dancing with Olivia Meyer in the Guggenheim's rotunda.",
         caption: "At the Guggenheim with Olivia",
@@ -52,8 +52,8 @@ const MEDIA: &[Media] = &[
     },
     Media {
         slug: "mermaid-parade",
-        src: asset!("./swing/mermaid-parade.webp"),
-        preview: asset!("./swing/mermaid-parade.webp"),
+        src: asset!("./mermaid-parade.webp"),
+        preview: asset!("./mermaid-parade.webp"),
         kind: MediaKind::Photo,
         alt: "Ben dancing with a woman in a green costume at the Mermaid Parade.",
         caption: "Mermaid Parade with Caryn",
@@ -62,8 +62,8 @@ const MEDIA: &[Media] = &[
     },
     Media {
         slug: "with-eileen-photo",
-        src: asset!("./swing/with-eileen.webp"),
-        preview: asset!("./swing/with-eileen.webp"),
+        src: asset!("./with-eileen.webp"),
+        preview: asset!("./with-eileen.webp"),
         kind: MediaKind::Photo,
         alt: "Ben and Eileen swing dancing on the Intrepid.",
         caption: "Dancing with Eileen on the Intrepid",
@@ -72,8 +72,8 @@ const MEDIA: &[Media] = &[
     },
     Media {
         slug: "with-laurel",
-        src: asset!("./swing/with-laurel.mp4"),
-        preview: asset!("./swing/with-laurel-poster.webp"),
+        src: asset!("./with-laurel.mp4"),
+        preview: asset!("./with-laurel-poster.webp"),
         kind: MediaKind::Video,
         alt: "Ben swing dancing with Laurel DiSera on a crowded floor beneath an aircraft.",
         caption: "with Laurel",
@@ -82,8 +82,8 @@ const MEDIA: &[Media] = &[
     },
     Media {
         slug: "with-eileen-faster",
-        src: asset!("./swing/with-eileen-faster.mp4"),
-        preview: asset!("./swing/with-eileen-faster-poster.webp"),
+        src: asset!("./with-eileen-faster.mp4"),
+        preview: asset!("./with-eileen-faster-poster.webp"),
         kind: MediaKind::Video,
         alt: "Ben and Eileen swing dancing in front of a live band.",
         caption: "Competing with Eileen",
@@ -92,8 +92,8 @@ const MEDIA: &[Media] = &[
     },
     Media {
         slug: "with-eileen",
-        src: asset!("./swing/with-eileen.mp4"),
-        preview: asset!("./swing/with-eileen-video-poster.webp"),
+        src: asset!("./with-eileen.mp4"),
+        preview: asset!("./with-eileen-video-poster.webp"),
         kind: MediaKind::Video,
         alt: "Ben and Eileen swing dancing at a social dance.",
         caption: "Competing with Eileen",
@@ -102,8 +102,8 @@ const MEDIA: &[Media] = &[
     },
     Media {
         slug: "with-amanda-frim-fram",
-        src: asset!("./swing/with-amanda-frim-fram.mp4"),
-        preview: asset!("./swing/with-amanda-frim-fram-poster.webp"),
+        src: asset!("./with-amanda-frim-fram.mp4"),
+        preview: asset!("./with-amanda-frim-fram-poster.webp"),
         kind: MediaKind::Video,
         alt: "Ben swing dancing with Amanda at the Frim Fram.",
         caption: "Dancing with Amanda at Frim Fram",

@@ -24,13 +24,13 @@ struct Photo {
 #[path_param]
 struct PhotoSlug(str);
 
-const STUDIO_PORTRAIT: Asset = asset!("./felix/photos/2023-portrait.webp");
-const FELIX_HOME_JS: Asset = asset!("./felix/felix-home.js");
+const STUDIO_PORTRAIT: Asset = asset!("./photos/2023-portrait.webp");
+const FELIX_HOME_JS: Asset = asset!("./felix-home.js");
 
 const PHOTOS: &[Photo] = &[
     Photo {
         slug: "2022-attention",
-        src: asset!("./felix/photos/2022-attention.webp"),
+        src: asset!("./photos/2022-attention.webp"),
         alt: "Felix sitting attentively on a hardwood floor and looking up.",
         stamp: "nov 2022",
         caption: "",
@@ -39,7 +39,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "felix-close-up",
-        src: asset!("./felix/photos/felix-close-up.webp"),
+        src: asset!("./photos/felix-close-up.webp"),
         alt: "Close-up side view of Felix's nose as a hand reaches toward it.",
         stamp: "snoot",
         caption: "",
@@ -48,7 +48,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2022-walk-ready",
-        src: asset!("./felix/photos/2022-walk-ready.webp"),
+        src: asset!("./photos/2022-walk-ready.webp"),
         alt: "Felix indoors wearing a gray coat, scarf, and four small boots.",
         stamp: "dec 2022",
         caption: "Dr. Daniel got me a mug with this picture on it",
@@ -57,7 +57,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2023-overlook",
-        src: asset!("./felix/photos/2023-overlook.webp"),
+        src: asset!("./photos/2023-overlook.webp"),
         alt: "Felix in action mode",
         stamp: "aug 2023",
         caption: "POV: you're about to throw a ball",
@@ -66,7 +66,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2023-play-bow",
-        src: asset!("./felix/photos/2023-play-bow.webp"),
+        src: asset!("./photos/2023-play-bow.webp"),
         alt: "Felix with Ruthie",
         stamp: "2023",
         caption: "Felix with his aunt Ruthie in North Carolina",
@@ -75,7 +75,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2023-sprint",
-        src: asset!("./felix/photos/2023-sprint.webp"),
+        src: asset!("./photos/2023-sprint.webp"),
         alt: "Felix running toward the camera through an autumn park.",
         stamp: "oct 2023",
         caption: "",
@@ -84,7 +84,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2024-big-smile",
-        src: asset!("./felix/photos/2024-big-smile.webp"),
+        src: asset!("./photos/2024-big-smile.webp"),
         alt: "Felix sitting on a dark tiled floor with a wide open-mouthed smile.",
         stamp: "may 2024",
         caption: "",
@@ -93,7 +93,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "graceful",
-        src: asset!("./felix/photos/graceful.webp"),
+        src: asset!("./photos/graceful.webp"),
         alt: "The epitome of grace. I'm sorry, you have to see it to believe it.",
         stamp: "oct 2023",
         caption: "The epitome of grace.",
@@ -102,7 +102,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "phone-background",
-        src: asset!("./felix/photos/phone-background.webp"),
+        src: asset!("./photos/phone-background.webp"),
         alt: "Felix standing alertly on a tree stump in an autumn forest.",
         stamp: "oct 2023",
         caption: "",
@@ -111,7 +111,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2025-rug",
-        src: asset!("./felix/photos/2025-rug.webp"),
+        src: asset!("./photos/2025-rug.webp"),
         alt: "Felix sitting on a rug, looking up at the camera with his tongue out.",
         stamp: "mar 2025",
         caption: "",
@@ -120,7 +120,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2025-chair",
-        src: asset!("./felix/photos/2025-chair.webp"),
+        src: asset!("./photos/2025-chair.webp"),
         alt: "Felix sitting happily in a large dark armchair.",
         stamp: "apr 2025",
         caption: "",
@@ -129,7 +129,7 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         slug: "2025-waterfront",
-        src: asset!("./felix/photos/2025-waterfront.webp"),
+        src: asset!("./photos/2025-waterfront.webp"),
         alt: "Felix sitting on a picnic table beside a waterfront city skyline.",
         stamp: "apr 2025",
         caption: "LIC Waterfront",

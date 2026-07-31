@@ -10,9 +10,9 @@ use crate::{
     content::interests::interest,
 };
 
-const GLOVE80: Asset = asset!("./keyboards/glove80.webp");
-const ERGODOX_EZ: Asset = asset!("./keyboards/ergodox-ez.webp");
-const KINESIS_ADVANTAGE2: Asset = asset!("./keyboards/kinesis-advantage2.webp");
+const GLOVE80: Asset = asset!("./glove80.webp");
+const ERGODOX_EZ: Asset = asset!("./ergodox-ez.webp");
+const KINESIS_ADVANTAGE2: Asset = asset!("./kinesis-advantage2.webp");
 
 #[page("/keyboards")]
 async fn keyboards() -> Result {
