@@ -15,6 +15,13 @@ crate::register_post!(
     title: "I'm the same age as my dog!",
     date: "2026-07-31",
     teaser: "This week, Felix and I are both 33.2 years old!",
+    photo: {
+        src: SAAMD_WITH_FELIX,
+        alt: "Ben and Felix relaxing together in a hammock",
+        width: 1060,
+        height: 1413,
+    },
+    read_label: "calculate your SAAMD day →",
     tags: &["dogs"],
 );
 

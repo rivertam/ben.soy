@@ -290,10 +290,7 @@
   }
 }
 
-/*
- * Essay card: white plate, hairline frame, ink lintel, and a rotated stamp
- * in the corner.
- */
+/* Essay card: white plate, hairline frame, and an ink lintel. */
 .log-card {
   min-width: 0;
   background: var(--color-card);
@@ -303,24 +300,9 @@
   position: relative;
 }
 
-.log-stamp {
-  position: absolute;
-  top: 14px;
-  right: 16px;
-  transform: rotate(2.5deg);
-  font-family: var(--font-meta);
-  font-size: 0.6875rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--color-oxide);
-  border: 1.5px solid color-mix(in srgb, var(--color-oxide) 55%, transparent);
-  padding: 3px 9px;
-}
-
 .log-card-title {
   font-size: 1.6rem;
   line-height: 1.2;
-  padding-right: 90px;
 }
 
 @media (min-width: 40rem) {

@@ -7,7 +7,7 @@
 
 use std::sync::LazyLock;
 
-use crate::content::posts::{POSTS, PostKind};
+use crate::content::posts::{POSTS, PostKind, PostPhoto};
 
 /// One logbook entry. The variants render differently (card / pull-quote /
 /// one-liner) but share a date and tags for filtering.
@@ -19,6 +19,8 @@ pub enum Entry {
         title: &'static str,
         teaser: &'static str,
         slug: &'static str,
+        photo: Option<PostPhoto>,
+        read_label: &'static str,
         tags: &'static [&'static str],
     },
     /// A short thought, whose permalink is the post page at `/thoughts/{slug}`.
@@ -137,6 +139,8 @@ pub static LOG: LazyLock<Vec<Entry>> = LazyLock::new(|| {
             title: post.title,
             teaser: post.teaser,
             slug: post.slug,
+            photo: post.photo,
+            read_label: post.read_label,
             tags: post.tags,
         },
         PostKind::Note { body, source } => Entry::Note {

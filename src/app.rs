@@ -366,7 +366,15 @@ async fn home(cx: &Cx) -> Result {
                     </div>
                 }
                 if let Some((serial, entry)) = row.log() {
-                    if let Entry::Essay { title, teaser, slug, tags, .. } = entry {
+                    if let Entry::Essay {
+                        title,
+                        teaser,
+                        slug,
+                        photo,
+                        read_label,
+                        tags,
+                        ..
+                    } = entry {
                         <article class="log-row">
                             <span class="log-mark log-mark-essay"></span>
                             <div class="log-rail">
@@ -374,11 +382,26 @@ async fn home(cx: &Cx) -> Result {
                                 <p class="log-serial">(serial)</p>
                             </div>
                             <div class="log-card">
-                                <span class="log-stamp">"essay"</span>
                                 <h2 class="log-card-title font-display font-bold">
                                     <a class="oxlink" href=(format!("/thoughts/{slug}"))>(title)</a>
                                 </h2>
                                 <p class="mt-2.5 max-w-prose leading-relaxed text-ink2">(teaser)</p>
+                                if let Some(photo) = photo {
+                                    <a
+                                        class="mt-5 block overflow-hidden rounded-[2px] border border-hairline"
+                                        href=(format!("/thoughts/{slug}"))
+                                    >
+                                        <img
+                                            src=(photo.src)
+                                            alt=(photo.alt)
+                                            width=(photo.width)
+                                            height=(photo.height)
+                                            loading="lazy"
+                                            decoding="async"
+                                            class="aspect-[4/3] w-full object-cover object-center"
+                                        >
+                                    </a>
+                                }
                                 <div class="mt-4 flex flex-wrap items-baseline gap-3 font-meta text-xs">
                                     for t in tags.iter() {
                                         <a class="log-tag" href=(home_url(kind_param, Some(t)))>(format!("#{t}"))</a>
@@ -386,7 +409,7 @@ async fn home(cx: &Cx) -> Result {
                                     <a
                                         class="ml-auto text-ink2 no-underline hover:text-oxide"
                                         href=(format!("/thoughts/{slug}"))
-                                    >link_label(label: "read →")</a>
+                                    >link_label(label: read_label)</a>
                                 </div>
                             </div>
                         </article>
