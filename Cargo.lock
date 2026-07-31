@@ -369,6 +369,7 @@ dependencies = [
  "csv",
  "form_urlencoded",
  "http",
+ "inventory",
  "jiff",
  "qrcode",
  "reqwest 0.12.28",

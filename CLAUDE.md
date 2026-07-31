@@ -18,7 +18,7 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 
 ## Adding a page
 
-- Post: `src/app/thoughts/<slug>.rs` + `mod <slug>;` in `thoughts.rs` + entry in `src/content/posts.rs`
+- Post: `src/app/thoughts/<slug>.rs` with `register_post!(...)` metadata + `mod <slug>;` in `thoughts.rs`; `/thoughts`, `/`, `/feed.xml`, routes, and footer count derive from the distributed post registry
 - Interest: `src/app/interests/<name>.rs` (copy one; it pulls its copy via `interest("<name>")`) + `mod <name>;` in `interests.rs` + entry in `src/content/interests.rs`
 - Other fixed page: also add its route to `src/content/routes.rs::site_routes()`
 - Nav, indexes, and 404 all derive from these registries — touch nothing else

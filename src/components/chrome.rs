@@ -18,6 +18,7 @@ use crate::content::{access, interests::INTERESTS, logbook::LOG};
 pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
 pub const FIRA_SANS: Font = fontsource_font!(FIRA_SANS, host: Asset);
 pub const FIRA_MONO: Font = fontsource_font!(FIRA_MONO, host: Asset);
+const KALAM: Font = fontsource_font!(KALAM, weight: 700, style: Normal, subset: Latin, host: Asset);
 const ANALYTICS_JS: Asset = asset!("./analytics.js");
 const FAVICON_16: Asset = asset!("./favicon/favicon-16.png");
 const FAVICON_32: Asset = asset!("./favicon/favicon-32.png");
@@ -46,6 +47,9 @@ const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 /// pages set it; the flag renders no viewer data, but keeping it off
 /// everywhere else keeps the public site from advertising an install.
 ///
+/// `marker_font` loads Kalam for the handwritten caption on the dog-age post.
+/// It defaults off so the extra face does not ride along on every page.
+///
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
 /// join the interests dropdown, and a barely-there "signed in" line replaces
 /// the footer's login link. Both personalize the HTML, which is why
@@ -60,6 +64,7 @@ pub async fn shell(
     #[default(true)] runtime: bool,
     #[default(true)] analytics: bool,
     #[default(false)] pwa: bool,
+    #[default(false)] marker_font: bool,
     child: View,
 ) -> Result {
     let title = if title.is_empty() {
@@ -109,6 +114,9 @@ pub async fn shell(
                 topcoat::font::link(font: ZILLA_SLAB)
                 topcoat::font::link(font: FIRA_SANS)
                 topcoat::font::link(font: FIRA_MONO)
+                if marker_font {
+                    topcoat::font::link(font: KALAM)
+                }
                 // Hashed PNGs for browsers; app/favicon.rs serves /favicon.ico
                 // for the non-HTML clients that guess the path.
                 <link rel="icon" type="image/png" sizes="32x32" href=(FAVICON_32)>

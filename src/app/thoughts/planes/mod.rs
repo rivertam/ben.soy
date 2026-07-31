@@ -19,6 +19,15 @@ mod receipt;
 mod reference_data;
 mod sources;
 
+crate::register_post!(
+    essay,
+    slug: "how-bad-are-planes",
+    title: "How bad are planes?",
+    date: "2026-07-12",
+    teaser: "Why I don't generally take planes for leisure",
+    tags: &["climate", "planes"],
+);
+
 use topcoat::{
     Result,
     context::Cx,
@@ -171,9 +180,10 @@ async fn planes(cx: &Cx) -> Result {
 
             seal_total = format_tonnes(impact.tonnes_co2e);
             title = format!(
-                "{} · {} CO₂e — How bad are planes?",
+                "{} · {} CO₂e — {}",
                 iatas.join(if round_trip { " ⇄ " } else { " → " }),
                 format_tonnes(impact.tonnes_co2e),
+                POST.title,
             );
 
             Some(view! {
@@ -191,7 +201,7 @@ async fn planes(cx: &Cx) -> Result {
             }?)
         }
         _ => {
-            title = "How bad are planes?".to_string();
+            title = POST.title.to_string();
             None
         }
     };
@@ -206,7 +216,7 @@ async fn planes(cx: &Cx) -> Result {
         <article>
             full_bleed(class: "desk-band",
                 <div class=(spread_class)>
-                    doc_head(stamp: "2026-07-12", title: "How bad are planes?")
+                    doc_head(stamp: POST.date, title: POST.title)
                     <div class="dispatch">
                         flight_form(
                             from: from.cloned(),

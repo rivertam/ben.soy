@@ -1,12 +1,17 @@
-//! The logbook: the site's master feed, newest first. Adding an entry here is
-//! how content gets published — the homepage timeline and `/feed.xml` both
-//! derive from this array, so a new entry ships to both on the next deploy.
+//! The logbook: the site's master feed, newest first. Posts register beside
+//! their page; the updates below are the only entries authored here. The
+//! homepage timeline and `/feed.xml` both derive from the merged registry.
 //!
 //! Serial numbers count from the oldest entry: entry at index `i` is
 //! `№ {LOG.len() - i}` (zero-padded to four digits, see [`serial`]).
 
+use std::sync::LazyLock;
+
+use crate::content::posts::{POSTS, PostKind};
+
 /// One logbook entry. The variants render differently (card / pull-quote /
 /// one-liner) but share a date and tags for filtering.
+#[derive(Clone, Copy)]
 pub enum Entry {
     /// A full post, living at `/thoughts/{slug}`.
     Essay {
@@ -76,14 +81,7 @@ pub fn serial(index: usize) -> String {
     format!("№ {:04}", LOG.len() - index)
 }
 
-pub static LOG: [Entry; 7] = [
-    Entry::Essay {
-        date: "2026-07-12",
-        title: "How bad are planes?",
-        teaser: "Why I don't generally take planes for leisure",
-        slug: "how-bad-are-planes",
-        tags: &["climate", "planes"],
-    },
+const UPDATES: [Entry; 5] = [
     Entry::Update {
         date: "2026-06-28",
         stamp: "pr",
@@ -101,15 +99,6 @@ pub static LOG: [Entry; 7] = [
         href: "https://www.youtube.com/watch?v=8lrjsP1KWrY",
         link_label: "Manchester Orchestra ↗",
         tags: &["music"],
-    },
-    Entry::Note {
-        date: "2025-08-14",
-        body: "I'm so glad AI can handle all that pesky code for me so I can focus on what I \
-               truly love: navigating endless chains of SSO sign-ins followed by dashboards to \
-               manage settings and secrets in different environments ❤️",
-        source: "originally a LinkedIn post",
-        slug: "pesky-code",
-        tags: &["ai"],
     },
     Entry::Update {
         date: "2025-06-02",
@@ -140,6 +129,28 @@ pub static LOG: [Entry; 7] = [
     },
 ];
 
+pub static LOG: LazyLock<Vec<Entry>> = LazyLock::new(|| {
+    let mut entries = UPDATES.to_vec();
+    entries.extend(POSTS.iter().map(|post| match post.kind {
+        PostKind::Essay => Entry::Essay {
+            date: post.date,
+            title: post.title,
+            teaser: post.teaser,
+            slug: post.slug,
+            tags: post.tags,
+        },
+        PostKind::Note { body, source } => Entry::Note {
+            date: post.date,
+            body,
+            source,
+            slug: post.slug,
+            tags: post.tags,
+        },
+    }));
+    entries.sort_unstable_by(|a, b| b.date().cmp(a.date()));
+    entries
+});
+
 /// The homepage filter row's fixed tag chips. `spire` and `fitness` filter
 /// dynamic timeline items (wins and published lifts); the rest match curated
 /// logbook entry tags.
@@ -157,7 +168,6 @@ pub static FILTER_TAGS: [&str; 8] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::posts::POSTS;
 
     fn iso_date(date: &str) -> bool {
         let bytes = date.as_bytes();
@@ -234,16 +244,16 @@ mod tests {
     }
 
     #[test]
-    fn essay_and_note_slugs_exist_in_posts() {
-        for entry in LOG.iter() {
-            let slug = match entry {
-                Entry::Essay { slug, .. } | Entry::Note { slug, .. } => slug,
-                Entry::Update { .. } => continue,
-            };
-            assert!(
-                POSTS.iter().any(|p| p.slug == *slug),
-                "no post for slug {slug}"
-            );
+    fn every_post_becomes_exactly_one_log_entry() {
+        for post in POSTS.iter() {
+            let matches = LOG
+                .iter()
+                .filter(|entry| match entry {
+                    Entry::Essay { slug, .. } | Entry::Note { slug, .. } => *slug == post.slug,
+                    Entry::Update { .. } => false,
+                })
+                .count();
+            assert_eq!(matches, 1, "log entries for {}", post.slug);
         }
     }
 
