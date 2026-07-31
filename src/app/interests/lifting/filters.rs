@@ -75,25 +75,8 @@ pub(super) const SET_TYPES: &[(&str, &str)] = &[
     ("DROP_SET", "drop set"),
 ];
 
-const ADVANCED_KEYS: &[&str] = &[
-    "from",
-    "to",
-    "time_of_day",
-    "weekday",
-    "muscle",
-    "equipment",
-    "set_type",
-    "min_load",
-    "max_load",
-    "min_reps",
-    "max_reps",
-    "max_effort",
-    "has_record",
-    "has_superset",
-    "has_notes",
-    "incomplete",
-    "duration",
-];
+/// Facets that accept multiple concurrent values (one tag each).
+const MULTI_KEYS: &[&str] = &["movement", "muscle", "equipment", "set_type"];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Filters {
@@ -181,11 +164,70 @@ impl Filters {
         url
     }
 
-    pub(super) fn advanced(&self) -> bool {
-        self.pairs.iter().any(|(key, value)| {
-            ADVANCED_KEYS.contains(&key.as_str())
-                || (key == "movement" && MOVEMENT_DETAILS.iter().any(|(detail, _)| detail == value))
-        })
+    /// Whether `key` is a multi-value facet (movement / muscle / …).
+    pub(super) fn is_multi(key: &str) -> bool {
+        MULTI_KEYS.contains(&key)
+    }
+
+    /// URL after adding one filter value. Singular keys replace; multi keys
+    /// append (no-op if that exact pair already exists). Always drops `page`.
+    pub(super) fn adding(&self, key: &str, value: &str) -> Self {
+        let multi = Self::is_multi(key);
+        let mut pairs = self
+            .pairs
+            .iter()
+            .filter(|(candidate, candidate_value)| {
+                candidate != "page"
+                    && (multi || candidate != key)
+                    && !(candidate == key && candidate_value == value)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        pairs.push((key.to_string(), value.to_string()));
+        let per_page_count = pairs
+            .iter()
+            .filter(|(candidate, _)| candidate == "per_page")
+            .count();
+        pairs.retain(|(candidate, candidate_value)| {
+            !(candidate == "per_page" && per_page_count == 1 && candidate_value == DEFAULT_PER_PAGE)
+        });
+        Self { pairs }
+    }
+
+    /// Change page size and restart at page one.
+    pub(super) fn per_page_url(&self, per_page: &str) -> String {
+        let mut pairs = self
+            .pairs
+            .iter()
+            .filter(|(key, _)| key != "page" && key != "per_page")
+            .cloned()
+            .collect::<Vec<_>>();
+        if per_page != DEFAULT_PER_PAGE {
+            pairs.push(("per_page".to_string(), per_page.to_string()));
+        }
+        Self { pairs }.url(true)
+    }
+
+    /// Hidden-input pairs for a no-JS add form targeting `key`: keep other
+    /// filters, drop pagination, and drop existing values of `key` when it is
+    /// singular (so the form's new value replaces).
+    pub(super) fn form_carry(&self, key: &str) -> Vec<(String, String)> {
+        let multi = Self::is_multi(key);
+        self.pairs
+            .iter()
+            .filter(|(candidate, _)| candidate != "page" && (multi || candidate.as_str() != key))
+            .cloned()
+            .collect()
+    }
+
+    /// Like [`form_carry`], but drops every key in `keys` (for multi-field
+    /// forms such as the date range picker).
+    pub(super) fn form_carry_except(&self, keys: &[&str]) -> Vec<(String, String)> {
+        self.pairs
+            .iter()
+            .filter(|(candidate, _)| candidate != "page" && !keys.contains(&candidate.as_str()))
+            .cloned()
+            .collect()
     }
 
     pub(super) fn active(&self) -> Vec<ActiveFilter> {
@@ -272,8 +314,8 @@ fn active_filter_label(key: &str, value: &str) -> String {
                 "muscle" => "muscle",
                 "equipment" => "equipment",
                 "set_type" => "set kind",
-                "from" => "from",
-                "to" => "through",
+                "from" => "after",
+                "to" => "until",
                 "time_of_day" => "time",
                 "weekday" => "day",
                 "min_load" => "load \u{2265}",
@@ -418,5 +460,43 @@ mod tests {
         assert!(Filters::normalize(vec![("q".into(), "nul\0byte".into())]).is_none());
         assert!(Filters::normalize(vec![("q\u{7f}".into(), "safe".into())]).is_none());
         assert!(Filters::normalize(vec![("q".into(), "line\nbreak".into())]).is_none());
+    }
+
+    #[test]
+    fn adding_replaces_singular_and_appends_multi() {
+        let base = Filters::normalize(vec![
+            ("q".into(), "bench".into()),
+            ("movement".into(), "hinge".into()),
+            ("page".into(), "3".into()),
+        ])
+        .expect("safe query");
+        assert_eq!(base.adding("q", "squat").query(), "movement=hinge&q=squat");
+        assert_eq!(
+            base.adding("movement", "squat-type").query(),
+            "q=bench&movement=hinge&movement=squat-type"
+        );
+        assert_eq!(
+            base.adding("movement", "hinge").query(),
+            "q=bench&movement=hinge",
+            "duplicate multi value is a no-op append"
+        );
+    }
+
+    #[test]
+    fn per_page_url_resets_page_and_omits_default() {
+        let filters = Filters::normalize(vec![
+            ("muscle".into(), "chest".into()),
+            ("page".into(), "2".into()),
+            ("per_page".into(), "20".into()),
+        ])
+        .expect("safe query");
+        assert_eq!(
+            filters.per_page_url("10"),
+            "/lifting/log?muscle=chest#set-log"
+        );
+        assert_eq!(
+            filters.per_page_url("40"),
+            "/lifting/log?muscle=chest&per_page=40#set-log"
+        );
     }
 }

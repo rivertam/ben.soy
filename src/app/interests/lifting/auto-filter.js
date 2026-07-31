@@ -1,58 +1,44 @@
-// Progressive enhancement for the native GET form. The server still owns
-// query validation and rendering; this only schedules the next navigation.
+// Progressive enhancement for the log filter chrome.
+// Native popovers + GET links/forms work without this; the script only
+// swaps the details fallback for the compact "+ filter" button.
 
-const form = document.querySelector("form[data-lifting-filters]");
+const root = document.querySelector("[data-lifting-filters]");
+const addButton = document.querySelector("[data-lifting-add]");
+const fallback = document.querySelector("[data-lifting-filters-fallback]");
 
-if (form instanceof HTMLFormElement) {
-  let pendingNavigation;
+if (
+  root instanceof HTMLElement &&
+  addButton instanceof HTMLButtonElement &&
+  fallback instanceof HTMLDetailsElement
+) {
+  fallback.hidden = true;
+  addButton.hidden = false;
 
-  const encode = (value) =>
-    encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
-      `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
-    );
-
-  const targetUrl = () => {
-    const pairs = [];
-    for (const [key, rawValue] of new FormData(form)) {
-      const value = String(rawValue).trim();
-      if (value === "") continue;
-      if (key === "page" && value === "1") continue;
-      if (key === "per_page" && value === "10") continue;
-      pairs.push(`${encode(key)}=${encode(value)}`);
-    }
-    const query = pairs.length === 0 ? "" : `?${pairs.join("&")}`;
-    return `/lifting/log${query}#set-log`;
-  };
-
-  const navigate = () => {
-    pendingNavigation = undefined;
-    const target = targetUrl();
-    const current = `${location.pathname}${location.search}${location.hash}`;
-    if (target !== current) location.assign(target);
-  };
-
-  const schedule = (delay) => {
-    window.clearTimeout(pendingNavigation);
-    pendingNavigation = window.setTimeout(navigate, delay);
-  };
-
-  form.addEventListener("input", (event) => {
+  // Opening a value panel should dismiss the category list. `popover=auto`
+  // already allows only one light-dismiss popover in supporting browsers;
+  // this is a belt-and-braces close when the category button also carries
+  // an explicit close target.
+  root.addEventListener("click", (event) => {
     const target = event.target;
-    const immediate =
-      target instanceof HTMLSelectElement ||
-      (target instanceof HTMLInputElement &&
-        (target.type === "checkbox" || target.type === "date"));
-    schedule(immediate ? 0 : 260);
+    if (!(target instanceof Element)) return;
+    const opener = target.closest("[data-lifting-category]");
+    if (!(opener instanceof HTMLElement)) return;
+    const closeId = opener.dataset.liftingClose;
+    if (!closeId) return;
+    const panel = document.getElementById(closeId);
+    if (panel instanceof HTMLElement && typeof panel.hidePopover === "function") {
+      if (panel.matches(":popover-open")) panel.hidePopover();
+    }
   });
 
-  // `input` covers selects in current browsers; `change` is a cheap fallback.
-  form.addEventListener("change", (event) => {
-    if (event.target instanceof HTMLSelectElement) schedule(0);
-  });
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    window.clearTimeout(pendingNavigation);
-    navigate();
-  });
+  // Focus the first field when a value popover opens.
+  for (const panel of root.querySelectorAll("[data-lifting-value]")) {
+    if (!(panel instanceof HTMLElement)) continue;
+    panel.addEventListener("toggle", (event) => {
+      if (!(event.target instanceof HTMLElement)) return;
+      if (!event.target.matches(":popover-open")) return;
+      const field = event.target.querySelector("input, select");
+      if (field instanceof HTMLElement) field.focus();
+    });
+  }
 }

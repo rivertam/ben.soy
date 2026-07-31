@@ -16,8 +16,13 @@ file under "API contract".
   workout page. Its timestamp is the `America/New_York` projection of the
   source instant; the explicit Eastern offset keeps same-date workouts and the
   repeated fall DST hour distinct without exposing importer IDs.
-  `auto-filter.js` only debounces full-log form changes and navigates to the
-  canonical GET URL; the Apply button remains the no-JavaScript path.
+  `/lifting/log` filter chrome is an always-visible search field, a compact tag
+  bar (removable active filters), and a two-step “add filter” picker
+  (category → value); on wide viewports it sits in the right gutter, otherwise
+  inline above the archive. `auto-filter.js` only swaps the no-JS `<details>`
+  fallback for the popover “+ filter” button — links and mini GET forms remain
+  the navigation path. Page size lives with the pager at the top of the set
+  log, not in the filter picker.
 - `/lifting/log` also renders the volume heatmap, restricted to the sets the
   active filters admit. That calendar comes from
   `Snapshot::calendar_filtered` in-process (the same per-set predicate as the
@@ -360,8 +365,9 @@ continues to accept only `source='workout-data-csv'`.
 
 - Taxonomy originates in `exercise_tags()` and `SQUAT_TYPE_EXERCISES`; update
   importer tests with every classification rule.
-- Keep taxonomy values aligned with the filter lists, labels, and
-  advanced-filter detection in `src/app/interests/lifting/filters.rs`.
+- Keep taxonomy values aligned with the filter lists, labels, and add-filter
+  categories in `src/app/interests/lifting/filters.rs` /
+  `src/app/interests/lifting/filter_ui.rs`.
 - Normal sync is append-only. It does not resend fully imported workouts for a
   taxonomy-only change. No retag command exists: write an explicit
   API/database replacement workflow instead of rerunning normal sync. Reset

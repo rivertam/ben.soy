@@ -5,7 +5,7 @@
 //! The text is rendered server-side into a `<details>` disclosure whose
 //! readonly `<textarea>` is always selectable — that is the
 //! no-JavaScript path. `share.js` progressively reveals a clipboard
-//! button, exactly like `auto-filter.js` upgrades the log filters.
+//! button, exactly like `auto-filter.js` upgrades the log filter chrome.
 
 use topcoat::{
     Result,

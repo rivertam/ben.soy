@@ -1,17 +1,4 @@
-//! Display formatting for archive totals, set values, and local workout time.
-
-use super::data as fitness;
-
-pub(super) fn format_archive_summary(facets: &fitness::Facets) -> String {
-    let mut parts = vec![
-        format!("{} sets", format_integer(facets.summary.sets)),
-        format!("{} workouts", format_integer(facets.summary.workouts)),
-    ];
-    if let (Some(from), Some(to)) = (&facets.summary.min_date, &facets.summary.max_date) {
-        parts.push(format!("{}–{}", format_month(from), format_month(to)));
-    }
-    parts.join(" · ")
-}
+//! Display formatting for set values and local workout time.
 
 pub(super) fn format_integer(value: impl Into<u64>) -> String {
     let digits = value.into().to_string();
@@ -51,13 +38,6 @@ pub(super) fn format_duration(seconds: u64) -> String {
     } else {
         format!("{seconds}s")
     }
-}
-
-fn format_month(value: &str) -> String {
-    let Some(date) = LocalDateTime::parse_date_prefix(value) else {
-        return value.to_string();
-    };
-    format!("{} {}", month_name(date.month), date.year)
 }
 
 pub(super) struct Timing {
@@ -187,19 +167,6 @@ impl LocalDateTime {
             && value.minute < 60
             && value.second < 60)
             .then_some(value)
-    }
-
-    fn parse_date_prefix(raw: &str) -> Option<Self> {
-        (raw.len() >= 7).then_some(())?;
-        let value = Self {
-            year: raw[0..4].parse().ok()?,
-            month: raw[5..7].parse().ok()?,
-            day: 1,
-            hour: 0,
-            minute: 0,
-            second: 0,
-        };
-        (raw.as_bytes().get(4) == Some(&b'-') && (1..=12).contains(&value.month)).then_some(value)
     }
 
     fn same_date(self, other: Self) -> bool {
