@@ -355,6 +355,14 @@ a.chip:focus-visible {
   color: var(--color-ink);
 }
 
+.inline-popover-photo {
+  display: block;
+  width: calc(100% + 2.2rem);
+  max-width: none;
+  height: auto;
+  margin: 0 -1.1rem 0.65rem;
+}
+
 .inline-popover-detail {
   font-family: var(--font-meta);
   font-size: 0.85em;

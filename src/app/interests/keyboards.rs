@@ -1,5 +1,6 @@
 use topcoat::{
     Result,
+    asset::{Asset, asset},
     router::{page, redirect_permanent, route},
     view::view,
 };
@@ -8,6 +9,10 @@ use crate::{
     components::{back_link, ext_link, inline_popover, page_head, rail_section, shell, video_card},
     content::interests::interest,
 };
+
+const GLOVE80: Asset = asset!("./keyboards/glove80.webp");
+const ERGODOX_EZ: Asset = asset!("./keyboards/ergodox-ez.webp");
+const KINESIS_ADVANTAGE2: Asset = asset!("./keyboards/kinesis-advantage2.webp");
 
 #[page("/keyboards")]
 async fn keyboards() -> Result {
@@ -25,9 +30,15 @@ async fn keyboards() -> Result {
                     inline_popover(
                         id: "glove80-cite",
                         label: "Glove80",
-                        <span class="inline-popover-preview">
-                            "MoErgo's split ergonomic keyboard, with contoured key wells and low-profile switches."
-                        </span>
+                        <img
+                            class="inline-popover-photo"
+                            src=(GLOVE80)
+                            alt="MoErgo Glove80 split keyboard with contoured key wells and white low-profile keycaps."
+                            width="900"
+                            height="675"
+                            loading="lazy"
+                            decoding="async"
+                        >
                         ext_link(
                             class: "quiet-link",
                             href: "https://www.moergo.com/collections/glove80-keyboards",
@@ -120,9 +131,21 @@ async fn keyboards() -> Result {
                     inline_popover(
                         id: "ergodox-ez-cite",
                         label: "ErgoDox EZ",
-                        <span class="inline-popover-preview">
-                            "A fully split mechanical ergonomic keyboard whose halves can be positioned independently."
-                        </span>
+                        <img
+                            class="inline-popover-photo"
+                            src=(ERGODOX_EZ)
+                            alt="ErgoDox EZ Glow split keyboard, tented, with cyan backlighting."
+                            width="900"
+                            height="563"
+                            loading="lazy"
+                            decoding="async"
+                        >
+                        <p>"
+                          The lack of keywells ruins it for me. It was just such a pain to use
+                          this keyboard. At least with a normal brick keyboard, I'm used to
+                          the typical pains. Idk, I did it for 6 months and the kinesis felt
+                          soooo good to get back to.
+                        "</p>
                         ext_link(
                             class: "quiet-link",
                             href: "https://ergodox-ez.com/",
@@ -133,9 +156,15 @@ async fn keyboards() -> Result {
                     inline_popover(
                         id: "kinesis-return-cite",
                         label: "Kinesis Advantage II",
-                        <span class="inline-popover-preview">
-                            "A contoured mechanical ergonomic keyboard with Kinesis's SmartSet programming engine."
-                        </span>
+                        <img
+                            class="inline-popover-photo"
+                            src=(KINESIS_ADVANTAGE2)
+                            alt="Kinesis Advantage2 contoured keyboard with blue home-row keycaps."
+                            width="900"
+                            height="674"
+                            loading="lazy"
+                            decoding="async"
+                        >
                         ext_link(
                             class: "quiet-link",
                             href: "https://kinesis-ergo.com/shop/advantage2/",
@@ -153,9 +182,19 @@ async fn keyboards() -> Result {
                     inline_popover(
                         id: "kinesis-first-cite",
                         label: "Kinesis Advantage II",
-                        <span class="inline-popover-preview">
-                            "A contoured mechanical ergonomic keyboard with Kinesis's SmartSet programming engine."
-                        </span>
+                        <img
+                            class="inline-popover-photo"
+                            src=(KINESIS_ADVANTAGE2)
+                            alt="Kinesis Advantage2 contoured keyboard with blue home-row keycaps."
+                            width="900"
+                            height="674"
+                            loading="lazy"
+                            decoding="async"
+                        >
+                        <p>"
+                          Some fairly potent neurochemicals seem to release in my brain
+                          when I look at this picture. Behold the splendor.
+                        "</p>
                         ext_link(
                             class: "quiet-link",
                             href: "https://kinesis-ergo.com/shop/advantage2/",
@@ -181,7 +220,7 @@ async fn keyboards() -> Result {
                             label: "my TypeRacer profile →"
                         )
                     )
-                    ": 118wpm lately, 165 peak."
+                    ": 121 lately, 165 peak."
                 </div>
             )
             back_link(href: "/interests", label: "all interests")
