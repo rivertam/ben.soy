@@ -17,7 +17,7 @@ use benjisponge::data::Data;
 use jiff::Timestamp;
 
 use crate::app::interests::{
-    lifting::archive::{api::Workout, snapshot::PublishedWorkout, store::FitnessStore},
+    lifting::archive::{api::Workout, scoring, snapshot::PublishedWorkout, store::FitnessStore},
     spire::runs::{self as spire_runs, Run, fmt_duration},
 };
 use crate::content::logbook::{Entry, LOG};
@@ -208,7 +208,7 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
     xml
 }
 
-/// One-line set summary used by `/feed.xml` and the homepage timeline.
+/// One-line set summary used by `/feed.xml`.
 pub(crate) fn workout_description(workout: &Workout) -> String {
     let mut seen = std::collections::HashSet::new();
     let exercises: Vec<&str> = workout
@@ -235,6 +235,16 @@ pub(crate) fn workout_description(workout: &Workout) -> String {
         description.push('.');
     }
     description
+}
+
+/// Total volume points across a workout's sets — used by the homepage timeline.
+pub(crate) fn workout_volume_points(workout: &Workout) -> u32 {
+    workout.sets.iter().fold(0_u32, |total, set| {
+        total.saturating_add(scoring::set_volume_points(
+            set.set_type.as_str(),
+            set.effort_hundredths,
+        ))
+    })
 }
 
 fn workout_duration(seconds: u64) -> String {

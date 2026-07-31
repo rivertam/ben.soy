@@ -16,10 +16,10 @@ mod workout_upload;
 
 use benjisponge::data::Data;
 
-use self::feed::workout_description;
+use self::feed::workout_volume_points;
 use self::interests::lifting::archive::snapshot::PublishedWorkout;
 use self::interests::lifting::archive::store::FitnessStore;
-use self::interests::spire::runs::{self as spire_runs, Run, fmt_duration};
+use self::interests::spire::runs::{self as spire_runs, Run};
 use topcoat::{
     Result,
     asset::{AssetBundle, RouterBuilderAssetExt},
@@ -460,12 +460,10 @@ async fn home(cx: &Cx) -> Result {
                             <span class="text-patina">"win ·"</span>
                             " "
                             (format!(
-                                "{} · {}, Ascension {} — {} floors in {}.",
+                                "{} {}, A{}",
                                 run.game_label(),
                                 run.character,
-                                run.ascension,
-                                run.floors,
-                                fmt_duration(run.run_time)
+                                run.ascension
                             ))
                             " "
                             <a class="log-update-link" href="/spire">
@@ -484,9 +482,9 @@ async fn home(cx: &Cx) -> Result {
                             <span class="text-patina">"lift ·"</span>
                             " "
                             (format!(
-                                "{} — {}",
+                                "{}, {} volume points",
                                 published.workout.title,
-                                workout_description(&published.workout)
+                                workout_volume_points(&published.workout)
                             ))
                             " "
                             <a
