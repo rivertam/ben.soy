@@ -13,7 +13,7 @@ crate::register_post!(
     essay,
     slug: "same-age-as-my-dog",
     title: "I'm the same age as my dog!",
-    date: "2026-07-31",
+    date: "2026-07-28",
     teaser: "This week, Felix and I are both 33.2 years old!",
     photo: {
         src: SAAMD_WITH_FELIX,
