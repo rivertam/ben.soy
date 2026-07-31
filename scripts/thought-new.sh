@@ -1,31 +1,35 @@
 #!/usr/bin/env bash
-# Scaffold a new thoughts post (pesky_code-shaped): page module, mod decl, registry entry.
+# Scaffold a new thoughts post: page module with register_post! + mod decl.
+# Indexes/feeds/routes pick the post up from the inventory registry — do not
+# edit src/content/posts.rs.
 #
 # Usage:
 #   just thought new                          # interactive prompts
-#   just thought new <slug>                   # prompt for title/teaser
-#   just thought new <slug> "<title>" ["<teaser>"]
+#   just thought new <slug>                   # prompt for title/teaser/tags
+#   just thought new <slug> "<title>" ["<teaser>" ["<tags>"]]
 #   bash scripts/thought-new.sh …
 #
-# Slug is the URL segment (kebab-case). Date is today (local). Posts are
-# inserted newest-first in src/content/posts.rs.
+# Slug is the URL segment (kebab-case). Date is today (local). Tags are
+# comma-separated lowercase labels (at least one required).
 
 set -Eeuo pipefail
 
 usage() {
-    printf 'usage: just thought new [<slug> ["<title>" ["<teaser>"]]]\n' >&2
-    printf '  no args  prompt for slug, title, teaser\n' >&2
+    printf 'usage: just thought new [<slug> ["<title>" ["<teaser>" ["<tags>"]]]]\n' >&2
+    printf '  no args  prompt for slug, title, teaser, tags\n' >&2
     printf '  slug     kebab-case URL segment, e.g. pesky-code\n' >&2
     printf '  title    display title, e.g. "Pesky code"\n' >&2
     printf '  teaser   index-card blurb (default: "TODO")\n' >&2
+    printf '  tags     comma-separated lowercase labels, e.g. "ai, dogs"\n' >&2
     exit 2
 }
 
-[[ $# -le 3 ]] || usage
+[[ $# -le 4 ]] || usage
 
 slug="${1-}"
 title="${2-}"
 teaser="${3-}"
+tags_raw="${4-}"
 did_prompt=0
 
 slug_to_title() {
@@ -50,6 +54,34 @@ prompt() {
         REPLY="$default"
     fi
     did_prompt=1
+}
+
+# Parse "ai, dogs" / "ai,dogs" into a bash array of validated tags.
+# Writes tag strings to the nameref array; returns non-zero on empty/invalid.
+parse_tags() {
+    local -n _out="$1"
+    local raw="$2"
+    _out=()
+    local IFS=','
+    # shellcheck disable=SC2086
+    set -- ${raw}
+    local tag
+    for tag in "$@"; do
+        # trim whitespace
+        tag="${tag#"${tag%%[![:space:]]*}"}"
+        tag="${tag%"${tag##*[![:space:]]}"}"
+        [[ -n "$tag" ]] || continue
+        if [[ ! "$tag" =~ ^[a-z]+$ ]]; then
+            printf 'error: tag "%s" must be lowercase ascii letters only\n' "$tag" >&2
+            return 1
+        fi
+        _out+=("$tag")
+    done
+    if [[ ${#_out[@]} -eq 0 ]]; then
+        printf 'error: at least one tag is required\n' >&2
+        return 1
+    fi
+    return 0
 }
 
 if [[ -z "$slug" ]]; then
@@ -91,6 +123,24 @@ if [[ -z "$teaser" ]]; then
 fi
 [[ -n "$teaser" ]] || teaser="TODO"
 
+tags=()
+if [[ -z "$tags_raw" ]]; then
+    if [[ -t 0 || "$did_prompt" -eq 1 ]]; then
+        while true; do
+            prompt "tags (comma-separated)"
+            tags_raw="$REPLY"
+            if parse_tags tags "$tags_raw"; then
+                break
+            fi
+        done
+    else
+        printf 'error: tags are required (comma-separated lowercase labels)\n' >&2
+        exit 1
+    fi
+elif ! parse_tags tags "$tags_raw"; then
+    exit 1
+fi
+
 mod_name="${slug//-/_}"
 date="$(date +%Y-%m-%d)"
 
@@ -98,10 +148,15 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 page_path="${repo_root}/src/app/thoughts/${mod_name}.rs"
 thoughts_mod="${repo_root}/src/app/thoughts.rs"
-posts_rs="${repo_root}/src/content/posts.rs"
+thoughts_dir="${repo_root}/src/app/thoughts"
 
 if [[ -e "$page_path" ]]; then
     printf 'error: %s already exists\n' "$page_path" >&2
+    exit 1
+fi
+
+if [[ -d "${thoughts_dir}/${mod_name}" ]]; then
+    printf 'error: directory %s already exists\n' "${thoughts_dir}/${mod_name}" >&2
     exit 1
 fi
 
@@ -110,8 +165,8 @@ if grep -qE "^pub mod ${mod_name};" "$thoughts_mod"; then
     exit 1
 fi
 
-if grep -qE "slug: \"${slug}\"" "$posts_rs"; then
-    printf 'error: slug "%s" already in posts.rs\n' "$slug" >&2
+if grep -rqE "slug: \"${slug}\"" "$thoughts_dir"; then
+    printf 'error: slug "%s" already registered under src/app/thoughts/\n' "$slug" >&2
     exit 1
 fi
 
@@ -120,6 +175,9 @@ if [[ "$did_prompt" -eq 1 ]]; then
     printf '\nCreate /thoughts/%s (%s)?\n' "$slug" "$date" >&2
     printf '  title:  %s\n' "$title" >&2
     printf '  teaser: %s\n' "$teaser" >&2
+    local tags_joined
+    tags_joined="$(IFS=', '; echo "${tags[*]}")"
+    printf '  tags:   %s\n' "$tags_joined" >&2
     prompt "proceed?" "Y"
     case "$REPLY" in
         Y|y|yes|YES) ;;
@@ -130,35 +188,46 @@ if [[ "$did_prompt" -eq 1 ]]; then
     esac
 fi
 
-# Write the page module + registry entry (Python so $/"/\ in titles stay literal).
-python3 - "$page_path" "$posts_rs" "$slug" "$mod_name" "$title" "$date" "$teaser" <<'PY'
-import re, sys
+# Write the page module (Python so $/"/\ in titles stay literal).
+python3 - "$page_path" "$slug" "$mod_name" "$title" "$date" "$teaser" "${tags[@]}" <<'PY'
+import sys
 from pathlib import Path
 
-page_path, posts_rs = Path(sys.argv[1]), Path(sys.argv[2])
-slug, mod_name, title, date, teaser = sys.argv[3:8]
+page_path = Path(sys.argv[1])
+slug, mod_name, title, date, teaser = sys.argv[2:7]
+tags = sys.argv[7:]
 
 def rust_str(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 title_esc, teaser_esc = rust_str(title), rust_str(teaser)
+tags_lit = ", ".join(f'"{rust_str(t)}"' for t in tags)
 
 page_path.write_text(
     f'''use topcoat::{{Result, router::page, view::view}};
 
 use crate::components::shell;
 
+crate::register_post!(
+    essay,
+    slug: "{slug}",
+    title: "{title_esc}",
+    date: "{date}",
+    teaser: "{teaser_esc}",
+    tags: &[{tags_lit}],
+);
+
 #[page("/thoughts/{slug}")]
 async fn {mod_name}() -> Result {{
     view! {{
         shell(
-            title: "{title_esc}",
+            title: POST.title,
             active: "",
             <article class="rail-row mt-16 sm:mt-24">
-                <p class="rail-stamp">"{date}"</p>
+                <p class="rail-stamp">(POST.date)</p>
                 <div class="min-w-0">
                     <h1 class="font-display text-4xl font-bold tracking-tight">
-                        "{title_esc}"
+                        (POST.title)
                     </h1>
                     <p class="mt-8 max-w-prose text-xl leading-relaxed">
                         "TODO"
@@ -170,28 +239,6 @@ async fn {mod_name}() -> Result {{
 }}
 '''
 )
-
-text = posts_rs.read_text()
-m = re.search(r"pub static POSTS: \[Post; (\d+)\] = \[", text)
-if not m:
-    sys.exit("error: could not find POSTS array in posts.rs")
-n = int(m.group(1))
-text = text[: m.start(1)] + str(n + 1) + text[m.end(1) :]
-
-entry = (
-    f"    Post {{\n"
-    f'        slug: "{slug}",\n'
-    f'        title: "{title_esc}",\n'
-    f'        date: "{date}",\n'
-    f'        teaser: "{teaser_esc}",\n'
-    f"    }},\n"
-)
-m2 = re.search(r"pub static POSTS: \[Post; \d+\] = \[", text)
-if not m2:
-    sys.exit("error: could not re-find POSTS array after bumping count")
-insert_at = m2.end()
-rest = text[insert_at:].lstrip("\n")
-posts_rs.write_text(text[:insert_at] + "\n" + entry + rest)
 PY
 
 # Insert `pub mod …;` in alphabetical order among existing pub mod lines.
@@ -229,5 +276,5 @@ mv "$tmp" "$thoughts_mod"
 
 printf 'created %s\n' "src/app/thoughts/${mod_name}.rs"
 printf 'wired   mod %s in src/app/thoughts.rs\n' "$mod_name"
-printf 'indexed /thoughts/%s (%s) in src/content/posts.rs\n' "$slug" "$date"
+printf 'registered /thoughts/%s (%s) via register_post!\n' "$slug" "$date"
 printf 'edit the body in src/app/thoughts/%s.rs\n' "$mod_name"

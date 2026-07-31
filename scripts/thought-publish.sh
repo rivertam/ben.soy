@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Commit and push pending thought changes (page modules + registry).
+# Commit and push pending thought changes (page modules + mod decl).
+# Post metadata lives beside each page via register_post! — src/content/posts.rs
+# is shared registry infrastructure and is not staged here.
 #
 # Usage:
 #   just thought publish
@@ -15,7 +17,6 @@ cd "$repo_root"
 
 thought_paths=(
     src/app/thoughts.rs
-    src/content/posts.rs
     src/app/thoughts
 )
 
@@ -35,9 +36,16 @@ while IFS= read -r line; do
     # XY PATH or XY ORIG -> PATH (rename); path starts at column 4.
     path="${line:3}"
     path="${path##* -> }"
-    if [[ "$path" =~ ^src/app/thoughts/([a-z0-9_]+)\.rs$ ]]; then
-        slugs+=("${BASH_REMATCH[1]//_/-}")
+    if [[ "$path" != *.rs || ! -f "$path" ]]; then
+        continue
     fi
+    # Prefer the register_post! slug when present (works for flat + folder posts).
+    while IFS= read -r slug_line; do
+        if [[ "$slug_line" =~ slug:\ \"([^\"]+)\" ]]; then
+            slugs+=("${BASH_REMATCH[1]}")
+            break
+        fi
+    done < <(grep -E '^\s*slug: "' "$path" || true)
 done < <(printf '%s\n' "${changes[@]}")
 
 # Deduplicate while preserving order.
