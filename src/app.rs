@@ -19,6 +19,7 @@ use benjisponge::data::Data;
 use self::feed::workout_volume_points;
 use self::interests::lifting::archive::snapshot::PublishedWorkout;
 use self::interests::lifting::archive::store::FitnessStore;
+use self::interests::spire::run_page_url;
 use self::interests::spire::runs::{self as spire_runs, Run};
 use topcoat::{
     Result,
@@ -82,6 +83,10 @@ fn cookie_key() -> Key {
 struct HomeQuery {
     kind: Option<String>,
     tag: Option<String>,
+    q: Option<String>,
+    /// Kept as a string and parsed leniently — `?page=banana` should fall
+    /// back to page one like an unknown kind does, not error-redirect.
+    page: Option<String>,
 }
 
 /// A filter-row chip: a link that sets, swaps, or clears one query param.
@@ -127,40 +132,145 @@ impl<'a> Item<'a> {
             Item::Lift(published) => published.start_time,
         }
     }
+
+    /// The foldable kind, if any: streaks of one dynamic kind collapse on the
+    /// default view; curated entries never do.
+    fn dyn_kind(&self) -> Option<DynKind> {
+        match self {
+            Item::Log { .. } => None,
+            Item::Win(_) => Some(DynKind::Win),
+            Item::Lift(_) => Some(DynKind::Lift),
+        }
+    }
+
+    /// Everything a search term can match, lowercased: the item's visible
+    /// copy plus its tag vocabulary (wins and lifts mirror the tags the chip
+    /// filters give them), prefixed with the ISO date so year searches work.
+    fn haystack(&self) -> String {
+        let copy = match self {
+            Item::Log { entry, .. } => match entry {
+                Entry::Essay {
+                    title,
+                    teaser,
+                    tags,
+                    ..
+                } => format!("{title} {teaser} {}", tags.join(" ")),
+                Entry::Note {
+                    body, source, tags, ..
+                } => format!("note {body} {source} {}", tags.join(" ")),
+                Entry::Update {
+                    stamp,
+                    label,
+                    body,
+                    link_label: update_link_label,
+                    tags,
+                    ..
+                } => format!(
+                    "[{stamp}] {label} {body} {update_link_label} {}",
+                    tags.join(" ")
+                ),
+            },
+            Item::Win(run) => format!(
+                "[spire] win games {} {} a{}",
+                run.game_label(),
+                run.character,
+                run.ascension
+            ),
+            Item::Lift(published) => {
+                let mut copy = format!("[fitness] lift {}", published.workout.title);
+                for set in &published.workout.sets {
+                    copy.push(' ');
+                    copy.push_str(&set.exercise_name);
+                }
+                copy
+            }
+        };
+        format!("{} {copy}", self.date()).to_lowercase()
+    }
+
+    /// True when every search term appears somewhere in the haystack.
+    fn matches(&self, terms: &[String]) -> bool {
+        if terms.is_empty() {
+            return true;
+        }
+        let haystack = self.haystack();
+        terms.iter().all(|term| haystack.contains(term.as_str()))
+    }
+}
+
+/// The dynamic item kinds that can pile up between curated entries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DynKind {
+    Win,
+    Lift,
+}
+
+/// A collapsed streak tail: `[stamp] label body link →`, dated by its newest
+/// hidden item so the year badges stay honest. Precomputed strings, like
+/// every other row.
+struct Fold {
+    date: String,
+    stamp: &'static str,
+    label: String,
+    body: String,
+    href: String,
+    link_label: &'static str,
+}
+
+/// What a timeline row holds: one item, or the folded tail of a streak.
+enum RowItem<'a> {
+    One(Item<'a>),
+    Fold(Fold),
+}
+
+impl RowItem<'_> {
+    fn date(&self) -> &str {
+        match self {
+            RowItem::One(item) => item.date(),
+            RowItem::Fold(fold) => &fold.date,
+        }
+    }
 }
 
 /// One visible timeline row, precomputed so the markup stays declarative.
 struct Row<'a> {
     /// Set when the year changes between consecutive visible entries.
     year_mark: Option<String>,
-    item: Item<'a>,
+    item: RowItem<'a>,
 }
 
 impl<'a> Row<'a> {
     fn log(&self) -> Option<(&str, &'static Entry)> {
         match &self.item {
-            Item::Log { serial, entry } => Some((serial.as_str(), entry)),
-            Item::Win(_) | Item::Lift(_) => None,
+            RowItem::One(Item::Log { serial, entry }) => Some((serial.as_str(), entry)),
+            _ => None,
         }
     }
 
     fn win(&self) -> Option<&'a Run> {
         match self.item {
-            Item::Win(run) => Some(run),
-            Item::Log { .. } | Item::Lift(_) => None,
+            RowItem::One(Item::Win(run)) => Some(run),
+            _ => None,
         }
     }
 
     fn lift(&self) -> Option<&'a PublishedWorkout> {
         match self.item {
-            Item::Lift(published) => Some(published),
-            Item::Log { .. } | Item::Win(_) => None,
+            RowItem::One(Item::Lift(published)) => Some(published),
+            _ => None,
+        }
+    }
+
+    fn fold(&self) -> Option<&Fold> {
+        match &self.item {
+            RowItem::Fold(fold) => Some(fold),
+            _ => None,
         }
     }
 }
 
-/// The homepage URL for a filter state, dropping absent params.
-fn home_url(kind: Option<&str>, tag: Option<&str>) -> String {
+/// The homepage URL for a filter state, dropping absent params and page one.
+fn home_url(kind: Option<&str>, tag: Option<&str>, query: Option<&str>, page: usize) -> String {
     let mut params = Vec::new();
     if let Some(kind) = kind {
         params.push(format!("kind={kind}"));
@@ -168,10 +278,107 @@ fn home_url(kind: Option<&str>, tag: Option<&str>) -> String {
     if let Some(tag) = tag {
         params.push(format!("tag={}", urlencode(tag)));
     }
+    if let Some(query) = query {
+        params.push(format!("q={}", urlencode(query)));
+    }
+    if page > 1 {
+        params.push(format!("page={page}"));
+    }
     if params.is_empty() {
         "/".to_string()
     } else {
         format!("/?{}", params.join("&"))
+    }
+}
+
+/// Timeline items per page.
+const PAGE_SIZE: usize = 20;
+
+/// The requested 1-based page; junk (`?page=banana`, `?page=0`) reads as
+/// page one, matching the kind filter's silent fallback.
+fn parse_page(raw: Option<&str>) -> usize {
+    raw.and_then(|page| page.parse::<usize>().ok())
+        .map_or(1, |page| page.max(1))
+}
+
+/// Clamp a requested page against the filtered item count: the page actually
+/// shown, the page count, and the visible index range.
+fn page_slice(total: usize, requested: usize) -> (usize, usize, std::ops::Range<usize>) {
+    let pages = total.div_ceil(PAGE_SIZE).max(1);
+    let page = requested.clamp(1, pages);
+    let start = (page - 1) * PAGE_SIZE;
+    (page, pages, start..(start + PAGE_SIZE).min(total))
+}
+
+/// Lowercased whitespace-split search terms; an item must contain every one.
+fn search_terms(query: Option<&str>) -> Vec<String> {
+    query
+        .map(|q| q.split_whitespace().map(str::to_lowercase).collect())
+        .unwrap_or_default()
+}
+
+/// A streak of this many same-kind dynamic items collapses…
+const FOLD_THRESHOLD: usize = 4;
+/// …down to its newest few plus one fold row (the tail is always ≥ 2, so a
+/// fold never costs more rows than it saves).
+const FOLD_KEEP: usize = 2;
+
+/// Collapse streaks of one dynamic kind into lead items plus a [`Fold`].
+/// Only the default view folds (`folding: false` passes everything through)
+/// — a filter or search means the reader asked for the whole pile, and
+/// `?tag=spire` would otherwise collapse to almost nothing. `all_runs` is
+/// the full run log, for aiming the fold link at the right `/spire` page.
+fn fold_items<'a>(items: Vec<Item<'a>>, folding: bool, all_runs: &[Run]) -> Vec<RowItem<'a>> {
+    let mut display: Vec<RowItem<'a>> = Vec::new();
+    let mut queue = items.into_iter().peekable();
+    while let Some(item) = queue.next() {
+        let kind = item.dyn_kind();
+        if !folding || kind.is_none() {
+            display.push(RowItem::One(item));
+            continue;
+        }
+        let mut streak = vec![item];
+        while let Some(next) = queue.next_if(|next| next.dyn_kind() == kind) {
+            streak.push(next);
+        }
+        if streak.len() < FOLD_THRESHOLD {
+            display.extend(streak.into_iter().map(RowItem::One));
+            continue;
+        }
+        let mut streak = streak.into_iter();
+        for lead in streak.by_ref().take(FOLD_KEEP) {
+            display.push(RowItem::One(lead));
+        }
+        let folded: Vec<Item> = streak.collect();
+        display.push(RowItem::Fold(make_fold(&folded, all_runs)));
+    }
+    display
+}
+
+/// The fold row for a streak's hidden tail (newest first, length ≥ 2).
+fn make_fold(folded: &[Item], all_runs: &[Run]) -> Fold {
+    let count = folded.len();
+    let oldest = folded[folded.len() - 1].date().to_string();
+    match &folded[0] {
+        Item::Win(run) => Fold {
+            date: run.date.clone(),
+            stamp: "[spire]",
+            label: format!("{count} more wins ·"),
+            body: format!("back to {oldest}"),
+            href: run_page_url(all_runs, run),
+            link_label: "run log →",
+        },
+        Item::Lift(published) => Fold {
+            date: published.date.clone(),
+            stamp: "[fitness]",
+            label: format!("{count} more lifts ·"),
+            // Date-range filters, unlike page numbers, keep pointing at
+            // these workouts as newer ones arrive.
+            href: format!("/lifting/log?from={oldest}&to={}", published.date),
+            body: format!("back to {oldest}"),
+            link_label: "workouts →",
+        },
+        Item::Log { .. } => unreachable!("curated entries never fold"),
     }
 }
 
@@ -192,7 +399,11 @@ async fn home(cx: &Cx) -> Result {
         Kind::Update => "update",
     });
     let tag = q.tag.as_deref().filter(|t| !t.is_empty());
+    let query = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let terms = search_terms(query);
 
+    // Chips and pagination links carry the search along; anything that
+    // changes the filter state resets to page one.
     let kind_chips: Vec<Chip> = [
         ("all", None),
         ("essays", Some("essay")),
@@ -202,7 +413,7 @@ async fn home(cx: &Cx) -> Result {
     .into_iter()
     .map(|(label, value)| Chip {
         label: label.to_string(),
-        href: home_url(value, tag),
+        href: home_url(value, tag, query, 1),
         active: kind_param == value,
     })
     .collect();
@@ -220,9 +431,9 @@ async fn home(cx: &Cx) -> Result {
                     format!("#{t}")
                 },
                 href: if active {
-                    home_url(kind_param, None)
+                    home_url(kind_param, None, query, 1)
                 } else {
-                    home_url(kind_param, Some(t))
+                    home_url(kind_param, Some(t), query, 1)
                 },
                 active,
             }
@@ -233,7 +444,7 @@ async fn home(cx: &Cx) -> Result {
     {
         tag_chips.push(Chip {
             label: format!("#{t} ×"),
-            href: home_url(kind_param, None),
+            href: home_url(kind_param, None, query, 1),
             active: true,
         });
     }
@@ -270,6 +481,7 @@ async fn home(cx: &Cx) -> Result {
     if !kind.is_some_and(|k| k != Kind::Update) && !tag.is_some_and(|t| t != "fitness") {
         items.extend(workouts.iter().map(Item::Lift));
     }
+    items.retain(|item| item.matches(&terms));
     items.sort_by(|a, b| {
         b.date()
             .cmp(a.date())
@@ -277,9 +489,17 @@ async fn home(cx: &Cx) -> Result {
             .then_with(|| b.start_time().cmp(&a.start_time()))
     });
 
+    let folding = kind.is_none() && tag.is_none() && query.is_none();
+    let display = fold_items(items, folding, &spire.runs);
+
+    let total = display.len();
+    let (page, total_pages, visible) = page_slice(total, parse_page(q.page.as_deref()));
+
     let mut rows: Vec<Row> = Vec::new();
-    let mut last_year: Option<String> = None;
-    for item in items {
+    // Pages after the first open with a year badge — the running year context
+    // from the rows above them is gone. (`Some("")` differs from every year.)
+    let mut last_year: Option<String> = (page > 1).then(String::new);
+    for item in display.into_iter().skip(visible.start).take(visible.len()) {
         let year = item.date()[0..4].to_string();
         let year_mark = match &last_year {
             Some(prev) if *prev != year => Some(year.clone()),
@@ -335,8 +555,10 @@ async fn home(cx: &Cx) -> Result {
             </p>
         </section>
 
-        // Filter row: kind chips, tag chips, and the feed. Server-side —
-        // every chip is a link that rewrites the query string.
+        // Filter row: kind chips, tag chips, search, and the feed. Server-side
+        // — every chip is a link that rewrites the query string, and the
+        // search box is a plain GET form that does the same (hidden inputs
+        // carry the active filters along).
         <div class="mt-11 flex flex-wrap items-baseline gap-4 border-t border-hairline pt-4 font-meta text-[13px]">
             for chip in kind_chips.iter() {
                 <a
@@ -351,14 +573,49 @@ async fn home(cx: &Cx) -> Result {
                     href=(chip.href.as_str())
                 >(chip.label.as_str())</a>
             }
-            <a class="ml-auto text-muted hover:text-oxide" href="/feed.xml">
+            <form class="ml-auto" action="/" method="get">
+                if let Some(kind_value) = kind_param {
+                    <input type="hidden" name="kind" value=(kind_value)>
+                }
+                if let Some(tag_value) = tag {
+                    <input type="hidden" name="tag" value=(tag_value)>
+                }
+                <input
+                    type="search"
+                    name="q"
+                    value=(query.unwrap_or(""))
+                    placeholder="search"
+                    aria-label="Search the log"
+                    class="w-28 border-b border-hairline bg-transparent pb-0.5 text-ink outline-none placeholder:text-muted focus:border-oxide"
+                >
+            </form>
+            <a class="text-muted hover:text-oxide" href="/feed.xml">
                 link_label(label: "rss ↗")
             </a>
         </div>
 
+        // Search results line: the match count doubles as the empty-state
+        // explanation, and clearing drops only `q` (filters stay put).
+        if let Some(query_text) = query {
+            <p class="mt-4 font-meta text-[13px] text-ink2">
+                (format!(
+                    "{total} {} for “{query_text}”",
+                    if total == 1 { "entry" } else { "entries" }
+                ))
+                " · "
+                <a class="log-tag" href=(home_url(kind_param, tag, None, 1))>"clear ×"</a>
+            </p>
+        }
+
         // The timeline: one vertical hairline, a marker per entry, a year
-        // badge wherever the visible entries change year.
+        // badge wherever the visible entries change year. Streaks of wins or
+        // lifts arrive pre-collapsed into fold rows (see `fold_items`).
         <section class="log-timeline">
+            if rows.is_empty() {
+                <p class="font-meta text-[13px] text-muted">
+                    "Nothing in the log matches."
+                </p>
+            }
             for row in rows.iter() {
                 if let Some(year) = &row.year_mark {
                     <div class="log-row">
@@ -404,7 +661,7 @@ async fn home(cx: &Cx) -> Result {
                                 }
                                 <div class="mt-4 flex flex-wrap items-baseline gap-3 font-meta text-xs">
                                     for t in tags.iter() {
-                                        <a class="log-tag" href=(home_url(kind_param, Some(t)))>(format!("#{t}"))</a>
+                                        <a class="log-tag" href=(home_url(kind_param, Some(t), query, 1))>(format!("#{t}"))</a>
                                     }
                                     <a
                                         class="ml-auto text-ink2 no-underline hover:text-oxide"
@@ -496,7 +753,320 @@ async fn home(cx: &Cx) -> Result {
                         </p>
                     </article>
                 }
+                if let Some(fold) = row.fold() {
+                    <article class="log-row items-baseline">
+                        <span class="log-mark log-mark-update"></span>
+                        <p class="log-date">(fold.date.as_str())</p>
+                        <p class="log-update min-w-0">
+                            <span class="log-update-stamp">(fold.stamp)</span>
+                            " "
+                            <span class="text-patina">(fold.label.as_str())</span>
+                            " "
+                            (fold.body.as_str())
+                            " "
+                            <a class="log-update-link" href=(fold.href.as_str())>
+                                link_label(label: fold.link_label)
+                            </a>
+                        </p>
+                    </article>
+                }
             }
         </section>
+
+        // Pager: newest-first, so "older" walks toward higher page numbers.
+        // Dead ends render as hairline text to keep the row's shape stable.
+        if total_pages > 1 {
+            <nav
+                class="mt-12 flex items-baseline justify-between border-t border-hairline pt-4 font-meta text-[13px]"
+                aria-label="Timeline pages"
+            >
+                if page > 1 {
+                    <a class="log-chip" href=(home_url(kind_param, tag, query, page - 1))>
+                        "← newer"
+                    </a>
+                } else {
+                    <span class="text-hairline">"← newer"</span>
+                }
+                <span class="text-muted">(format!("page {page} of {total_pages}"))</span>
+                if page < total_pages {
+                    <a class="log-chip" href=(home_url(kind_param, tag, query, page + 1))>
+                        "older →"
+                    </a>
+                } else {
+                    <span class="text-hairline">"older →"</span>
+                }
+            </nav>
+        }
     ) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interests::lifting::archive::api::{Set, Workout};
+    use super::*;
+
+    static ESSAY: Entry = Entry::Essay {
+        date: "2026-07-12",
+        title: "How bad are planes?",
+        teaser: "A carbon receipt for one seat.",
+        slug: "how-bad-are-planes",
+        photo: None,
+        read_label: "read →",
+        tags: &["climate"],
+    };
+
+    static UPDATE: Entry = Entry::Update {
+        date: "2026-06-28",
+        stamp: "pr",
+        label: "keyboards",
+        body: "TypeRacer now has me at 117wpm.",
+        href: "/keyboards",
+        link_label: "keyboards →",
+        tags: &["keyboards"],
+    };
+
+    fn terms(query: &str) -> Vec<String> {
+        search_terms(Some(query))
+    }
+
+    fn win(id: &str, date: &str) -> Run {
+        Run {
+            id: id.to_string(),
+            game: "sts2".to_string(),
+            date: date.to_string(),
+            start_time: id.parse().unwrap_or(0),
+            character: "Necrobinder".to_string(),
+            win: true,
+            abandoned: false,
+            ascension: 12,
+            floors: 34,
+            killed_by: None,
+            kill_kind: None,
+            run_time: 7534,
+            game_mode: "standard".to_string(),
+        }
+    }
+
+    fn lift(date: &str, title: &str, exercise: &str) -> PublishedWorkout {
+        PublishedWorkout {
+            workout: Workout {
+                id: format!("fitness:{date}T14:38:00"),
+                path: format!("{date}T10-38-00-04-00"),
+                title: title.to_string(),
+                raw_title: title.to_string(),
+                started_at_local: format!("{date} 10:38:00"),
+                ended_at_local: format!("{date} 10:50:00"),
+                eastern_offset_minutes: -240,
+                end_eastern_offset_minutes: -240,
+                duration_seconds: 720,
+                duration_suspicious: false,
+                notes: None,
+                description: None,
+                sets: vec![Set {
+                    id: format!("fitness:{date}T14:38:00:0001"),
+                    ordinal: 1,
+                    exercise_name: exercise.to_string(),
+                    raw_exercise_name: exercise.to_string(),
+                    exercise_note: None,
+                    superset_id: None,
+                    weight_milli: Some(95_000),
+                    weight_unit: "lbs".to_string(),
+                    reps: Some(8),
+                    effort_hundredths: Some(1_000),
+                    distance_milli: None,
+                    set_time_seconds: None,
+                    set_type: "NORMAL_SET".to_string(),
+                    records: Vec::new(),
+                }],
+            },
+            date: date.to_string(),
+            start_time: 1_784_903_880,
+        }
+    }
+
+    /// One char per display row: curated Log, win, lift, Fold.
+    fn kinds(display: &[RowItem]) -> String {
+        display
+            .iter()
+            .map(|row| match row {
+                RowItem::One(Item::Log { .. }) => 'L',
+                RowItem::One(Item::Win(_)) => 'w',
+                RowItem::One(Item::Lift(_)) => 'l',
+                RowItem::Fold(_) => 'F',
+            })
+            .collect()
+    }
+
+    fn first_fold<'x>(display: &'x [RowItem]) -> &'x Fold {
+        display
+            .iter()
+            .find_map(|row| match row {
+                RowItem::Fold(fold) => Some(fold),
+                _ => None,
+            })
+            .expect("a fold row")
+    }
+
+    #[test]
+    fn home_urls_drop_absent_params_and_page_one() {
+        assert_eq!(home_url(None, None, None, 1), "/");
+        assert_eq!(home_url(Some("note"), None, None, 1), "/?kind=note");
+        assert_eq!(home_url(None, None, None, 2), "/?page=2");
+        assert_eq!(
+            home_url(Some("essay"), Some("rust"), Some("how bad"), 3),
+            "/?kind=essay&tag=rust&q=how%20bad&page=3"
+        );
+    }
+
+    #[test]
+    fn junk_page_params_read_as_page_one() {
+        assert_eq!(parse_page(None), 1);
+        assert_eq!(parse_page(Some("banana")), 1);
+        assert_eq!(parse_page(Some("0")), 1);
+        assert_eq!(parse_page(Some("-2")), 1);
+        assert_eq!(parse_page(Some("7")), 7);
+    }
+
+    #[test]
+    fn page_slices_clamp_to_the_item_count() {
+        assert_eq!(page_slice(0, 1), (1, 1, 0..0));
+        assert_eq!(page_slice(0, 9), (1, 1, 0..0));
+        assert_eq!(page_slice(PAGE_SIZE, 1), (1, 1, 0..PAGE_SIZE));
+        let total = 2 * PAGE_SIZE + 5;
+        assert_eq!(page_slice(total, 2), (2, 3, PAGE_SIZE..2 * PAGE_SIZE));
+        assert_eq!(page_slice(total, 3), (3, 3, 2 * PAGE_SIZE..total));
+        assert_eq!(page_slice(total, 99), (3, 3, 2 * PAGE_SIZE..total));
+    }
+
+    #[test]
+    fn search_terms_lowercase_and_split_on_whitespace() {
+        assert!(search_terms(None).is_empty());
+        assert_eq!(search_terms(Some("How  Bad")), ["how", "bad"]);
+    }
+
+    #[test]
+    fn essays_match_visible_copy_tags_and_date() {
+        let item = Item::Log {
+            serial: "№ 0042".to_string(),
+            entry: &ESSAY,
+        };
+        assert!(item.matches(&[]));
+        assert!(item.matches(&terms("PLANES")));
+        assert!(item.matches(&terms("carbon receipt")));
+        assert!(item.matches(&terms("climate")));
+        assert!(item.matches(&terms("2026")));
+        assert!(!item.matches(&terms("planes drums")));
+    }
+
+    #[test]
+    fn updates_match_stamp_label_and_body() {
+        let item = Item::Log {
+            serial: "№ 0041".to_string(),
+            entry: &UPDATE,
+        };
+        assert!(item.matches(&terms("117wpm")));
+        assert!(item.matches(&terms("pr keyboards")));
+        assert!(!item.matches(&terms("planes")));
+    }
+
+    #[test]
+    fn wins_and_lifts_match_their_stamp_vocabulary() {
+        let run = win("1784587453", "2026-07-20");
+        let item = Item::Win(&run);
+        assert!(item.matches(&terms("spire win")));
+        assert!(item.matches(&terms("necrobinder")));
+        assert!(item.matches(&terms("a12")));
+        assert!(item.matches(&terms("games")));
+        assert!(!item.matches(&terms("silent")));
+
+        let published = lift(
+            "2026-07-24",
+            "Quickest Arms in the West",
+            "Incline Bench Press",
+        );
+        let item = Item::Lift(&published);
+        assert!(item.matches(&terms("fitness lift")));
+        assert!(item.matches(&terms("quickest arms")));
+        assert!(item.matches(&terms("incline bench")));
+        assert!(!item.matches(&terms("squat")));
+    }
+
+    #[test]
+    fn streaks_of_four_or_more_fold_after_two_leads() {
+        let runs: Vec<Run> = (0..5)
+            .map(|i| win(&format!("{}", 100 - i), &format!("2026-07-{:02}", 20 - i)))
+            .collect();
+        let items: Vec<Item> = runs.iter().map(Item::Win).collect();
+        let display = fold_items(items, true, &runs);
+        assert_eq!(kinds(&display), "wwF");
+        let fold = first_fold(&display);
+        assert_eq!(fold.stamp, "[spire]");
+        assert_eq!(fold.label, "3 more wins ·");
+        assert_eq!(fold.date, "2026-07-18");
+        assert_eq!(fold.body, "back to 2026-07-16");
+        assert_eq!(fold.href, "/spire#run-log");
+        assert_eq!(fold.link_label, "run log →");
+    }
+
+    #[test]
+    fn short_streaks_and_filtered_views_stay_unfolded() {
+        let runs: Vec<Run> = (0..5)
+            .map(|i| win(&format!("{}", 100 - i), &format!("2026-07-{:02}", 20 - i)))
+            .collect();
+        let three: Vec<Item> = runs[..3].iter().map(Item::Win).collect();
+        assert_eq!(kinds(&fold_items(three, true, &runs)), "www");
+        let five: Vec<Item> = runs.iter().map(Item::Win).collect();
+        assert_eq!(kinds(&fold_items(five, false, &runs)), "wwwww");
+    }
+
+    #[test]
+    fn curated_entries_break_streaks() {
+        let runs: Vec<Run> = (0..6)
+            .map(|i| win(&format!("{}", 100 - i), &format!("2026-07-{:02}", 26 - i)))
+            .collect();
+        let mut items: Vec<Item> = runs[..2].iter().map(Item::Win).collect();
+        items.push(Item::Log {
+            serial: "№ 0042".to_string(),
+            entry: &ESSAY,
+        });
+        items.extend(runs[2..].iter().map(Item::Win));
+        assert_eq!(kinds(&fold_items(items, true, &runs)), "wwLwwF");
+    }
+
+    #[test]
+    fn lift_folds_link_the_archive_date_range() {
+        let runs: Vec<Run> = (0..2)
+            .map(|i| win(&format!("{}", 50 - i), &format!("2026-07-{:02}", 28 - i)))
+            .collect();
+        let lifts: Vec<PublishedWorkout> = (0..4)
+            .map(|i| lift(&format!("2026-07-{:02}", 26 - i), "Push Day", "Bench Press"))
+            .collect();
+        let mut items: Vec<Item> = runs.iter().map(Item::Win).collect();
+        items.extend(lifts.iter().map(Item::Lift));
+        let display = fold_items(items, true, &runs);
+        assert_eq!(kinds(&display), "wwllF");
+        let fold = first_fold(&display);
+        assert_eq!(fold.stamp, "[fitness]");
+        assert_eq!(fold.label, "2 more lifts ·");
+        assert_eq!(fold.date, "2026-07-24");
+        assert_eq!(fold.body, "back to 2026-07-23");
+        assert_eq!(fold.href, "/lifting/log?from=2026-07-23&to=2026-07-24");
+        assert_eq!(fold.link_label, "workouts →");
+    }
+
+    #[test]
+    fn fold_links_target_the_spire_page_holding_the_newest_hidden_run() {
+        // 60 runs, newest first; /spire shows 50 per page.
+        let runs: Vec<Run> = (0..60)
+            .map(|i| win(&format!("{}", 1000 - i), "2026-01-01"))
+            .collect();
+        assert_eq!(run_page_url(&runs, &runs[10]), "/spire#run-log");
+        assert_eq!(run_page_url(&runs, &runs[52]), "/spire?page=2#run-log");
+
+        // A streak whose two leads sit at indices 50-51: the newest hidden
+        // run (index 52) is what the fold link must land on.
+        let items: Vec<Item> = runs[50..56].iter().map(Item::Win).collect();
+        let fold_href = first_fold(&fold_items(items, true, &runs)).href.clone();
+        assert_eq!(fold_href, "/spire?page=2#run-log");
+    }
 }

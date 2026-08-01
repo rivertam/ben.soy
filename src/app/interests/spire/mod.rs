@@ -56,6 +56,17 @@ fn page_url(page: usize) -> String {
     }
 }
 
+/// Deep link to the run-log slice holding `target` — how the homepage's
+/// collapsed win clusters land readers near their runs. Best-effort by
+/// design: runs syncing in between renders shift everything a slot.
+pub(crate) fn run_page_url(runs: &[Run], target: &Run) -> String {
+    let index = runs
+        .iter()
+        .position(|run| run.game == target.game && run.id == target.id)
+        .unwrap_or(0);
+    page_url(index / PER_PAGE + 1)
+}
+
 #[page("/spire")]
 async fn spire(cx: &Cx) -> Result {
     let q = query_params::<SpireQuery>(cx)?;
