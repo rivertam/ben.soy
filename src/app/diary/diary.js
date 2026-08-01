@@ -1,8 +1,8 @@
 /* Page-side companion to the /diary service worker (sw.js). Saves go
  * IndexedDB-first — online and offline are the same path — and the worker
  * does all the POSTing; this file enqueues, kicks (Background Sync when
- * available, a message otherwise), and renders the pending/failed queue
- * above the entry list. Without JavaScript the plain form POST to
+ * available, a message otherwise), and renders pending/failed messages at
+ * the live end of the transcript. Without JavaScript the plain form POST to
  * /diary/write still works; if IndexedDB refuses (private mode, disk),
  * saves fall back to that same form POST so text always has a path out.
  */
@@ -20,6 +20,7 @@ let lastBlocked = null;
 init();
 
 async function init() {
+  positionTranscript();
   if (!("serviceWorker" in navigator)) {
     return;
   }
@@ -47,6 +48,22 @@ async function init() {
     if (document.visibilityState === "visible") {
       refresh();
     }
+  });
+}
+
+/* A chat opens at the present. The server renders messages chronologically,
+ * and this moves the transcript viewport to its bottom; older messages are
+ * then revealed by scrolling upward. Two frames let font/layout settling
+ * finish before measuring the scroll height. */
+function positionTranscript() {
+  const transcript = document.getElementById("diary-transcript");
+  if (!transcript) {
+    return;
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      transcript.scrollTop = transcript.scrollHeight;
+    });
   });
 }
 
@@ -143,7 +160,7 @@ function onQueueUpdated(message) {
   // guard keeps other open tabs from reload-looping each other.
   if (message.saved > 0 && message.pending === 0 && submittedThisSession) {
     submittedThisSession = false;
-    window.location.reload();
+    window.location.assign(SCOPE);
   }
 }
 
@@ -178,17 +195,18 @@ async function renderQueue() {
       queuedArticle(entry, "failed — " + (entry.reason || "rejected"), discardButton(entry.qid))
     );
   }
+  positionTranscript();
 }
 
 /* Queue items render with textContent only — entry text must never become
  * markup. */
 function queuedArticle(entry, label, action) {
-  const article = element("article", "border-t border-hairline py-6");
-  const meta = element("p", "font-meta text-xs text-muted");
-  meta.textContent = label + " · " + stamp(entry.written_at);
-  const body = element("p", "mt-2 leading-relaxed whitespace-pre-wrap text-ink2");
+  const article = element("article", "diary-message diary-message-queued");
+  const body = element("p", "leading-relaxed whitespace-pre-wrap text-ink2");
   body.textContent = entry.body;
-  article.append(meta, body);
+  const meta = element("p", "mt-2 text-right font-meta text-[0.6875rem] text-muted");
+  meta.textContent = stamp(entry.written_at) + " · " + label;
+  article.append(body, meta);
   if (action) {
     article.append(action);
   }
@@ -209,8 +227,8 @@ function discardButton(qid) {
 }
 
 function element(tag, className) {
-  // Classes here must also appear in .rs files — Tailwind's scan does not
-  // read .js (see CLAUDE.md); every class below is copied from diary.rs.
+  // Tailwind utilities here must also appear in .rs files because its scan
+  // does not read .js; diary-* component classes live in diary.css.
   const node = document.createElement(tag);
   node.className = className;
   return node;

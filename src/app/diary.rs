@@ -12,9 +12,10 @@
 //! An entry is a timestamp and text, nothing else yet (metadata fields can
 //! join the schema later). The record key is the entry's Eastern public path
 //! (`eastern::public_path`, the `/lifting/{path}` permalink shape), so keys
-//! sort chronologically and the permalink IS the id. `/diary` renders bodies
-//! fully inline, newest first, `PAGE_SIZE` per page; `/diary/{path}` is one
-//! entry's own page and the only place it can be deleted.
+//! sort chronologically and the permalink IS the id. `/diary` fetches newest
+//! first but renders each `PAGE_SIZE` page oldest-to-newest in a bottom-pinned
+//! chat transcript; `/diary/{path}` is one entry's own page and the only place
+//! it can be deleted.
 //!
 //! Both POSTs repeat the admin identity check, require positive same-origin
 //! evidence, and bound the body before parsing it — the forms are not an
@@ -82,7 +83,7 @@ const COLLISION_PROBES: i64 = 5;
 
 const META_LABEL: &str =
     "font-meta text-[0.6875rem] leading-normal tracking-[0.13em] uppercase text-muted";
-const TEXTAREA: &str = "w-full min-w-0 min-h-[9rem] px-3 py-[0.65rem] text-ink bg-page \
+const TEXTAREA: &str = "w-full min-w-0 min-h-[3rem] px-3 py-[0.65rem] text-ink bg-card \
      border border-hairline rounded-[0.2rem] font-body text-sm leading-relaxed outline-none \
      placeholder:text-muted placeholder:opacity-100 \
      hover:border-[color-mix(in_srgb,var(--color-ink2)_45%,var(--color-hairline))] \
@@ -148,81 +149,89 @@ async fn diary(cx: &Cx) -> Result {
             runtime: false,
             analytics: false,
             pwa: true,
-            if let Some(message) = notice {
-                <p class="mt-6 max-w-prose border-l-2 border-oxide pl-3 font-meta text-sm text-ink2">
-                    (message)
-                </p>
-            }
-            <form
-                method="post"
-                action="/diary/write"
-                id="diary-compose"
-                class="mt-10 max-w-prose"
-            >
-                <label class="flex flex-col gap-[0.35rem]" for="diary-body">
-                    <span class=(META_LABEL)>"new entry"</span>
-                    <textarea
-                        class=(TEXTAREA)
-                        id="diary-body"
-                        name="body"
-                        rows="6"
-                        required=""
-                        placeholder="What happened?"
-                    ></textarea>
-                </label>
-                <button
-                    type="submit"
-                    class="oxlink mt-3 cursor-pointer font-meta text-sm"
-                >"save →"</button>
-            </form>
-            // diary.js fills this with queued/failed offline entries and
-            // unhides it; without JS it renders empty and stays hidden.
-            <section id="diary-queue" class="mt-12 max-w-prose" hidden=""></section>
-            if !store_ok {
-                <p class="mt-12 max-w-prose text-ink2">
-                    "The diary store is unreachable, so nothing can be listed "
-                    "right now. Entries are safe where they are; try again in "
-                    "a moment."
-                </p>
-            }
-            if store_ok && total == 0 {
-                <p class="mt-12 max-w-prose text-sm text-muted">
-                    "No entries yet. The first one goes just above."
-                </p>
-            }
-            <section class="mt-12 max-w-prose">
-                for entry in entries.iter() {
-                    <article class="border-t border-hairline py-6">
-                        <p class="font-meta text-xs text-muted">
-                            <a class="quiet-link" href=(entry_url(&entry.id))>
-                                (entry_stamp(entry))
+            <div class="diary-room" data-page=(page_number)>
+                <div class="diary-room-bar">
+                    <span class=(META_LABEL)>"diary · just you"</span>
+                    if total > PAGE_SIZE {
+                        <span class="font-meta text-xs text-muted">
+                            (format!("page {page_number} of {last}"))
+                        </span>
+                    }
+                </div>
+                <div id="diary-transcript" class="diary-transcript" tabindex="0">
+                    if store_ok && page_number < last {
+                        <p class="text-center font-meta text-xs">
+                            <a class="quiet-link" href=(page_url(page_number + 1))>
+                                "↑ older messages"
                             </a>
                         </p>
-                        <p class="mt-2 leading-relaxed whitespace-pre-wrap text-ink2">
-                            (entry.body.as_str())
+                    }
+                    if let Some(message) = notice {
+                        <p class="border-l-2 border-oxide pl-3 font-meta text-sm text-ink2">
+                            (message)
                         </p>
-                    </article>
-                }
-            </section>
-            if store_ok && total > PAGE_SIZE {
-                <nav
-                    class="mt-4 flex max-w-prose items-baseline justify-between border-t \
-                         border-hairline pt-4 font-meta text-xs"
-                    aria-label="Diary pages"
+                    }
+                    if !store_ok {
+                        <p class="text-ink2">
+                            "The diary store is unreachable, so nothing can be listed "
+                            "right now. Entries are safe where they are; try again in "
+                            "a moment."
+                        </p>
+                    }
+                    if store_ok && total == 0 {
+                        <p class="my-auto text-center text-sm text-muted">
+                            "No messages yet. Say something below."
+                        </p>
+                    }
+                    <section class="diary-history" aria-label="Diary messages">
+                        for entry in entries.iter().rev() {
+                            <article class="diary-message">
+                                <p class="leading-relaxed whitespace-pre-wrap text-ink2">
+                                    (entry.body.as_str())
+                                </p>
+                                <p class="mt-2 text-right font-meta text-[0.6875rem] text-muted">
+                                    <a class="quiet-link" href=(entry_url(&entry.id))>
+                                        (entry_stamp(entry))
+                                    </a>
+                                </p>
+                            </article>
+                        }
+                    </section>
+                    // diary.js fills this with queued/failed offline entries.
+                    <section id="diary-queue" class="diary-queue" hidden=""></section>
+                    if store_ok && page_number > 1 {
+                        <p class="text-center font-meta text-xs">
+                            <a class="quiet-link" href=(page_url(page_number - 1))>
+                                "newer messages ↓"
+                            </a>
+                        </p>
+                    }
+                </div>
+                <form
+                    method="post"
+                    action="/diary/write"
+                    id="diary-compose"
+                    class="diary-compose"
                 >
-                    if page_number > 1 {
-                        <a class="quiet-link" href=(page_url(page_number - 1))>"← newer"</a>
-                    } else {
-                        <span class="text-muted opacity-50" aria-disabled="true">"← newer"</span>
-                    }
-                    <span class="text-muted">(format!("page {page_number} of {last}"))</span>
-                    if page_number < last {
-                        <a class="quiet-link" href=(page_url(page_number + 1))>"older →"</a>
-                    } else {
-                        <span class="text-muted opacity-50" aria-disabled="true">"older →"</span>
-                    }
-                </nav>
-            }
+                    <div class="diary-compose-row">
+                        <label class="min-w-0 flex-1" for="diary-body">
+                            <span class="sr-only">"New diary message"</span>
+                            <textarea
+                                class=(TEXTAREA)
+                                id="diary-body"
+                                name="body"
+                                rows="2"
+                                required=""
+                                placeholder="Message yourself…"
+                            ></textarea>
+                        </label>
+                        <button
+                            type="submit"
+                            class="oxlink mb-3 shrink-0 cursor-pointer font-meta text-sm"
+                        >"send ↑"</button>
+                    </div>
+                </form>
+            </div>
             <script type="module" src=(DIARY_JS)></script>
         )
     }

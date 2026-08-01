@@ -1,0 +1,104 @@
+/*
+ * The diary is a private, single-person chat room. Keep the browser viewport
+ * still while the transcript itself scrolls, so composing always happens at
+ * the bottom and older messages are found by moving upward.
+ */
+body:has(.diary-room) {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body:has(.diary-room) > main {
+  display: flex;
+  min-height: 0;
+  padding-bottom: 0;
+}
+
+body:has(.diary-room) > footer {
+  display: none;
+}
+
+.diary-room {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  width: min(100%, 42rem);
+  margin-inline: auto;
+}
+
+.diary-room-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 1.25rem 0.75rem;
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.diary-transcript {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0.9rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-block: 1rem;
+  scrollbar-gutter: stable;
+}
+
+.diary-history,
+.diary-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.diary-history {
+  margin-top: auto;
+}
+
+.diary-queue[hidden] {
+  display: none;
+}
+
+.diary-message {
+  align-self: flex-end;
+  width: fit-content;
+  max-width: min(85%, 34rem);
+  padding: 0.7rem 0.85rem 0.65rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: 0.9rem 0.9rem 0.2rem 0.9rem;
+  background: var(--color-card);
+  overflow-wrap: anywhere;
+}
+
+.diary-message-queued {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--color-card) 65%, var(--color-page));
+}
+
+.diary-compose {
+  flex: none;
+  padding-block: 0.75rem max(0.75rem, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--color-hairline);
+  background: var(--color-page);
+}
+
+.diary-compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.65rem;
+}
+
+.diary-compose textarea {
+  max-height: 10rem;
+  resize: vertical;
+}
+
+@media (max-width: 39.999rem) {
+  .diary-message {
+    max-width: 92%;
+  }
+}
