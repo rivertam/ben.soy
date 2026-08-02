@@ -19,6 +19,18 @@ build:
     cargo build
     topcoat asset bundle --bin benjisponge
 
+# Build the diary queue's wasm module + JS glue into wasm-dist/ (docs/diary-sync.md).
+# Optional: without it the site serves fine and /diary falls back to plain form
+# POSTs. A running `just dev` picks up a fresh build on the next request.
+# The vendor step materializes the patched surrealdb-core the worker's own
+# workspace builds against (never the server's).
+wasm:
+    bash scripts/vendor-surrealdb-core.sh
+    cargo build --manifest-path crates/diary-worker/Cargo.toml \
+        --profile wasm --target wasm32-unknown-unknown
+    wasm-bindgen --target no-modules --out-dir wasm-dist --out-name diary_sync \
+        crates/diary-worker/target/wasm32-unknown-unknown/wasm/diary_worker.wasm
+
 # Build the release binary and extract its assets
 release:
     cargo build --release
@@ -65,11 +77,13 @@ podrick-local *args:
 # Thought posts: `just thought new`, `just thought publish` (see `just thought`)
 mod thought
 
-# Run formatting, lint, and test checks
+# Run formatting, lint, and test checks (workspace-wide: the site plus the
+# diary-core/diary-worker crates; no wasm toolchain needed — diary-worker
+# compiles empty on native targets)
 check:
     cargo fmt --check
-    cargo clippy --all-targets -- -D warnings
-    cargo test
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
 
 # Run the test suite
 test:

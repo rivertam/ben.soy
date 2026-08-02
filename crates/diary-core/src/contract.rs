@@ -1,0 +1,203 @@
+//! The wire half of the queue: what an entry looks like on
+//! `POST /api/diary/entries`, which composition seconds the server accepts,
+//! and what each response means to the flusher. The server parses and
+//! validates with these exact items; the worker serializes and classifies
+//! with them. A change here changes both sides in the same commit — that is
+//! the point.
+
+use serde::{Deserialize, Serialize};
+
+/// The queue-replay endpoint. The worker flushes here and nowhere else.
+pub const API_PATH: &str = "/api/diary/entries";
+
+/// Mirrors the schema's `string::len($value) <= 65536` ASSERT on
+/// `diary_entries.body` (a test in `diary.rs` holds the two together).
+pub const MAX_ENTRY_CHARS: usize = 65_536;
+
+/// Composition timestamps may trail "now" by up to a year (a long-offline
+/// queue) and lead it by five minutes (clock skew). Out of window is a 422,
+/// never a clamp: clamping would mint a fresh key per replay, so retrying a
+/// write whose response was lost would double-post.
+pub const MAX_PAST_SECONDS: i64 = 365 * 24 * 60 * 60;
+pub const MAX_FUTURE_SECONDS: i64 = 300;
+
+/// Same-second key collisions probe forward at most this many seconds.
+pub const COLLISION_PROBES: i64 = 5;
+
+/// One queued entry on the wire: the entry text plus the second it was
+/// composed (the entry keeps the time it was written, not the time it
+/// synced). `deny_unknown_fields` keeps the contract exact — a shape drift
+/// between worker and server should fail loudly, not half-parse.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireEntry {
+    pub written_at: i64,
+    pub body: String,
+}
+
+pub fn written_at_in_window(written_at: i64, now: i64) -> bool {
+    written_at > now - MAX_PAST_SECONDS && written_at <= now + MAX_FUTURE_SECONDS
+}
+
+/// Browser textareas submit CRLF line ends; store LF. Trimmed at both ends,
+/// interior blank lines survive. `None` is "not an entry we would store" —
+/// the char bound mirrors the schema ASSERT. The worker runs this before
+/// queueing, so what sits in the queue is exactly what the server will store.
+pub fn normalize_body(raw: &str) -> Option<String> {
+    let body = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let body = body.trim();
+    if body.is_empty() || body.chars().count() > MAX_ENTRY_CHARS {
+        return None;
+    }
+    Some(body.to_string())
+}
+
+/// What one replay attempt means for the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// The server holds the entry — a fresh insert or a deduped replay.
+    Saved,
+    /// 401/404: signed out or the wrong account. Retrying cannot fix it
+    /// (and burns Background Sync's bounded attempt budget), so the flush
+    /// stops quietly and the page shows the sign-in banner.
+    Auth,
+    /// Network failure, 403, 5xx, or a 200 that is not our JSON (a captive
+    /// portal) — never the entry's fault; stop and retry later.
+    Retry,
+    /// 400/409/413/415/422: the entry itself can never succeed. It is
+    /// marked failed and kept on the page for manual copy — queued diary
+    /// text is never silently dropped.
+    Rejected(u16),
+}
+
+/// Classify one response from the replay endpoint. `body` is only consulted
+/// for 2xx, where anything but our `{"status":"saved"}` JSON means something
+/// other than the site answered.
+pub fn classify_response(status: u16, body: &str) -> SendOutcome {
+    match status {
+        200..=299 => {
+            let saved = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .is_some_and(|value| value["status"] == "saved");
+            if saved {
+                SendOutcome::Saved
+            } else {
+                SendOutcome::Retry
+            }
+        }
+        401 | 404 => SendOutcome::Auth,
+        400 | 409 | 413 | 415 | 422 => SendOutcome::Rejected(status),
+        _ => SendOutcome::Retry,
+    }
+}
+
+/// The reason a permanent rejection leaves on the queued entry — the exact
+/// text the page has always rendered next to failed entries.
+pub fn rejection_reason(status: u16) -> String {
+    format!("rejected (HTTP {status})")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bodies_normalize_line_ends_and_bounds() {
+        assert_eq!(
+            normalize_body("Dear diary,\r\n\r\nIt me.\r\n").as_deref(),
+            Some("Dear diary,\n\nIt me.")
+        );
+        assert_eq!(
+            normalize_body("solo\rreturn").as_deref(),
+            Some("solo\nreturn")
+        );
+        assert_eq!(normalize_body(""), None);
+        assert_eq!(normalize_body("  \r\n\t "), None);
+        let exactly_max = "é".repeat(MAX_ENTRY_CHARS);
+        assert_eq!(
+            normalize_body(&exactly_max).as_deref(),
+            Some(exactly_max.as_str())
+        );
+        assert_eq!(normalize_body(&"a".repeat(MAX_ENTRY_CHARS + 1)), None);
+    }
+
+    #[test]
+    fn client_timestamps_stay_inside_the_window() {
+        let now = 1_800_000_000;
+        assert!(written_at_in_window(now, now));
+        assert!(written_at_in_window(now - MAX_PAST_SECONDS + 1, now));
+        assert!(!written_at_in_window(now - MAX_PAST_SECONDS, now));
+        assert!(written_at_in_window(now + MAX_FUTURE_SECONDS, now));
+        assert!(!written_at_in_window(now + MAX_FUTURE_SECONDS + 1, now));
+        assert!(!written_at_in_window(0, now));
+    }
+
+    #[test]
+    fn wire_entries_parse_strictly() {
+        let entry: WireEntry =
+            serde_json::from_slice(br#"{"written_at": 1753640000, "body": "Dear diary,"}"#)
+                .unwrap();
+        assert_eq!(entry.written_at, 1_753_640_000);
+        assert_eq!(entry.body, "Dear diary,");
+        for bad in [
+            &br#"{"written_at": 1753640000.5, "body": "x"}"#[..],
+            br#"{"written_at": "1753640000", "body": "x"}"#,
+            br#"{"body": "x"}"#,
+            br#"{"written_at": 1753640000}"#,
+            br#"{"written_at": 1753640000, "body": "x", "extra": true}"#,
+            b"not json",
+        ] {
+            assert!(
+                serde_json::from_slice::<WireEntry>(bad).is_err(),
+                "accepted {:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
+
+    /// What the worker sends is exactly what the server parses: the wire
+    /// struct round-trips through its own serialization.
+    #[test]
+    fn wire_entries_round_trip() {
+        let entry = WireEntry {
+            written_at: 1_753_640_000,
+            body: "Dear diary,\n\nIt me.".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: WireEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.written_at, entry.written_at);
+        assert_eq!(back.body, entry.body);
+    }
+
+    #[test]
+    fn responses_classify_like_the_old_worker() {
+        assert_eq!(
+            classify_response(
+                200,
+                r#"{"status":"saved","id":"x","written_at":1,"deduped":false}"#
+            ),
+            SendOutcome::Saved
+        );
+        // A 200 that is not our JSON is a captive portal, not a save.
+        assert_eq!(
+            classify_response(200, "<html>hotel wifi</html>"),
+            SendOutcome::Retry
+        );
+        assert_eq!(classify_response(200, ""), SendOutcome::Retry);
+        assert_eq!(classify_response(401, ""), SendOutcome::Auth);
+        assert_eq!(classify_response(404, ""), SendOutcome::Auth);
+        for permanent in [400, 409, 413, 415, 422] {
+            assert_eq!(
+                classify_response(permanent, ""),
+                SendOutcome::Rejected(permanent),
+                "status {permanent}"
+            );
+        }
+        // 403 is a same-origin/config failure and 5xx an outage — never the
+        // entry's fault, always retried later.
+        for retryable in [403, 500, 502, 503] {
+            assert_eq!(classify_response(retryable, ""), SendOutcome::Retry);
+        }
+        assert_eq!(rejection_reason(422), "rejected (HTTP 422)");
+    }
+}

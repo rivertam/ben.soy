@@ -62,17 +62,23 @@ queue. `src/app/pwa.rs` serves the stable pieces (`/sw.js`,
 `/diary.webmanifest`, two icons); the diary pages load
 `src/app/diary/diary.js`; the worker `src/app/diary/sw.js` registers with
 scope `/diary`, so no public page is ever controlled and the CDN
-invariants above are untouched. Invariants:
+invariants above are untouched. The queue logic itself is Rust —
+`crates/diary-core` compiled to wasm, storing entries in a device-local
+SurrealDB over IndexedDB, served by `src/app/diary_sync.rs` — read
+`docs/diary-sync.md` alongside this section before touching any of it.
+Invariants:
 
 - The PWA routes are deliberately ungated: Chrome fetches manifests
   without credentials (a cookie gate breaks install), and the bytes only
   disclose that a diary app exists — which the public repo and the login
   redirect already do. Keep anything private out of them.
-- With JS, saves are IndexedDB-first (db `diary-queue`) and flushed ONLY
-  by the service worker via `POST /api/diary/entries`. Never add a
-  page-side POST: one flush implementation is what keeps replays safe.
-  Without JS (or when IndexedDB refuses), the plain form POST to
-  `/diary/write` still works.
+- With JS, saves are local-first (the wasm store) and flushed ONLY by the
+  service worker via `POST /api/diary/entries`. Never add a page-side
+  POST: one flush implementation — `diary_core::outbox::flush` — is what
+  keeps replays safe. Without JS (or when the wasm store refuses: no
+  `wasm-dist/` build served, private-mode IndexedDB), the plain form POST
+  to `/diary/write` still works. The pre-wasm IndexedDB queue
+  (`diary-queue`) is drained by a one-way migration in the worker.
 - The API keys an entry by the CLIENT's composition second — a queued
   entry keeps the time it was written, not the time it synced — inside a
   bounded window (a year back, 5 minutes forward; outside is a 422, never
@@ -81,9 +87,10 @@ invariants above are untouched. Invariants:
   saved"; an occupied second probes forward ≤5 s, re-running the dedupe
   at every probe. Overwriting an entry stays impossible.
 - The worker keeps the last good `GET /diary` (page 1) plus hashed assets
-  for offline reads — deliberate, device-local, Ben's choice. That cache
-  and the queue OUTLIVE sign-out and `COOKIE_KEY` rotation; wiping them
-  means clearing the site's data in Chrome on the device.
+  and the versioned wasm pair for offline reads — deliberate,
+  device-local, Ben's choice. That cache and the queue OUTLIVE sign-out
+  and `COOKIE_KEY` rotation; wiping them means clearing the site's data
+  in Chrome on the device.
 - A flush stops and keeps the queue on 401/404 (sign in again), 403/5xx/
   network (retry later); only 400/409/413/415/422 mark an entry failed,
   and failed text stays on the page with a discard button — queued diary

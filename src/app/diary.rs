@@ -30,6 +30,7 @@
 //! double-post, and a queued entry keeps the time it was written, not the
 //! time it synced. Details in docs/auth.md.
 
+use diary_core::contract::{COLLISION_PROBES, WireEntry, normalize_body, written_at_in_window};
 use jiff::{Timestamp, tz::TimeZone};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
@@ -62,24 +63,17 @@ const PAGE_SIZE: usize = 20;
 /// limit. Wilder `?page=` values behave like unparseable ones (redirect to
 /// `/diary`) instead of surfacing a SurrealDB parse error as a fake outage.
 const MAX_PAGE: usize = 1_000_000;
-/// Mirrors the schema's `string::len($value) <= 65536` ASSERT.
-const MAX_ENTRY_CHARS: usize = 65_536;
 /// A worst-case urlencoded body of `MAX_ENTRY_CHARS` multibyte characters
 /// runs to several hundred KB; 1 MiB matches the fitness import's bound.
+/// (The char bound itself, the replay window, and the collision probes now
+/// live in `diary-core` — the crate the wasm service worker also compiles,
+/// so the two halves of the protocol cannot drift.)
 const BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const NO_STORE: &str = "no-store";
 /// The offline queue's page-side half; the worker and manifest ride stable
 /// routes in `pwa.rs` (a service worker's URL is its identity, so it cannot
-/// be a hashed asset).
+/// be a hashed asset), and the queue's Rust half rides `diary_sync.rs`.
 const DIARY_JS: Asset = asset!("./diary/diary.js");
-/// Composition timestamps may trail "now" by up to a year (a long-offline
-/// queue) and lead it by five minutes (clock skew). Out of window is a 422,
-/// never a clamp: clamping would mint a fresh key per replay, so retrying a
-/// write whose response was lost would double-post.
-const MAX_PAST_SECONDS: i64 = 365 * 24 * 60 * 60;
-const MAX_FUTURE_SECONDS: i64 = 300;
-/// Same-second key collisions probe forward at most this many seconds.
-const COLLISION_PROBES: i64 = 5;
 
 const META_LABEL: &str =
     "font-meta text-[0.6875rem] leading-normal tracking-[0.13em] uppercase text-muted";
@@ -366,17 +360,6 @@ async fn delete_entry(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
-/// What the service worker's queue replay sends: the entry text plus the
-/// second it was composed. `deny_unknown_fields` keeps the contract exact —
-/// a shape drift between sw.js and this struct should fail loudly, not
-/// half-parse.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiEntry {
-    written_at: i64,
-    body: String,
-}
-
 /// The saved-or-deduped outcome `save_queued_entry` reports back as JSON.
 struct SavedEntry {
     id: String,
@@ -424,7 +407,10 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
             ));
         }
     };
-    let entry: ApiEntry = match serde_json::from_slice(&bytes) {
+    // `WireEntry` is the shared wire shape — the exact struct the worker
+    // serialized, deserialized with `deny_unknown_fields` so a drift fails
+    // loudly instead of half-parsing.
+    let entry: WireEntry = match serde_json::from_slice(&bytes) {
         Ok(entry) => entry,
         Err(_) => return Ok(api_error(StatusCode::BAD_REQUEST, "malformed entry")),
     };
@@ -521,10 +507,6 @@ async fn save_queued_entry(
         }
     }
     Err(SaveError::Exhausted)
-}
-
-fn written_at_in_window(written_at: i64, now: i64) -> bool {
-    written_at > now - MAX_PAST_SECONDS && written_at <= now + MAX_FUTURE_SECONDS
 }
 
 fn is_json_content_type(headers: &HeaderMap) -> bool {
@@ -671,18 +653,6 @@ fn parse_single_field(body: &[u8], name: &str) -> Option<String> {
     value
 }
 
-/// Browser textareas submit CRLF line ends; store LF. Trimmed at both ends,
-/// interior blank lines survive. `None` is "not an entry we would store" —
-/// the char bound mirrors the schema ASSERT.
-fn normalize_body(raw: &str) -> Option<String> {
-    let body = raw.replace("\r\n", "\n").replace('\r', "\n");
-    let body = body.trim();
-    if body.is_empty() || body.chars().count() > MAX_ENTRY_CHARS {
-        return None;
-    }
-    Some(body.to_string())
-}
-
 /// The record key and stored timestamp for a new form entry, from one
 /// instant.
 fn now_entry() -> Option<(String, i64)> {
@@ -822,6 +792,8 @@ fn log_failure(step: &str, error: &str) {
 
 #[cfg(test)]
 mod tests {
+    use diary_core::contract::MAX_ENTRY_CHARS;
+
     use super::*;
 
     /// The whole point of the page: unlisted everywhere, untrackable, and —
@@ -863,24 +835,18 @@ mod tests {
         assert_eq!(parse_single_field(b"path=x", "body"), None);
     }
 
+    /// The protocol items now live in `diary-core` (where the wasm worker
+    /// compiles them too); what stays here is the glue that must keep
+    /// matching them: the route literal in the `#[route]` attribute, and the
+    /// schema ASSERT that `MAX_ENTRY_CHARS` mirrors.
     #[test]
-    fn bodies_normalize_line_ends_and_bounds() {
-        assert_eq!(
-            normalize_body("Dear diary,\r\n\r\nIt me.\r\n").as_deref(),
-            Some("Dear diary,\n\nIt me.")
+    fn shared_contract_matches_the_server_glue() {
+        assert_eq!(diary_core::contract::API_PATH, "/api/diary/entries");
+        assert!(
+            include_str!("../schema.surql")
+                .contains(&format!("string::len($value) <= {MAX_ENTRY_CHARS}")),
+            "schema ASSERT no longer mirrors diary-core's MAX_ENTRY_CHARS"
         );
-        assert_eq!(
-            normalize_body("solo\rreturn").as_deref(),
-            Some("solo\nreturn")
-        );
-        assert_eq!(normalize_body(""), None);
-        assert_eq!(normalize_body("  \r\n\t "), None);
-        let exactly_max = "é".repeat(MAX_ENTRY_CHARS);
-        assert_eq!(
-            normalize_body(&exactly_max).as_deref(),
-            Some(exactly_max.as_str())
-        );
-        assert_eq!(normalize_body(&"a".repeat(MAX_ENTRY_CHARS + 1)), None);
     }
 
     #[test]
@@ -1004,40 +970,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn client_timestamps_stay_inside_the_window() {
-        let now = 1_800_000_000;
-        assert!(written_at_in_window(now, now));
-        assert!(written_at_in_window(now - MAX_PAST_SECONDS + 1, now));
-        assert!(!written_at_in_window(now - MAX_PAST_SECONDS, now));
-        assert!(written_at_in_window(now + MAX_FUTURE_SECONDS, now));
-        assert!(!written_at_in_window(now + MAX_FUTURE_SECONDS + 1, now));
-        assert!(!written_at_in_window(0, now));
-    }
-
-    #[test]
-    fn api_bodies_parse_strictly() {
-        let entry: ApiEntry =
-            serde_json::from_slice(br#"{"written_at": 1753640000, "body": "Dear diary,"}"#)
-                .unwrap();
-        assert_eq!(entry.written_at, 1_753_640_000);
-        assert_eq!(entry.body, "Dear diary,");
-        for bad in [
-            &br#"{"written_at": 1753640000.5, "body": "x"}"#[..],
-            br#"{"written_at": "1753640000", "body": "x"}"#,
-            br#"{"body": "x"}"#,
-            br#"{"written_at": 1753640000}"#,
-            br#"{"written_at": 1753640000, "body": "x", "extra": true}"#,
-            b"not json",
-        ] {
-            assert!(
-                serde_json::from_slice::<ApiEntry>(bad).is_err(),
-                "accepted {:?}",
-                String::from_utf8_lossy(bad)
-            );
-        }
-    }
-
     /// diary.js is the page half of the offline queue; these literals are
     /// load-bearing. (sw.js's are pinned in pwa.rs, shared names in both.)
     #[test]
@@ -1058,6 +990,14 @@ mod tests {
             "dataset.discard",
             "form.submit()",
             "preventDefault",
+            // the Rust queue module: loader → pinned glue → instantiation,
+            // with the form POST as the fallback when any of it refuses
+            "const SYNC_LOADER = \"/diary-sync.js\";",
+            "DIARY_SYNC.glue",
+            "module_or_path: self.DIARY_SYNC.wasm",
+            "diary_enqueue",
+            "diary_snapshot",
+            "diary_discard",
         ] {
             assert!(DIARY_JS_SRC.contains(needle), "diary.js lost {needle:?}");
         }

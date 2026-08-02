@@ -2,7 +2,8 @@
 //! manifest, and the launcher icons. Not pages: no shell, out of
 //! `site_routes()` (the 404 index is for pages) — `favicon.rs` is the
 //! pattern. The interactive halves live in `diary/sw.js` and
-//! `diary/diary.js`; the write endpoint is `POST /api/diary/entries` in
+//! `diary/diary.js`; the queue those two load is Rust served by
+//! `diary_sync.rs`; the write endpoint is `POST /api/diary/entries` in
 //! `diary.rs`.
 //!
 //! Deliberately ungated: Chrome fetches manifests without credentials (a
@@ -114,7 +115,9 @@ mod tests {
 
     /// The worker owns flushing; these literals ARE the protocol. If one
     /// vanishes in an edit, the offline queue stops working silently — fail
-    /// loudly here instead.
+    /// loudly here instead. (The POST itself — same-origin credentials,
+    /// no-store, the JSON body — moved into Rust: diary-worker's `try_send`,
+    /// built from diary-core's contract.)
     #[test]
     fn sw_js_pins_the_offline_protocol() {
         for needle in [
@@ -130,23 +133,36 @@ mod tests {
             "url.search === \"\"",
             "/_topcoat/assets/",
             "navigator.locks.request",
-            "credentials: \"same-origin\"",
             "new BroadcastChannel(\"diary\")",
+            // the Rust queue: both imports at evaluation time (Chrome refuses
+            // lazy importScripts), instantiation deferred to the first flush
+            "importScripts(SYNC_LOADER)",
+            "importScripts(self.DIARY_SYNC.glue)",
+            "module_or_path",
+            "diary_flush",
+            // the one-way legacy migration and the store it drains
+            "diary_import",
+            "\"diary-queue\"",
+            "\"entries\"",
         ] {
             assert!(SW_JS.contains(needle), "sw.js lost {needle:?}");
         }
     }
 
     /// Names both sides must agree on — renaming in one file only would
-    /// strand the other side's queue, caches, or channel.
+    /// strand the other side's queue, caches, channel, or wasm pair. (The
+    /// legacy "diary-queue"/"entries" names are now worker-only: the page
+    /// never touches the old store, the migration drains it.)
     #[test]
     fn page_and_worker_agree_on_shared_names() {
         for shared in [
             "\"diary-flush\"",
             "\"diary-page-v1\"",
             "\"diary-assets-v1\"",
-            "\"diary-queue\"",
-            "\"entries\"",
+            "\"/diary-sync.js\"",
+            "DIARY_SYNC.glue",
+            "DIARY_SYNC.wasm",
+            "wasm_bindgen(",
             "new BroadcastChannel(\"diary\")",
         ] {
             assert!(SW_JS.contains(shared), "sw.js lost {shared:?}");

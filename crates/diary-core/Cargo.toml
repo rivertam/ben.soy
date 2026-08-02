@@ -1,0 +1,15 @@
+[package]
+name = "diary-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+surrealdb = { workspace = true }
+
+[dev-dependencies]
+# The isomorphism proof: the same outbox code the service worker runs against
+# `indxdb://` is tested natively against `mem://`.
+surrealdb = { workspace = true, features = ["kv-mem"] }
+tokio = { version = "1.53.0", features = ["macros", "rt"] }

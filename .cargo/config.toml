@@ -1,0 +1,5 @@
+# getrandom sits in the wasm dep tree (surrealdb → uuid/rand) and refuses to
+# guess a randomness source on wasm32-unknown-unknown; this opts into its JS
+# backend. Scoped to the target, so native builds never see the cfg.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

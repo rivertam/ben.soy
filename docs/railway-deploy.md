@@ -135,7 +135,10 @@ zone when a change must appear immediately.
 
 Railway's GitHub App builds `deploy/Dockerfile` and deploys the web service on
 push to `main`; CI only runs `just check`. Set the database service's Railway
-config-file path to `/deploy/surrealdb.railway.toml`.
+config-file path to `/deploy/surrealdb.railway.toml`. The Dockerfile's
+`wasm-builder` stage compiles the diary queue's wasm module (docs/diary-sync.md)
+in parallel with the site build and ships it as `/app/wasm-dist`; if that stage
+is ever dropped, the site still serves — the diary just loses its offline queue.
 
 ```sh
 just deploy

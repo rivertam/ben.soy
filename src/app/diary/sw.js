@@ -2,14 +2,17 @@
  * public pages are never controlled). Two jobs:
  *
  * 1. Offline reads: keep a device-local copy of the last good GET /diary and
- *    serve it when the network can't; hashed /_topcoat/assets/ ride a
- *    cache-first cache (immutable by contract).
- * 2. The write queue: flush pending IndexedDB entries to the JSON endpoint.
- *    Flushing lives HERE and only here — pages enqueue and kick (Background
- *    Sync, or a message where sync is missing) — so the replay policy has
- *    exactly one implementation. The server dedupes replays (same second,
- *    same body); that is the real idempotency guarantee, the Web Lock below
- *    only trims wasted duplicate work.
+ *    serve it when the network can't; hashed /_topcoat/assets/ and the
+ *    versioned wasm pair ride cache-first caches (immutable by contract).
+ * 2. The write queue: flush pending entries to the JSON endpoint. The queue
+ *    itself is Rust — crates/diary-core compiled to wasm, stored in a local
+ *    SurrealDB over IndexedDB (docs/diary-sync.md) — and this file is only
+ *    the browser glue: import the module, hold the Web Lock, migrate the
+ *    pre-wasm IndexedDB queue, broadcast the report, and throw on retryable
+ *    trouble so Background Sync retries with backoff. Flushing lives HERE
+ *    and only here — pages enqueue and kick. The server dedupes replays
+ *    (same second, same body); that is the real idempotency guarantee, the
+ *    lock only trims wasted duplicate work.
  */
 
 "use strict";
@@ -21,6 +24,38 @@ const DIARY_PATH = "/diary";
 const API_PATH = "/api/diary/entries";
 const SYNC_TAG = "diary-flush";
 const FLUSH_LOCK = "diary-flush";
+const SYNC_LOADER = "/diary-sync.js";
+const SYNC_PREFIX = "/diary-sync";
+
+/* Both imports happen at evaluation time — Chrome refuses importScripts of
+ * new URLs once install completes — and deliberately WITHOUT a try/catch:
+ * if the loader or the glue it pins can't be fetched, evaluation fails,
+ * this worker version never installs, and the previous working version
+ * keeps running. (In a dev checkout before `just wasm` no version installs
+ * at all — the diary is then online-only, exactly as if it had no worker.)
+ * The loader is served no-cache, so its bytes changing on a deploy is also
+ * what tells the browser a new worker version exists. */
+importScripts(SYNC_LOADER);
+importScripts(self.DIARY_SYNC.glue);
+
+let wasmReady = null;
+
+/* Instantiating the multi-megabyte module is deferred to the first flush
+ * and reused for the worker's lifetime; a failure resets so the next flush
+ * retries. The Cache Storage copy (primed by diary.js) is preferred so an
+ * offline wake with a cold HTTP cache can still flush once back online. */
+function ensureWasm() {
+  if (!wasmReady) {
+    wasmReady = caches
+      .match(self.DIARY_SYNC.wasm)
+      .then((cached) => wasm_bindgen({ module_or_path: cached || self.DIARY_SYNC.wasm }))
+      .catch((error) => {
+        wasmReady = null;
+        throw error;
+      });
+  }
+  return wasmReady;
+}
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -37,6 +72,24 @@ async function activate() {
       await caches.delete(name);
     }
   }
+  await dropStaleSyncAssets();
+}
+
+/* Old deploys' versioned pairs are dead weight (~4 MB each); keep only the
+ * pair this worker imports, plus the loader. */
+async function dropStaleSyncAssets() {
+  const keep = [SYNC_LOADER, self.DIARY_SYNC.glue, self.DIARY_SYNC.wasm].map(
+    (url) => new URL(url, self.location.origin).href
+  );
+  const cache = await caches.open(ASSET_CACHE);
+  for (const request of await cache.keys()) {
+    if (
+      new URL(request.url).pathname.startsWith(SYNC_PREFIX) &&
+      !keep.includes(request.url)
+    ) {
+      await cache.delete(request);
+    }
+  }
 }
 
 self.addEventListener("fetch", (event) => {
@@ -45,11 +98,14 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(navigationResponse(event.request, url));
     return;
   }
-  if (
-    event.request.method === "GET" &&
-    url.origin === self.location.origin &&
-    url.pathname.startsWith("/_topcoat/assets/")
-  ) {
+  if (event.request.method !== "GET" || url.origin !== self.location.origin) {
+    return;
+  }
+  if (url.pathname === SYNC_LOADER) {
+    event.respondWith(loaderResponse(event.request));
+    return;
+  }
+  if (url.pathname.startsWith("/_topcoat/assets/") || url.pathname.startsWith(SYNC_PREFIX)) {
     event.respondWith(assetResponse(event.request));
   }
   // Everything else — the API POSTs, cross-origin, the rest of the site —
@@ -97,6 +153,10 @@ function offlineStub() {
   });
 }
 
+/* Cache-first: hashed /_topcoat/assets/ and the ?v-keyed glue/wasm are
+ * immutable by contract, so a hit is always right. Sync-pair responses are
+ * stored only when the server marked them immutable — a deploy-race answer
+ * under a stale ?v arrives no-cache and must not stick. */
 async function assetResponse(request) {
   const cache = await caches.open(ASSET_CACHE);
   const hit = await cache.match(request);
@@ -104,10 +164,38 @@ async function assetResponse(request) {
     return hit;
   }
   const response = await fetch(request);
-  if (response.ok && response.type === "basic") {
+  if (response.ok && response.type === "basic" && cacheableAsset(request, response)) {
     await cache.put(request, response.clone());
   }
   return response;
+}
+
+function cacheableAsset(request, response) {
+  if (!new URL(request.url).pathname.startsWith(SYNC_PREFIX)) {
+    return true;
+  }
+  const control = response.headers.get("Cache-Control") || "";
+  return control.includes("immutable");
+}
+
+/* The loader is the one mutable sync URL (it names the current pair), so it
+ * is network-first; offline falls back to the cached copy, whose pair sits
+ * cached beside it. */
+async function loaderResponse(request) {
+  const cache = await caches.open(ASSET_CACHE);
+  try {
+    const response = await fetch(request);
+    if (response.ok && response.type === "basic") {
+      await cache.put(request, response.clone());
+    }
+    return response;
+  } catch (error) {
+    const cached = await cache.match(request);
+    if (cached) {
+      return cached;
+    }
+    throw error;
+  }
 }
 
 self.addEventListener("sync", (event) => {
@@ -128,88 +216,59 @@ function flushGuarded() {
   );
 }
 
-/* Oldest-first; stop on anything retryable so composition order survives.
- * Throwing at the end makes this Background Sync attempt count as failed,
- * so the browser retries with backoff; auth can't be fixed by retrying
- * (and retries burn the bounded attempt budget), so that resolves quietly
- * and the page shows the sign-in banner instead. */
+/* The queue policy — oldest-first, stop on retryable trouble, mark
+ * permanent rejections failed — lives in Rust now (diary-core::outbox);
+ * so does the POST itself. This wrapper migrates, delegates, reports.
+ * Throwing on "net" makes this Background Sync attempt count as failed, so
+ * the browser retries with backoff; auth can't be fixed by retrying (and
+ * retries burn the bounded attempt budget), so that resolves quietly and
+ * the page shows the sign-in banner instead. */
 async function flush() {
-  const entries = (await allEntries()).filter((entry) => entry.state === "pending");
-  let saved = 0;
-  let blocked = null;
-  for (const entry of entries) {
-    const outcome = await send(entry);
-    if (outcome === "saved") {
-      await deleteEntry(entry.qid);
-      saved += 1;
-    } else if (outcome === "auth" || outcome === "net") {
-      blocked = outcome;
-      break;
-    } else {
-      await markFailed(entry.qid, outcome);
-    }
-  }
-  await broadcast(saved, blocked);
-  if (blocked === "net") {
+  await ensureWasm();
+  await migrateLegacy();
+  const report = JSON.parse(await wasm_bindgen.diary_flush(API_PATH));
+  await broadcast(report);
+  if (report.blocked === "net") {
     throw new Error("diary flush interrupted; sync will retry");
   }
 }
 
-/* Returns "saved" | "auth" | "net" | a permanent-rejection reason.
- * Permanent (the entry itself can never succeed; kept for manual copy):
- * 400/409/413/415/422. 401/404 are the signed-out / wrong-account answers.
- * 403 is a same-origin/config failure, 5xx an outage, and a 200 that isn't
- * our JSON is a captive portal — never the entry's fault, all retry later. */
-async function send(entry) {
-  let response;
+/* One-way move of the pre-wasm queue (IndexedDB "diary-queue") into the
+ * Rust store, running under the flush lock. Delete-after-import plus the
+ * import's (written_at, body) dedupe make a crash at any point safe to
+ * re-run; the emptied database is left behind for any straggler old
+ * worker. */
+async function migrateLegacy() {
+  let entries;
   try {
-    response = await fetch(API_PATH, {
-      method: "POST",
-      credentials: "same-origin",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ written_at: entry.written_at, body: entry.body }),
-    });
+    entries = await allLegacyEntries();
   } catch (error) {
-    return "net";
+    return; // no IndexedDB access, so no legacy queue either
   }
-  if (response.ok) {
-    try {
-      const data = await response.json();
-      if (data && data.status === "saved") {
-        return "saved";
-      }
-    } catch (error) {
-      // not our JSON; fall through
-    }
-    return "net";
+  if (!entries.length) {
+    return;
   }
-  if (response.status === 401 || response.status === 404) {
-    return "auth";
+  await wasm_bindgen.diary_import(JSON.stringify(entries));
+  for (const entry of entries) {
+    await deleteLegacyEntry(entry.qid);
   }
-  if ([400, 409, 413, 415, 422].includes(response.status)) {
-    return "rejected (HTTP " + response.status + ")";
-  }
-  return "net";
 }
 
-async function broadcast(saved, blocked) {
-  const entries = await allEntries();
+async function broadcast(report) {
   const channel = new BroadcastChannel("diary");
   channel.postMessage({
     type: "queue-updated",
-    pending: entries.filter((entry) => entry.state === "pending").length,
-    failed: entries.filter((entry) => entry.state === "failed").length,
-    saved,
-    blocked,
+    pending: report.pending,
+    failed: report.failed,
+    saved: report.saved,
+    blocked: report.blocked,
   });
   channel.close();
 }
 
-/* IndexedDB helpers — mirrored in diary.js (a shared module would need a
- * second stable route just for importScripts; not worth it for ~40 lines).
- * Chrome keeps a transaction alive across microtasks, which is all these
- * single-request helpers need. */
+/* Legacy IndexedDB helpers — read and delete only, for the migration above.
+ * The shapes match what diary.js used to write (db "diary-queue", store
+ * "entries", keyPath "qid"). */
 
 const DB_NAME = "diary-queue";
 const DB_VERSION = 1;
@@ -233,7 +292,7 @@ function settle(request) {
   });
 }
 
-async function allEntries() {
+async function allLegacyEntries() {
   const db = await openQueue();
   try {
     return await settle(db.transaction(STORE).objectStore(STORE).getAll());
@@ -242,25 +301,10 @@ async function allEntries() {
   }
 }
 
-async function deleteEntry(qid) {
+async function deleteLegacyEntry(qid) {
   const db = await openQueue();
   try {
     await settle(db.transaction(STORE, "readwrite").objectStore(STORE).delete(qid));
-  } finally {
-    db.close();
-  }
-}
-
-async function markFailed(qid, reason) {
-  const db = await openQueue();
-  try {
-    const store = db.transaction(STORE, "readwrite").objectStore(STORE);
-    const entry = await settle(store.get(qid));
-    if (entry && entry.state === "pending") {
-      entry.state = "failed";
-      entry.reason = reason;
-      await settle(store.put(entry));
-    }
   } finally {
     db.close();
   }

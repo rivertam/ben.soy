@@ -1,10 +1,13 @@
-/* Page-side companion to the /diary service worker (sw.js). Saves go
- * IndexedDB-first — online and offline are the same path — and the worker
- * does all the POSTing; this file enqueues, kicks (Background Sync when
- * available, a message otherwise), and renders pending/failed messages at
- * the live end of the transcript. Without JavaScript the plain form POST to
- * /diary/write still works; if IndexedDB refuses (private mode, disk),
- * saves fall back to that same form POST so text always has a path out.
+/* Page-side companion to the /diary service worker (sw.js). The queue lives
+ * in Rust (crates/diary-core compiled to wasm, a local SurrealDB over
+ * IndexedDB — docs/diary-sync.md); this file loads that module, enqueues,
+ * kicks the worker (Background Sync when available, a message otherwise),
+ * and renders pending/failed messages at the live end of the transcript.
+ * Online and offline saves are the same path — enqueue, then the worker
+ * does all the POSTing. Without JavaScript the plain form POST to
+ * /diary/write still works; if the wasm store refuses (no build served,
+ * private-mode IndexedDB, disk), saves fall back to that same form POST so
+ * text always has a path out.
  */
 
 const SW_URL = "/sw.js";
@@ -12,10 +15,12 @@ const SCOPE = "/diary";
 const PAGE_CACHE = "diary-page-v1";
 const ASSET_CACHE = "diary-assets-v1";
 const SYNC_TAG = "diary-flush";
+const SYNC_LOADER = "/diary-sync.js";
 
 let channel = null;
 let submittedThisSession = false;
 let lastBlocked = null;
+let wasmReady = null;
 
 init();
 
@@ -51,6 +56,37 @@ async function init() {
   });
 }
 
+/* The Rust queue module, loaded once per page: the loader names the current
+ * glue/wasm pair by content hash, the glue is a classic script (the worker
+ * importScripts the very same files), and instantiation resolves to the
+ * wasm_bindgen namespace. Rejection means no build is being served (a dev
+ * checkout before `just wasm`) or storage refused — save() then falls back
+ * to the plain form POST. */
+function ensureWasm() {
+  if (!wasmReady) {
+    wasmReady = (async () => {
+      await loadScript(SYNC_LOADER);
+      await loadScript(self.DIARY_SYNC.glue);
+      await wasm_bindgen({ module_or_path: self.DIARY_SYNC.wasm });
+      return wasm_bindgen;
+    })().catch((error) => {
+      wasmReady = null;
+      throw error;
+    });
+  }
+  return wasmReady;
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("failed to load " + src));
+    document.head.append(script);
+  });
+}
+
 /* A chat opens at the present. The server renders messages chronologically,
  * and this moves the transcript viewport to its bottom; older messages are
  * then revealed by scrolling upward. Two frames let font/layout settling
@@ -74,19 +110,13 @@ function refresh() {
 
 /* Re-registering the sync tag is cheap and idempotent, and Chrome retries a
  * failed sync only a few times with backoff before dropping the tag — so
- * every page open re-arms it while anything is still pending. Registering
- * while online fires the sync immediately, which is what makes the online
- * submit the same code path as the offline one. */
+ * every page open re-arms it. Registering while online fires the sync
+ * immediately, which is what makes the online submit the same code path as
+ * the offline one. Deliberately unconditional (the old pending-check is
+ * gone): the worker is the only side that can see BOTH queues while the
+ * legacy migration exists, so every open must give it a chance to look.
+ * An empty flush is one wasm call and no network. */
 async function kick() {
-  let entries;
-  try {
-    entries = await allEntries();
-  } catch (error) {
-    return;
-  }
-  if (!entries.some((entry) => entry.state === "pending")) {
-    return;
-  }
   const registration = await navigator.serviceWorker.ready;
   if ("sync" in registration) {
     try {
@@ -126,15 +156,10 @@ async function save(form, textarea) {
     button.disabled = true;
   }
   try {
-    await addEntry({
-      written_at: Math.floor(Date.now() / 1000),
-      body: textarea.value,
-      state: "pending",
-      reason: null,
-      enqueued_at: Date.now(),
-    });
+    const wasm = await ensureWasm();
+    await wasm.diary_enqueue(Math.floor(Date.now() / 1000), textarea.value, Date.now());
   } catch (error) {
-    // IndexedDB refused; give the text its no-JS path to the server.
+    // The wasm store refused; give the text its no-JS path to the server.
     if (button) {
       button.disabled = false;
     }
@@ -171,7 +196,8 @@ async function renderQueue() {
   }
   let entries;
   try {
-    entries = await allEntries();
+    const wasm = await ensureWasm();
+    entries = JSON.parse(await wasm.diary_snapshot());
   } catch (error) {
     return;
   }
@@ -220,7 +246,12 @@ function discardButton(qid) {
   button.dataset.discard = String(qid);
   button.textContent = "discard this entry";
   button.addEventListener("click", async () => {
-    await deleteEntry(qid);
+    try {
+      const wasm = await ensureWasm();
+      await wasm.diary_discard(qid);
+    } catch (error) {
+      return; // the entry stays visible; discarding can be retried
+    }
     renderQueue();
   });
   return button;
@@ -256,7 +287,8 @@ function stamp(writtenAt) {
  * page. Everything here rides the HTTP cache (the assets are immutable), so
  * it is nearly free; failures are fine — the worker takes over from the
  * next load. The redirect guard keeps a login page from ever being stored
- * as /diary. */
+ * as /diary. The wasm pair is primed too, so the first offline open can
+ * still render and enqueue. */
 async function primeCaches() {
   if (!("caches" in window)) {
     return;
@@ -276,6 +308,11 @@ async function primeCaches() {
     )) {
       urls.add(node.getAttribute("href") || node.getAttribute("src"));
     }
+    if (self.DIARY_SYNC) {
+      urls.add(SYNC_LOADER);
+      urls.add(self.DIARY_SYNC.glue);
+      urls.add(self.DIARY_SYNC.wasm);
+    }
     for (const url of urls) {
       if (!(await assets.match(url))) {
         await assets.add(url);
@@ -283,57 +320,5 @@ async function primeCaches() {
     }
   } catch (error) {
     // best-effort
-  }
-}
-
-/* IndexedDB helpers — mirrored in sw.js; keep names and shapes in step
- * (the pwa.rs tests hold both files to the shared literals). */
-
-const DB_NAME = "diary-queue";
-const DB_VERSION = 1;
-const STORE = "entries";
-
-function openQueue() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      request.result.createObjectStore(STORE, { keyPath: "qid", autoIncrement: true });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function settle(request) {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function allEntries() {
-  const db = await openQueue();
-  try {
-    return await settle(db.transaction(STORE).objectStore(STORE).getAll());
-  } finally {
-    db.close();
-  }
-}
-
-async function addEntry(entry) {
-  const db = await openQueue();
-  try {
-    await settle(db.transaction(STORE, "readwrite").objectStore(STORE).add(entry));
-  } finally {
-    db.close();
-  }
-}
-
-async function deleteEntry(qid) {
-  const db = await openQueue();
-  try {
-    await settle(db.transaction(STORE, "readwrite").objectStore(STORE).delete(qid));
-  } finally {
-    db.close();
   }
 }
