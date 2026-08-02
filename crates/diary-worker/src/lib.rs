@@ -43,18 +43,19 @@ async fn db() -> Result<outbox::Db, JsError> {
 /// Queue one entry composed now. `written_at` is the composition second the
 /// server will key the entry by; `enqueued_at_ms` orders the flush. Both
 /// arrive as f64 because JS numbers do — they are integral and far inside
-/// f64's exact range.
+/// f64's exact range. Returns the queued record's qid so the page can match
+/// its optimistic bubble to the store's entry exactly, no body comparison.
 #[wasm_bindgen]
 pub async fn diary_enqueue(
     written_at: f64,
     body: String,
     enqueued_at_ms: f64,
-) -> Result<(), JsError> {
+) -> Result<String, JsError> {
     let db = db().await?;
-    outbox::enqueue(&db, written_at as i64, &body, enqueued_at_ms as i64)
+    let queued = outbox::enqueue(&db, written_at as i64, &body, enqueued_at_ms as i64)
         .await
         .map_err(outbox_error)?;
-    Ok(())
+    Ok(queued.qid)
 }
 
 /// The whole queue as JSON, oldest first — what the page renders under the
@@ -83,7 +84,8 @@ pub async fn diary_import(json: String) -> Result<u32, JsError> {
 }
 
 /// Flush the queue to the replay endpoint; returns the `FlushReport` as
-/// JSON in the shape the page's BroadcastChannel message has always had.
+/// JSON in the shape the page's BroadcastChannel message has always had,
+/// plus `saved_entries` — the delivered messages the page renders in place.
 #[wasm_bindgen]
 pub async fn diary_flush(api_url: String) -> Result<String, JsError> {
     let db = db().await?;

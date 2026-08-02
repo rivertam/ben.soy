@@ -172,8 +172,11 @@ async fn diary(cx: &Cx) -> Result {
                             "a moment."
                         </p>
                     }
+                    // diary.js hides this the moment any bubble renders —
+                    // an optimistic first message must not sit under a
+                    // placeholder that contradicts it.
                     if store_ok && total == 0 {
-                        <p class="my-auto text-center text-sm text-muted">
+                        <p id="diary-empty" class="my-auto text-center text-sm text-muted">
                             "No messages yet. Say something below."
                         </p>
                     }
@@ -998,8 +1001,23 @@ mod tests {
             "diary_enqueue",
             "diary_snapshot",
             "diary_discard",
+            // the optimistic transcript: saved entries render in place from
+            // the flush report, matched to the server's own markup
+            "saved_entries",
+            "diary-message-queued",
+            "quiet-link",
+            // the placeholder toggle and the offline fallback guard
+            "diary-empty",
+            "navigator.onLine === false",
         ] {
             assert!(DIARY_JS_SRC.contains(needle), "diary.js lost {needle:?}");
         }
+        // The old post-flush reload was a guaranteed disappear-and-reappear
+        // flash; the optimistic transcript replaced it. Any full navigation
+        // after a save is the jank regression this pins against.
+        assert!(
+            !DIARY_JS_SRC.contains("location.assign") && !DIARY_JS_SRC.contains("location.reload"),
+            "diary.js reintroduced a post-flush navigation"
+        );
     }
 }

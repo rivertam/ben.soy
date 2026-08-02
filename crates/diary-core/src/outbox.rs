@@ -103,12 +103,28 @@ pub struct LegacyEntry {
 
 /// What one flush did, in the shape the page's BroadcastChannel message has
 /// always carried (`blocked` serializes to `null` / `"auth"` / `"net"`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// `saved_entries` is what lets the page be optimistic: each drained entry's
+/// local `qid` (to retire its bubble) plus the identity and text the server
+/// now holds, so the transcript can show the delivered message in place
+/// instead of reloading to fetch it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FlushReport {
     pub saved: u32,
     pub pending: u32,
     pub failed: u32,
     pub blocked: Option<Blocked>,
+    pub saved_entries: Vec<SavedEntry>,
+}
+
+/// One entry a flush landed: the local record it drained and the permanent
+/// identity the server assigned (which may sit a probed second later than
+/// the queued `written_at`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SavedEntry {
+    pub qid: String,
+    pub id: String,
+    pub written_at: i64,
+    pub body: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -235,7 +251,7 @@ where
     Fut: Future<Output = SendOutcome>,
 {
     let queued = entries(db).await?;
-    let mut saved = 0u32;
+    let mut saved_entries = Vec::new();
     let mut blocked = None;
     for entry in queued.iter().filter(|entry| entry.state == STATE_PENDING) {
         let wire = WireEntry {
@@ -243,9 +259,14 @@ where
             body: entry.body.clone(),
         };
         match send(wire).await {
-            SendOutcome::Saved => {
+            SendOutcome::Saved(server) => {
                 remove(db, &entry.qid).await?;
-                saved += 1;
+                saved_entries.push(SavedEntry {
+                    qid: entry.qid.clone(),
+                    id: server.id,
+                    written_at: server.written_at,
+                    body: entry.body.clone(),
+                });
             }
             SendOutcome::Auth => {
                 blocked = Some(Blocked::Auth);
@@ -262,10 +283,11 @@ where
     }
     let after = entries(db).await?;
     Ok(FlushReport {
-        saved,
+        saved: saved_entries.len() as u32,
         pending: count_state(&after, STATE_PENDING),
         failed: count_state(&after, STATE_FAILED),
         blocked,
+        saved_entries,
     })
 }
 
@@ -360,6 +382,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::future::ready;
 
+    use crate::contract::SavedRef;
+
     use super::*;
 
     /// Every test opens `mem://` — a fresh, empty store per call, reached
@@ -367,6 +391,14 @@ mod tests {
     /// for `indxdb://diary`. That sameness is what these tests certify.
     async fn store() -> Db {
         open("mem://").await.expect("mem engine opens")
+    }
+
+    /// A server acceptance, as `classify_response` would build it.
+    fn saved(id: &str, written_at: i64) -> SendOutcome {
+        SendOutcome::Saved(SavedRef {
+            id: id.to_string(),
+            written_at,
+        })
     }
 
     #[tokio::test]
@@ -439,25 +471,37 @@ mod tests {
         let db = store().await;
         // Enqueued out of order on purpose; enqueued_at decides.
         enqueue(&db, 200, "second", 20).await.unwrap();
-        enqueue(&db, 100, "first", 10).await.unwrap();
+        let first = enqueue(&db, 100, "first", 10).await.unwrap();
         enqueue(&db, 300, "third", 30).await.unwrap();
         let sent = RefCell::new(Vec::new());
         let report = flush(&db, |wire: WireEntry| {
             sent.borrow_mut().push(wire.body.clone());
-            ready(SendOutcome::Saved)
+            // The server bumps the second (a collision probe) — the report
+            // must carry the server's identity, not the queued one.
+            ready(saved(
+                &format!("id-{}", wire.written_at),
+                wire.written_at + 1,
+            ))
         })
         .await
         .unwrap();
         assert_eq!(*sent.borrow(), ["first", "second", "third"]);
+        assert_eq!(report.saved, 3);
         assert_eq!(
-            report,
-            FlushReport {
-                saved: 3,
-                pending: 0,
-                failed: 0,
-                blocked: None
-            }
+            (report.pending, report.failed, report.blocked),
+            (0, 0, None)
         );
+        // saved_entries pairs each local qid with the server-assigned
+        // identity and preserves the delivered text for the page's bubble.
+        let ids: Vec<&str> = report
+            .saved_entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        assert_eq!(ids, ["id-100", "id-200", "id-300"]);
+        assert_eq!(report.saved_entries[0].qid, first.qid);
+        assert_eq!(report.saved_entries[0].written_at, 101);
+        assert_eq!(report.saved_entries[0].body, "first");
         assert!(entries(&db).await.unwrap().is_empty());
     }
 
@@ -467,22 +511,16 @@ mod tests {
         enqueue(&db, 100, "first", 10).await.unwrap();
         enqueue(&db, 200, "second", 20).await.unwrap();
         enqueue(&db, 300, "third", 30).await.unwrap();
-        let script = RefCell::new(VecDeque::from([SendOutcome::Saved, SendOutcome::Retry]));
+        let script = RefCell::new(VecDeque::from([saved("id-100", 100), SendOutcome::Retry]));
         let report = flush(&db, |_| {
             let outcome = script.borrow_mut().pop_front().expect("third never sent");
             ready(outcome)
         })
         .await
         .unwrap();
-        assert_eq!(
-            report,
-            FlushReport {
-                saved: 1,
-                pending: 2,
-                failed: 0,
-                blocked: Some(Blocked::Net)
-            }
-        );
+        assert_eq!((report.saved, report.pending, report.failed), (1, 2, 0));
+        assert_eq!(report.blocked, Some(Blocked::Net));
+        assert_eq!(report.saved_entries.len(), 1);
         // The stopped entries survive, order intact, for the next flush.
         let left: Vec<String> = entries(&db)
             .await
@@ -510,7 +548,7 @@ mod tests {
         enqueue(&db, 200, "accepted", 20).await.unwrap();
         let script = RefCell::new(VecDeque::from([
             SendOutcome::Rejected(422),
-            SendOutcome::Saved,
+            saved("id-200", 200),
         ]));
         let report = flush(&db, |_| {
             let outcome = script.borrow_mut().pop_front().unwrap();
@@ -518,21 +556,15 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(
-            report,
-            FlushReport {
-                saved: 1,
-                pending: 0,
-                failed: 1,
-                blocked: None
-            }
-        );
+        assert_eq!((report.saved, report.pending, report.failed), (1, 0, 1));
+        assert_eq!(report.blocked, None);
+        assert_eq!(report.saved_entries[0].body, "accepted");
         let left = entries(&db).await.unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].state, STATE_FAILED);
         assert_eq!(left[0].reason.as_deref(), Some("rejected (HTTP 422)"));
         // A failed entry is kept for manual copy, never re-sent.
-        let report = flush(&db, |_| ready(SendOutcome::Saved)).await.unwrap();
+        let report = flush(&db, |_| ready(saved("never", 0))).await.unwrap();
         assert_eq!(report.saved, 0);
         assert_eq!(entries(&db).await.unwrap().len(), 1);
     }
@@ -587,28 +619,37 @@ mod tests {
         assert_eq!(listed[1].state, STATE_PENDING);
     }
 
-    /// The report is the BroadcastChannel message the page has always read.
+    /// The report is the BroadcastChannel message the page has always read;
+    /// `saved_entries` extends it (a stale page ignoring the field just
+    /// misses the optimistic rendering, nothing breaks).
     #[test]
     fn reports_serialize_in_the_broadcast_shape() {
         let report = FlushReport {
-            saved: 2,
+            saved: 1,
             pending: 1,
             failed: 0,
             blocked: Some(Blocked::Net),
+            saved_entries: vec![SavedEntry {
+                qid: "q1".to_string(),
+                id: "2026-07-27T14-30-45-04-00".to_string(),
+                written_at: 1_753_640_000,
+                body: "Dear diary,".to_string(),
+            }],
         };
         assert_eq!(
             serde_json::to_string(&report).unwrap(),
-            r#"{"saved":2,"pending":1,"failed":0,"blocked":"net"}"#
+            r#"{"saved":1,"pending":1,"failed":0,"blocked":"net","saved_entries":[{"qid":"q1","id":"2026-07-27T14-30-45-04-00","written_at":1753640000,"body":"Dear diary,"}]}"#
         );
         let quiet = FlushReport {
             saved: 0,
             pending: 0,
             failed: 0,
             blocked: None,
+            saved_entries: Vec::new(),
         };
         assert_eq!(
             serde_json::to_string(&quiet).unwrap(),
-            r#"{"saved":0,"pending":0,"failed":0,"blocked":null}"#
+            r#"{"saved":0,"pending":0,"failed":0,"blocked":null,"saved_entries":[]}"#
         );
     }
 }

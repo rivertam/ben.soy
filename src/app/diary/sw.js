@@ -174,6 +174,12 @@ async function navigationResponse(request, url) {
     }
     return response;
   } catch (error) {
+    if (request.method !== "GET") {
+      // Answering a failed form POST with the cached page would look like
+      // success while silently eating the body — surface the failure so
+      // the browser shows its error page and the text stays recoverable.
+      throw error;
+    }
     const cache = await caches.open(PAGE_CACHE);
     const cached = await cache.match(DIARY_PATH);
     return cached || offlineStub();
@@ -270,8 +276,33 @@ async function flush() {
   await migrateLegacy();
   const report = JSON.parse(await wasm_bindgen.diary_flush(API_PATH));
   await broadcast(report);
+  if (report.saved > 0) {
+    await refreshPageCache();
+  }
   if (report.blocked === "net") {
     throw new Error("diary flush interrupted; sync will retry");
+  }
+}
+
+/* The page renders saved entries optimistically and never reloads after a
+ * flush, so the offline copy of /diary must be refreshed HERE — without
+ * this, an offline open would show a transcript missing everything saved
+ * since the last online navigation. Same guards as navigationResponse: only
+ * a real 200 that still lives at /diary (not a login redirect) is stored.
+ * Best-effort — the next online navigation refreshes it anyway. */
+async function refreshPageCache() {
+  try {
+    const response = await fetch(DIARY_PATH, { credentials: "same-origin" });
+    if (
+      response.ok &&
+      response.type === "basic" &&
+      new URL(response.url).pathname === DIARY_PATH
+    ) {
+      const cache = await caches.open(PAGE_CACHE);
+      await cache.put(DIARY_PATH, response);
+    }
+  } catch (error) {
+    // offline again already, or the fetch failed — the cached copy stays
   }
 }
 
@@ -304,6 +335,9 @@ async function broadcast(report) {
     failed: report.failed,
     saved: report.saved,
     blocked: report.blocked,
+    // What actually landed — id, server timestamp, text — so pages can
+    // flip queued bubbles to delivered messages without reloading.
+    saved_entries: report.saved_entries,
   });
   channel.close();
 }

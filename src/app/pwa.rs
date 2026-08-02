@@ -144,6 +144,9 @@ mod tests {
             "diary_import",
             "\"diary-queue\"",
             "\"entries\"",
+            // a failed POST navigation must error, never be answered with
+            // the cached page (that would silently eat the form body)
+            "request.method !== \"GET\"",
         ] {
             assert!(SW_JS.contains(needle), "sw.js lost {needle:?}");
         }
@@ -164,6 +167,10 @@ mod tests {
             "DIARY_SYNC.wasm",
             "wasm_bindgen(",
             "new BroadcastChannel(\"diary\")",
+            // the flush report field the worker broadcasts and the page
+            // renders delivered messages from — rename it in one file only
+            // and saves silently stop appearing without a reload
+            "saved_entries",
         ] {
             assert!(SW_JS.contains(shared), "sw.js lost {shared:?}");
             assert!(DIARY_JS.contains(shared), "diary.js lost {shared:?}");

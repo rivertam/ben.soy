@@ -88,7 +88,9 @@ Invariants:
   at every probe. Overwriting an entry stays impossible.
 - The worker keeps the last good `GET /diary` (page 1) plus hashed assets
   and the versioned wasm pair for offline reads — deliberate,
-  device-local, Ben's choice. That cache and the queue OUTLIVE sign-out
+  device-local, Ben's choice. It refetches that copy after any flush that
+  saved entries (the page renders saves optimistically and never reloads,
+  so nothing else would). That cache and the queue OUTLIVE sign-out
   and `COOKIE_KEY` rotation; wiping them means clearing the site's data
   in Chrome on the device.
 - A flush stops and keeps the queue on 401/404 (sign in again), 403/5xx/

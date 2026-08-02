@@ -44,6 +44,21 @@ the real idempotency guarantee. All of it is pinned by native tests in
 `diary-core` — the policy that used to live only in sw.js is exercised by
 `cargo test` on every check.
 
+The `FlushReport` carries `saved_entries` — for each drained entry, its
+local qid plus the id/written_at the server's response assigned (collision
+probes can bump the second, so the server's identity is the truth). That is
+what lets the page be optimistic: a sent message renders synchronously in
+the submit handler, survives every repaint as a draft or queued bubble
+(reconciled by qid), and flips to a delivered message with a real permalink
+when the report lands — no post-flush reload, which is also why the worker
+refreshes the cached /diary copy itself after a saving flush. Two mid-flush
+subtleties the page covers: the worker deletes each saved entry from the
+store immediately but reports once at the end, so a pending entry that
+vanishes from a snapshot un-reported rides a provisional bucket instead of
+blinking away; and a report for an entry the server-rendered HTML already
+shows (a page opened mid-flush) retires bubbles by qid without drawing the
+message twice.
+
 `outbox::flush` takes the transport as a generic closure with deliberately
 NO `Send` bounds: browser futures are `!Send`, native test futures don't
 care, and wasm is single-threaded anyway. Adding `Send` there would break

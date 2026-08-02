@@ -62,11 +62,22 @@ pub fn normalize_body(raw: &str) -> Option<String> {
     Some(body)
 }
 
+/// The identity the server assigned a saved entry: the permalink id and the
+/// second it actually landed on. Not always the queued `written_at` — the
+/// collision probes may have bumped it — so the page must render THESE, not
+/// what it enqueued.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SavedRef {
+    pub id: String,
+    pub written_at: i64,
+}
+
 /// What one replay attempt means for the queue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendOutcome {
-    /// The server holds the entry — a fresh insert or a deduped replay.
-    Saved,
+    /// The server holds the entry — a fresh insert or a deduped replay —
+    /// under the identity it reported back.
+    Saved(SavedRef),
     /// 401/404: signed out or the wrong account. Retrying cannot fix it
     /// (and burns Background Sync's bounded attempt budget), so the flush
     /// stops quietly and the page shows the sign-in banner.
@@ -81,20 +92,25 @@ pub enum SendOutcome {
 }
 
 /// Classify one response from the replay endpoint. `body` is only consulted
-/// for 2xx, where anything but our `{"status":"saved"}` JSON means something
+/// for 2xx, where anything but our full saved JSON — status, id, and
+/// written_at, the shape `api_write_entry` always returns — means something
 /// other than the site answered.
 pub fn classify_response(status: u16, body: &str) -> SendOutcome {
+    #[derive(Deserialize)]
+    struct SavedResponse {
+        status: String,
+        id: String,
+        written_at: i64,
+    }
+
     match status {
-        200..=299 => {
-            let saved = serde_json::from_str::<serde_json::Value>(body)
-                .ok()
-                .is_some_and(|value| value["status"] == "saved");
-            if saved {
-                SendOutcome::Saved
-            } else {
-                SendOutcome::Retry
-            }
-        }
+        200..=299 => match serde_json::from_str::<SavedResponse>(body) {
+            Ok(response) if response.status == "saved" => SendOutcome::Saved(SavedRef {
+                id: response.id,
+                written_at: response.written_at,
+            }),
+            _ => SendOutcome::Retry,
+        },
         401 | 404 => SendOutcome::Auth,
         400 | 409 | 413 | 415 | 422 => SendOutcome::Rejected(status),
         _ => SendOutcome::Retry,
@@ -186,19 +202,31 @@ mod tests {
 
     #[test]
     fn responses_classify_like_the_old_worker() {
+        // A save carries the server-assigned identity out of the response —
+        // the page renders the delivered message from these fields.
         assert_eq!(
             classify_response(
                 200,
                 r#"{"status":"saved","id":"x","written_at":1,"deduped":false}"#
             ),
-            SendOutcome::Saved
+            SendOutcome::Saved(SavedRef {
+                id: "x".to_string(),
+                written_at: 1,
+            })
         );
-        // A 200 that is not our JSON is a captive portal, not a save.
+        // A 200 that is not our JSON is a captive portal, not a save; our
+        // server never sends "saved" without the identity fields, so a
+        // partial shape classifies the same way (the retry re-asks and the
+        // dedupe absorbs it).
         assert_eq!(
             classify_response(200, "<html>hotel wifi</html>"),
             SendOutcome::Retry
         );
         assert_eq!(classify_response(200, ""), SendOutcome::Retry);
+        assert_eq!(
+            classify_response(200, r#"{"status":"saved"}"#),
+            SendOutcome::Retry
+        );
         assert_eq!(classify_response(401, ""), SendOutcome::Auth);
         assert_eq!(classify_response(404, ""), SendOutcome::Auth);
         for permanent in [400, 409, 413, 415, 422] {
