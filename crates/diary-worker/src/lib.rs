@@ -7,10 +7,11 @@
 //! service worker load this module; IndexedDB serializes their transactions,
 //! and the worker's Web Lock keeps flushes single-file.
 //!
-//! The crate root is `#![cfg]`-gated so native builds of the workspace
-//! compile an empty library — `just check` needs no wasm toolchain, and the
-//! real logic is all in `diary-core`, which native tests cover against
-//! `mem://`.
+//! This crate lives in its own excluded workspace (see Cargo.toml), so
+//! `just check` never builds it — breakage here surfaces at `just wasm` or
+//! the Docker wasm stage. The crate root is `#![cfg]`-gated so a stray
+//! native build compiles an empty library, and the real logic is all in
+//! `diary-core`, which native tests cover against `mem://`.
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;

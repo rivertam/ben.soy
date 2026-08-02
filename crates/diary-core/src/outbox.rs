@@ -25,7 +25,7 @@ use surrealdb::{
     types::SurrealValue,
 };
 
-use crate::contract::{SendOutcome, WireEntry, normalize_body, rejection_reason};
+use crate::contract::{SendOutcome, WireEntry, normalize_lines, rejection_reason};
 
 pub type Db = Surreal<Any>;
 
@@ -52,9 +52,11 @@ const SCHEMA: &str = "\
 
 #[derive(Debug)]
 pub enum OutboxError {
-    /// Not text we would queue: empty after normalization, or over the
-    /// server's length bound. The caller falls back to the plain form POST,
-    /// whose server answer explains itself.
+    /// Empty after normalization — nothing to queue. This is the ONLY
+    /// validation the queue applies to new text; anything non-empty is
+    /// queued and the server judges it on replay, so a rejection marks the
+    /// entry failed with its text preserved instead of bouncing it into
+    /// the lossy form-POST fallback.
     InvalidBody,
     Db(String),
 }
@@ -133,17 +135,23 @@ pub async fn open(endpoint: &str) -> Result<Db, OutboxError> {
     Ok(db)
 }
 
-/// Queue one entry composed at `written_at` (epoch seconds). The body is
-/// normalized here, so what sits in the queue is exactly what the server
-/// will store; `enqueued_at_ms` comes from the caller because the caller
-/// owns the clock (the worker passes `Date.now()`).
+/// Queue one entry composed at `written_at` (epoch seconds). Line endings
+/// are normalized here so what sits in the queue is byte-identical to what
+/// the server would store — but the length bound deliberately is NOT
+/// checked: over-length text queues fine, replays, gets the server's 422,
+/// and stays on the page as a failed entry for manual copy.
+/// `enqueued_at_ms` comes from the caller because the caller owns the
+/// clock (the worker passes `Date.now()`).
 pub async fn enqueue(
     db: &Db,
     written_at: i64,
     raw_body: &str,
     enqueued_at_ms: i64,
 ) -> Result<QueuedEntry, OutboxError> {
-    let body = normalize_body(raw_body).ok_or(OutboxError::InvalidBody)?;
+    let body = normalize_lines(raw_body);
+    if body.is_empty() {
+        return Err(OutboxError::InvalidBody);
+    }
     let qid = create(db, written_at, &body, STATE_PENDING, None, enqueued_at_ms).await?;
     Ok(QueuedEntry {
         qid,
@@ -388,7 +396,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_refuses_what_the_server_would() {
+    async fn enqueue_refuses_only_empty_text() {
         let db = store().await;
         for bad in ["", "  \r\n\t "] {
             assert!(matches!(
@@ -397,6 +405,24 @@ mod tests {
             ));
         }
         assert!(entries(&db).await.unwrap().is_empty());
+    }
+
+    /// Over-length text must QUEUE (the server's 422 marks it failed with
+    /// its text preserved) — refusing it here would bounce the entry into
+    /// the lossy form-POST fallback, and offline that means silent loss.
+    #[tokio::test]
+    async fn enqueue_accepts_over_length_text_for_the_server_to_judge() {
+        use crate::contract::MAX_ENTRY_CHARS;
+        let db = store().await;
+        let oversized = "a".repeat(MAX_ENTRY_CHARS + 1);
+        enqueue(&db, 100, &oversized, 10).await.unwrap();
+        let report = flush(&db, |_| ready(SendOutcome::Rejected(422)))
+            .await
+            .unwrap();
+        assert_eq!(report.failed, 1);
+        let left = entries(&db).await.unwrap();
+        assert_eq!(left[0].state, STATE_FAILED);
+        assert_eq!(left[0].body, oversized, "failed text must survive intact");
     }
 
     #[tokio::test]

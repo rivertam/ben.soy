@@ -72,11 +72,53 @@ async function activate() {
       await caches.delete(name);
     }
   }
-  await dropStaleSyncAssets();
+  // Prime first, clean second: a worker can update without any /diary page
+  // visit (update checks run on permalink visits and timers), and the next
+  // wake may be an offline Background Sync — the pair this worker was
+  // evaluated with must already sit in Cache Storage by then. Only a fully
+  // primed pair licenses deleting the previous one.
+  if (await primeOwnPair()) {
+    await dropStaleSyncAssets();
+  }
 }
 
-/* Old deploys' versioned pairs are dead weight (~4 MB each); keep only the
- * pair this worker imports, plus the loader. */
+/* Cache this worker's own glue + wasm, then refresh the cached loader.
+ * Order matters: the loader is the mutable pointer the offline page reads,
+ * so it flips only after both pointees are cached, and only if the network
+ * copy still names THIS worker's version (a double-deploy race must not
+ * point the cached loader at a pair we do not hold). Versioned bytes follow
+ * the same immutable-only rule as assetResponse. Any miss reports false,
+ * leaves the previous consistent trio in place, and skips the cleanup. */
+async function primeOwnPair() {
+  try {
+    const cache = await caches.open(ASSET_CACHE);
+    for (const url of [self.DIARY_SYNC.glue, self.DIARY_SYNC.wasm]) {
+      if (await cache.match(url)) {
+        continue;
+      }
+      const response = await fetch(url, { credentials: "same-origin" });
+      const control = response.headers.get("Cache-Control") || "";
+      if (!response.ok || response.type !== "basic" || !control.includes("immutable")) {
+        return false;
+      }
+      await cache.put(url, response);
+    }
+    const loader = await fetch(SYNC_LOADER, { credentials: "same-origin" });
+    if (!loader.ok || loader.type !== "basic") {
+      return false;
+    }
+    if (!(await loader.clone().text()).includes(self.DIARY_SYNC.v)) {
+      return false;
+    }
+    await cache.put(SYNC_LOADER, loader);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/* Old deploys' versioned pairs are dead weight (~18 MB each, decoded); keep
+ * only the pair this worker imports, plus the loader. */
 async function dropStaleSyncAssets() {
   const keep = [SYNC_LOADER, self.DIARY_SYNC.glue, self.DIARY_SYNC.wasm].map(
     (url) => new URL(url, self.location.origin).href

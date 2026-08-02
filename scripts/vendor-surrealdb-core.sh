@@ -22,14 +22,21 @@ mkdir -p vendor
 TARBALL="vendor/surrealdb-core-$VERSION.crate"
 if [ ! -f "$TARBALL" ]; then
     CACHED=$(ls "$HOME"/.cargo/registry/cache/*/surrealdb-core-$VERSION.crate 2>/dev/null | head -1 || true)
+    # Download to a temp name and move into place so an interrupted fetch
+    # never leaves a truncated tarball under the final name.
     if [ -n "$CACHED" ]; then
-        cp "$CACHED" "$TARBALL"
+        cp "$CACHED" "$TARBALL.tmp"
     else
         curl -fsSL "https://static.crates.io/crates/surrealdb-core/surrealdb-core-$VERSION.crate" \
-            -o "$TARBALL"
+            -o "$TARBALL.tmp"
     fi
+    mv "$TARBALL.tmp" "$TARBALL"
 fi
-echo "$SHA256  $TARBALL" | sha256sum -c - >/dev/null
+if ! echo "$SHA256  $TARBALL" | sha256sum -c - >/dev/null 2>&1; then
+    rm -f "$TARBALL"
+    echo "vendor-surrealdb-core: checksum mismatch for $TARBALL; deleted it — rerun to redownload" >&2
+    exit 1
+fi
 
 rm -rf "$DEST"
 mkdir -p "$DEST"

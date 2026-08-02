@@ -18,10 +18,13 @@ the rest of it.
   (`diary_enqueue/snapshot/discard/import/flush`) plus the one genuinely
   browser-shaped piece, the `fetch` transport injected into
   `diary_core::outbox::flush`. Resolved off `js_sys::global()`, never
-  `window`, because it runs in the service worker and the page. Everything
-  is `cfg(target_arch = "wasm32")`-gated: native builds compile an empty
-  crate, so `just check` needs no wasm toolchain. Deliberately its own
-  cargo workspace with its own lockfile — see the patch section below.
+  `window`, because it runs in the service worker and the page.
+  Deliberately its own cargo workspace with its own lockfile, EXCLUDED
+  from the root workspace — see the patch section below. That means
+  `just check` and CI never touch it: a diary-core API change that breaks
+  the worker surfaces at `just wasm` or the Docker wasm-builder stage, not
+  in check. (The crate root is also `cfg(target_arch = "wasm32")`-gated so
+  a stray native build compiles an empty crate rather than erroring.)
 - `src/app/diary.rs` — the server half consumes `diary_core::contract` for
   parsing and validation. One definition of the protocol, compiled into both
   binaries; a drift is now a type error, not a silent half-parse.

@@ -39,17 +39,27 @@ pub fn written_at_in_window(written_at: i64, now: i64) -> bool {
     written_at > now - MAX_PAST_SECONDS && written_at <= now + MAX_FUTURE_SECONDS
 }
 
-/// Browser textareas submit CRLF line ends; store LF. Trimmed at both ends,
-/// interior blank lines survive. `None` is "not an entry we would store" —
-/// the char bound mirrors the schema ASSERT. The worker runs this before
-/// queueing, so what sits in the queue is exactly what the server will store.
-pub fn normalize_body(raw: &str) -> Option<String> {
+/// Line-ending and whitespace normalization alone: browser textareas submit
+/// CRLF line ends; store LF. Trimmed at both ends, interior blank lines
+/// survive. The queue applies exactly this much — deliberately NOT the
+/// length bound, which only the server enforces (see [`normalize_body`]).
+pub fn normalize_lines(raw: &str) -> String {
     let body = raw.replace("\r\n", "\n").replace('\r', "\n");
-    let body = body.trim();
+    body.trim().to_string()
+}
+
+/// The server's full validation: [`normalize_lines`] plus the char bound
+/// mirroring the schema ASSERT. `None` is "not an entry the server would
+/// store". The queue does not use the bound on purpose — an over-length
+/// entry must be QUEUED, replayed, 422'd, and kept on the page as failed
+/// text, never bounced into a lossy fallback (queued diary text is never
+/// silently dropped).
+pub fn normalize_body(raw: &str) -> Option<String> {
+    let body = normalize_lines(raw);
     if body.is_empty() || body.chars().count() > MAX_ENTRY_CHARS {
         return None;
     }
-    Some(body.to_string())
+    Some(body)
 }
 
 /// What one replay attempt means for the queue.
@@ -103,6 +113,11 @@ mod tests {
 
     #[test]
     fn bodies_normalize_line_ends_and_bounds() {
+        // The queue's half: normalization without the bound.
+        assert_eq!(normalize_lines("hi\r\nthere\r\n"), "hi\nthere");
+        assert_eq!(normalize_lines("  \r\n\t "), "");
+        let oversized = "a".repeat(MAX_ENTRY_CHARS + 1);
+        assert_eq!(normalize_lines(&oversized), oversized);
         assert_eq!(
             normalize_body("Dear diary,\r\n\r\nIt me.\r\n").as_deref(),
             Some("Dear diary,\n\nIt me.")

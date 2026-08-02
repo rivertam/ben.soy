@@ -308,14 +308,29 @@ async function primeCaches() {
     )) {
       urls.add(node.getAttribute("href") || node.getAttribute("src"));
     }
-    if (self.DIARY_SYNC) {
-      urls.add(SYNC_LOADER);
-      urls.add(self.DIARY_SYNC.glue);
-      urls.add(self.DIARY_SYNC.wasm);
-    }
     for (const url of urls) {
       if (!(await assets.match(url))) {
         await assets.add(url);
+      }
+    }
+    // The sync pair follows the worker's rule, not cache.add()'s: store the
+    // versioned bytes only when the server marked them immutable, so a
+    // deploy-race answer under a stale ?v (served no-cache) can never stick
+    // to the wrong key. The loader is mutable by design and stored as-is.
+    if (self.DIARY_SYNC) {
+      for (const url of [SYNC_LOADER, self.DIARY_SYNC.glue, self.DIARY_SYNC.wasm]) {
+        if (await assets.match(url)) {
+          continue;
+        }
+        const response = await fetch(url, { credentials: "same-origin" });
+        const control = response.headers.get("Cache-Control") || "";
+        if (
+          response.ok &&
+          response.type === "basic" &&
+          (url === SYNC_LOADER || control.includes("immutable"))
+        ) {
+          await assets.put(url, response);
+        }
       }
     }
   } catch (error) {

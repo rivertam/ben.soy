@@ -134,6 +134,15 @@ fn dist() -> Option<Arc<Dist>> {
         return Some(Arc::clone(dist));
     }
     let dist = Arc::new(load_dist(&dir)?);
+    // A live `just wasm` rewrites both files over a multi-second window; a
+    // read landing inside it could pair new glue with old wasm and mint an
+    // immutable ?v for a combination that never works. Re-stat after the
+    // read: any movement means torn bytes — refuse to serve, the next
+    // request reads the settled pair.
+    let settled = (stat(&dir.join(GLUE_FILE))?, stat(&dir.join(WASM_FILE))?);
+    if settled != stamp {
+        return None;
+    }
     *CACHE.lock().unwrap() = Some((stamp, Arc::clone(&dist)));
     Some(dist)
 }

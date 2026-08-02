@@ -77,9 +77,11 @@ podrick-local *args:
 # Thought posts: `just thought new`, `just thought publish` (see `just thought`)
 mod thought
 
-# Run formatting, lint, and test checks (workspace-wide: the site plus the
-# diary-core/diary-worker crates; no wasm toolchain needed — diary-worker
-# compiles empty on native targets)
+# Run formatting, lint, and test checks (workspace-wide: the site plus
+# diary-core; no wasm toolchain needed). crates/diary-worker is deliberately
+# NOT covered — it lives in its own excluded workspace, so a diary-core API
+# change that breaks it surfaces at `just wasm` or the Docker wasm stage,
+# not here.
 check:
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings
