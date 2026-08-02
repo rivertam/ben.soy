@@ -355,15 +355,16 @@ function paintQueue(forceScroll = false) {
       banner.append(queuedCount + " pending — ", link("/login?next=%2Fdiary", "sign in"), " to sync.");
       section.append(banner);
     }
-    // Provisional entries flushed first (oldest), so they render first.
-    for (const entry of provisional.values()) {
-      section.append(queuedArticle(entry, "sending…", null));
-    }
-    for (const entry of pending) {
-      section.append(queuedArticle(entry, "queued — will sync", null));
-    }
-    for (const draft of optimistic) {
-      section.append(queuedArticle(draft, "queued — will sync", null));
+    // On-their-way entries (mid-flush provisional first — they flushed
+    // first — then store-queued, then drafts) render in their FINAL form
+    // while syncing is going fine: same bubble, same stamp shape, no
+    // status. Painting "queued — will sync" during the happy path made
+    // every send flash a dashed bubble with a longer meta line before
+    // snapping to the delivered look. The queued styling appears only
+    // when the last flush report actually said the queue is blocked.
+    const blocked = lastBlocked === "net" || lastBlocked === "auth";
+    for (const entry of [...provisional.values(), ...pending, ...optimistic]) {
+      section.append(blocked ? queuedArticle(entry, "queued — will sync", null) : settlingArticle(entry));
     }
     for (const entry of failed) {
       section.append(
@@ -395,6 +396,23 @@ function queuedArticle(entry, label, action) {
   if (action) {
     article.append(action);
   }
+  return article;
+}
+
+/* An entry still on its way, already in its final clothes: identical to
+ * savedArticle except the stamp is plain text (no permalink exists yet),
+ * colored like quiet-link so the swap to an anchor at delivery changes
+ * nothing visible. The stamp comes from the local clock in the format the
+ * server will use. */
+function settlingArticle(entry) {
+  const article = element("article", "diary-message");
+  const body = element("p", "leading-relaxed whitespace-pre-wrap text-ink2");
+  body.textContent = entry.body;
+  const meta = element("p", "mt-2 text-right font-meta text-[0.6875rem] text-muted");
+  const pendingStamp = element("span", "text-ink2");
+  pendingStamp.textContent = localStamp(entry.written_at);
+  meta.append(pendingStamp);
+  article.append(body, meta);
   return article;
 }
 
@@ -456,6 +474,19 @@ function stamp(writtenAt) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+/* The delivered-stamp shape ("Aug 2, 2026 · 2:15 PM") from the viewer's
+ * clock, for entries that don't have a server id yet. For a viewer in
+ * Eastern time this matches what savedStamp will render, so delivery does
+ * not visibly rewrite the line. */
+function localStamp(writtenAt) {
+  const date = new Date(writtenAt * 1000);
+  return (
+    date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) +
+    " · " +
+    date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  );
 }
 
 /* The server's stamp ("Jul 27, 2026 · 2:30 PM"), read from the id's

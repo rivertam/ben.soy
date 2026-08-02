@@ -51,7 +51,11 @@ what lets the page be optimistic: a sent message renders synchronously in
 the submit handler, survives every repaint as a draft or queued bubble
 (reconciled by qid), and flips to a delivered message with a real permalink
 when the report lands — no post-flush reload, which is also why the worker
-refreshes the cached /diary copy itself after a saving flush. Two mid-flush
+refreshes the cached /diary copy itself after a saving flush. On-their-way
+bubbles wear their final look (same style, same stamp shape) so delivery
+rewrites nothing visible; the dashed queued styling and "will sync" label
+appear only when a flush report says the queue is actually blocked, and
+"failed" only when the server rejected the entry. Two mid-flush
 subtleties the page covers: the worker deletes each saved entry from the
 store immediately but reports once at the end, so a pending entry that
 vanishes from a snapshot un-reported rides a provisional bucket instead of
