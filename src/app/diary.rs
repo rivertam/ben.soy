@@ -213,12 +213,17 @@ async fn diary(cx: &Cx) -> Result {
                     <div class="diary-compose-row">
                         <label class="min-w-0 flex-1" for="diary-body">
                             <span class="sr-only">"New diary message"</span>
+                            // autofocus lands the cursor in the box on
+                            // desktop; touch browsers ignore it rather
+                            // than popping the keyboard. diary.js adds
+                            // Enter-to-send for keyboard environments.
                             <textarea
                                 class=(TEXTAREA)
                                 id="diary-body"
                                 name="body"
                                 rows="2"
                                 required=""
+                                autofocus=""
                                 placeholder="Message yourself…"
                             ></textarea>
                         </label>
@@ -1009,6 +1014,9 @@ mod tests {
             // the placeholder toggle and the offline fallback guard
             "diary-empty",
             "navigator.onLine === false",
+            // Enter-to-send stays desktop-only and IME-safe
+            "(hover: hover) and (pointer: fine)",
+            "isComposing",
         ] {
             assert!(DIARY_JS_SRC.contains(needle), "diary.js lost {needle:?}");
         }

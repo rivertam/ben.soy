@@ -174,6 +174,24 @@ function hookForm() {
     event.preventDefault();
     save(form, textarea);
   });
+  // Desktop keyboards send on Enter like any chat box (Shift+Enter keeps
+  // the newline); touch keyboards keep Enter as newline and the send
+  // button does the sending. The isComposing guard keeps Enter inside an
+  // IME composition from firing a send.
+  if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
+    textarea.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        save(form, textarea);
+      }
+    });
+    // The autofocus attribute covers the no-JS path, but Chrome skips it
+    // on some navigations — land the caret as long as nothing else took
+    // focus first. Same gate keeps phones from popping the keyboard.
+    if (document.activeElement === document.body || !document.activeElement) {
+      textarea.focus();
+    }
+  }
 }
 
 /* The optimistic half of a send, all synchronous: the bubble is in the DOM
@@ -194,6 +212,7 @@ function save(form, textarea) {
   };
   optimistic.push(draft);
   textarea.value = "";
+  textarea.focus(); // a button-click send keeps the caret in the box
   paintQueue(true);
   persist(form, textarea, draft, raw);
 }

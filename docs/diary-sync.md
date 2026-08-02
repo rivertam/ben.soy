@@ -128,17 +128,24 @@ everything else stays `no-store` for cookie-bearing requests.
 ## The surrealdb-core wasm patch (temporary, load-bearing)
 
 surrealdb-core 3.2.3 panics at runtime on wasm32-unknown-unknown: most of
-the crate migrated to `web_time` for the browser, but `kvs/ds.rs` (the
-`check_version` retry that runs on every datastore open) and the TIMEOUT
-query operator still call `tokio::time::Instant::now()`, which reaches
-std's unimplemented monotonic clock — `RuntimeError: unreachable` before
-the first query. This is the unresolved half of upstream issue #6711; the
-official `@surrealdb/wasm` package dodges it only by pinning an older core.
+the crate migrated to `web_time` for the browser, but three call sites
+still reach `tokio::time::Instant::now()` and std's unimplemented
+monotonic clock — `RuntimeError: unreachable`. `kvs/ds.rs` (the
+`check_version` retry on every datastore open) kills the engine before the
+first query; the TIMEOUT query operator dies when used; and
+`kvs/tasklease.rs` (`tokio::time::sleep` takes an Instant internally)
+kills every spawned background task — index compaction, event processing,
+tombstone reclaim — with a console exception per task on each page load.
+This is the unresolved half of upstream issue #6711; the official
+`@surrealdb/wasm` package dodges it only by pinning an older core.
 
 The fix here is deliberately shaped like the upstream PR it should become:
-`deploy/surrealdb-core-wasm-time.patch` swaps those two files onto the
+`deploy/surrealdb-core-wasm-time.patch` swaps those three files onto the
 crate's own established `wasmtimer` pattern (see its `sleep` call sites),
 behind `cfg(target_family = "wasm")` — native code is byte-identical.
+(`dbs/executor.rs` has two more `tokio::time::timeout` calls, but both are
+gated on a datastore `transaction_timeout` this build never configures;
+they belong in the upstream PR, not in this minimal patch.)
 
 Containment is structural, not procedural: `crates/diary-worker` is its OWN
 cargo workspace, excluded from the repo root's, and the `[patch.crates-io]`
