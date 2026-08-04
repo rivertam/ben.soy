@@ -16,7 +16,7 @@ use jiff::Timestamp;
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{HeaderValue, header, page, query_params, redirect, uri},
+    router::{HeaderValue, error::redirect, header, page, query_params, uri},
     view::view,
 };
 

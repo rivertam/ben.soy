@@ -11,7 +11,7 @@ use benjisponge::data::Data;
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{HeaderValue, header, page, redirect},
+    router::{HeaderValue, error::redirect, header, page},
     view::view,
 };
 

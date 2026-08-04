@@ -28,7 +28,7 @@ use topcoat::{
     context::{Cx, app_context},
     cookie::{Key, RouterBuilderCookieExt},
     router::{HeaderValue, Router, RouterBuilderDiscoverExt, header, page, query_params},
-    session::{Config, RouterBuilderSessionExt, cookie::CookieTokenStore},
+    session::{RouterBuilderSessionExt, SessionConfig, cookie::CookieTokenStore},
     view::view,
 };
 
@@ -48,7 +48,7 @@ pub fn router() -> Router {
         .discover()
         .cookies()
         .sessions(
-            Config::builder()
+            SessionConfig::builder()
                 .token_store(CookieTokenStore::new().name("analytics-visitor"))
                 .lifetime(std::time::Duration::from_hours(24 * 400))
                 .build(),

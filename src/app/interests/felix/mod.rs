@@ -2,7 +2,7 @@ use topcoat::{
     Result,
     asset::{Asset, asset},
     context::Cx,
-    router::{not_found, page, path_param, redirect_permanent, route},
+    router::{error::not_found, error::redirect_permanent, page, path_param, route},
     view::{component, view},
 };
 

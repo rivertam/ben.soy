@@ -6,7 +6,7 @@ use benjisponge::data::Data;
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{HeaderValue, header, page, query_params, redirect_permanent, route},
+    router::{HeaderValue, error::redirect_permanent, header, page, query_params, route},
     view::view,
 };
 

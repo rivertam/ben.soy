@@ -169,10 +169,18 @@ script, the patch file, and this section.
    render from it, pull server changes via `CHANGEFEED` + `SHOW CHANGES`
    (changefeeds defined server-side only; the wasm engine's changefeed GC
    has an open upstream issue), push via this outbox.
-3. **SSR in the service worker** — blocked on topcoat: `#[page]` expansion
-   references topcoat-router, which unconditionally depends on
-   tokio-with-net + hyper (a `compile_error!` on wasm). The view layer
-   already compiles under `default-features = false, features = ["view"]`;
-   a `server` feature split in topcoat-router is the upstream ask. Then the
-   worker can answer `GET /diary` offline by running the same page fn
-   against the local store.
+3. **SSR in the service worker** — topcoat 0.5.0 (2026-07-27) shipped the
+   feature split this item was blocked on: hyper/tokio now sit behind an
+   opt-in `serve` feature, and `topcoat = { default-features = false,
+   features = ["router", "view", "discover"] }` compiles on wasm32 —
+   `#[page]`, discovery, and `Router::handle(req)` included (probe-verified;
+   the site runs 0.5.0 as of this branch). One wall left: page/component
+   render futures are `+ Send` with no wasm cfg
+   (`topcoat_view::Component::render`, router `PageRenderFn`), and browser
+   interop futures are `!Send` — the exact fragility `outbox::flush`'s
+   signature dodges. So a worker page fn can't await indxdb queries
+   directly; either bounce local-store reads through
+   `wasm_bindgen_futures::spawn_local` + a oneshot channel (the receiver is
+   `Send`), or land the small upstream PR cfg-gating those bounds on the
+   single-threaded target. Then the worker can answer `GET /diary` offline
+   by running the same page fn against the local store.

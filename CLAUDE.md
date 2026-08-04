@@ -1,6 +1,6 @@
 # benjisponge.com
 
-Rust SSR personal site on topcoat 0.4.0 — a niche framework; read
+Rust SSR personal site on topcoat 0.5.0 — a niche framework; read
 `docs/topcoat-notes.md` before writing any topcoat code, don't guess APIs.
 Same rule for the data layer: read `docs/surrealdb-notes.md` before touching
 SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).

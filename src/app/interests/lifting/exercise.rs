@@ -16,8 +16,8 @@ use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, HeaderValue, Response, StatusCode, header, headers, not_found, page,
-        path_param, query_params, route, to_bytes,
+        Body, HeaderMap, HeaderValue, Response, StatusCode, error::not_found, header, headers,
+        page, path_param, query_params, route, to_bytes,
     },
     view::{class, component, view},
 };

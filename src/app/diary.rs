@@ -39,8 +39,8 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, HeaderValue, Response, StatusCode, header, headers, page, path_param,
-        query_params, redirect, route, to_bytes, uri,
+        Body, HeaderMap, HeaderValue, Response, StatusCode, error::redirect, header, headers, page,
+        path_param, query_params, route, to_bytes, uri,
     },
     view::view,
 };

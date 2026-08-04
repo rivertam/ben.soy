@@ -4,7 +4,7 @@ FROM rust:1.97-slim AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates pkg-config \
     && rm -rf /var/lib/apt/lists/*
-RUN cargo install topcoat-cli --version 0.4.0 --locked
+RUN cargo install topcoat-cli --version 0.5.0 --locked
 # topcoat-cli strips CARGO_HOME before its internal `cargo build`, so the
 # inner build falls back to /root/.cargo. Point the outer build there too or
 # `topcoat asset bundle` recompiles every dependency from scratch.

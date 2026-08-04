@@ -62,9 +62,9 @@ sha2 = "0.11.0"
 subtle = "2.6.1"
 surrealdb = { workspace = true, features = ["protocol-ws", "rustls"] }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
-topcoat = { version = "0.4.0", features = ["tailwind", "font-fontsource"] }
+topcoat = { version = "0.5.0", features = ["tailwind", "font-fontsource"] }
 url = "2.5.8"
 uuid = { version = "1.19.0", features = ["v4"] }
 
 [build-dependencies]
-topcoat = { version = "0.4.0", default-features = false, features = ["tailwind"] }
+topcoat = { version = "0.5.0", default-features = false, features = ["tailwind"] }

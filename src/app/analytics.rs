@@ -12,8 +12,8 @@ use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        Body, HeaderValue, Response, StatusCode, header, headers, page, redirect, route, to_bytes,
-        uri,
+        Body, HeaderValue, Response, StatusCode, error::redirect, header, headers, page, route,
+        to_bytes, uri,
     },
     session,
     view::view,
