@@ -1,43 +1,58 @@
-# The diary queue in Rust (client-side SurrealDB over wasm)
+# The local-first diary (client-side SurrealDB + topcoat SSR over wasm)
 
-The /diary offline write queue is written in Rust on both sides of the wire.
-This is stage 1 of a larger idea — Remix-style loader/clientLoader
-isomorphism for a topcoat + SurrealDB app — and the roadmap at the bottom is
-the rest of it.
+The /diary system is written in Rust on both sides of the wire, and the
+larger idea it started as — Remix-style loader/clientLoader isomorphism for
+a topcoat + SurrealDB app — is BUILT: one local table is both outbox and
+mirror; entry ids (permalinks) are predicted at enqueue with the same probe
+the server runs; the transcript markup is ONE set of pure components
+rendered by the server page, by the service worker's offline SSR
+(`Router::handle` inside the worker, the topcoat 0.5.0 serve split), and
+cloned by the page JS from a served `<template>`; sync is flush-then-pull
+through a two-method transport trait whose direct implementation is just
+another `Surreal<Any>` handle. The page JS cannot tell which renderer drew
+the HTML it reconciles against — that sentence is the whole design.
 
 ## Shape
 
-- `crates/diary-core` — the whole queue, shared. `contract` is the replay
-  protocol (`WireEntry`, the composition-second window, body normalization,
-  response classification); `store` is the entry model, the Eastern key
-  projection (`eastern` moved here from the lifting archive), and the shared
-  probe-and-dedupe queries; `outbox` is the DEVICE-LOCAL single store —
-  mirror and queue in one `diary_entries` table, where a queued entry is
-  just a row with `state = 'pending'`. All of it is written against the SAME
-  `Surreal<Any>` handle `src/data.rs` uses for the real database.
-  `cargo test -p diary-core` runs everything against `mem://`; the phone
-  runs the identical code against `indxdb://diary` (SurrealDB's IndexedDB
-  engine). Nothing in the crate knows which engine it is on — that is the
-  point.
-- `crates/diary-worker` — the wasm skin: five `#[wasm_bindgen]` exports
-  (`diary_enqueue/snapshot/discard/import/flush`) plus the one genuinely
-  browser-shaped piece, the `fetch` transport injected into
-  `diary_core::outbox::flush`. Resolved off `js_sys::global()`, never
-  `window`, because it runs in the service worker and the page.
-  Deliberately its own cargo workspace with its own lockfile, EXCLUDED
-  from the root workspace — see the patch section below. That means
-  `just check` and CI never touch it: a diary-core API change that breaks
-  the worker surfaces at `just wasm` or the Docker wasm-builder stage, not
-  in check. (The crate root is also `cfg(target_arch = "wasm32")`-gated so
-  a stray native build compiles an empty crate rather than erroring.)
-- `src/app/diary.rs` — the server half consumes `diary_core::contract` for
-  parsing and validation. One definition of the protocol, compiled into both
-  binaries; a drift is now a type error, not a silent half-parse.
-- `src/app/diary_sync.rs` — serves `wasm-dist/` at three stable routes (see
-  Serving below).
-- `src/app/diary/sw.js`, `diary.js` — reduced to browser glue: caching,
-  Web Lock, Background Sync, BroadcastChannel, DOM. The queue policy they
-  used to implement in duplicate lives in `diary-core::outbox` now.
+- `crates/diary-core` — everything shared. `contract` is the wire protocol
+  (`WireEntry`, the snapshot shapes, response/pull classification);
+  `eastern` the America/New_York projection (moved from the lifting
+  archive; permalink keys derive from it); `store` the entry model, key
+  projection, and probe-and-dedupe queries; `outbox` the DEVICE-LOCAL
+  single store — mirror and queue in one `diary_entries` table, a queued
+  entry just a row with `state = 'pending'` that flips in place on
+  delivery; `sync` the flush-then-pull pass over the two-method `Remote`
+  trait (`HttpRemote` lives in the worker; `DirectRemote` is a raw
+  `Surreal<Any>`), with the empty-snapshot wipe guard; `views` (feature
+  "view") the PURE components — transcript, bubble, compose, template,
+  minimal offline chrome — zero awaits, which is what satisfies topcoat's
+  `+ Send` render bounds on wasm for free. All of it runs against the SAME
+  `Surreal<Any>` handle `src/data.rs` uses. `cargo test -p diary-core`
+  exercises everything natively against `mem://` (including two-device
+  convergence walks and store-to-store direct sync); the phone runs the
+  identical code against `indxdb://diary`.
+- `crates/diary-worker` — the wasm binary: the store exports
+  (`diary_enqueue/snapshot/discard/import`), `diary_sync` (one
+  flush-then-pull pass; picks direct or HTTP transport), and
+  `diary_render` — a serve-less topcoat router (`features = ["router",
+  "view", "discover"]`, no hyper anywhere) whose `#[page]` fns render the
+  mirror through the shared views; store reads bounce through
+  `spawn_local` + a oneshot channel because render futures must be `Send`
+  and indxdb futures are not. Deliberately its own cargo workspace,
+  EXCLUDED from the root — see the patch section below. `just check` and
+  CI never touch it: breakage surfaces at `just wasm` or the Docker
+  wasm-builder stage. (The crate root is `cfg(target_arch = "wasm32")`-
+  gated so a stray native build compiles an empty crate.)
+- `src/app/diary.rs` — auth and routing glue over the SAME
+  `diary_core::{store,views}` calls the worker makes, plus the flag-gated
+  token mint. One definition of protocol, queries, and markup; a drift is
+  a type error, not a silent half-parse.
+- `src/app/diary_sync.rs` — serves `wasm-dist/` at three stable routes
+  (see Serving below); its loader also carries the hashed asset URLs the
+  offline SSR links and the direct-sync endpoint when flagged.
+- `src/app/diary/sw.js`, `diary.js` — browser glue only: worker lifecycle,
+  asset cache, Web Lock, Background Sync, BroadcastChannel, and the page's
+  template-clone bubble handling keyed by `data-id`.
 
 ## Stable ids and flush semantics
 
@@ -125,8 +140,9 @@ everything else stays `no-store` for cookie-bearing requests.
 - `.cargo/config.toml` passes `--cfg getrandom_backend="wasm_js"` for the
   wasm target only (getrandom refuses to guess a randomness source there).
 - `[profile.wasm]` (in the worker's own manifest) is size-first
-  (`opt-level = "z"`, fat LTO, `panic = "abort"`). Current output ≈18 MB
-  raw / ≈4.8 MB gzipped — the embedded SurrealDB engine is the floor.
+  (`opt-level = "z"`, fat LTO, `panic = "abort"`). Current output ≈19.1 MB
+  raw / ≈5.1 MB gzipped — the embedded SurrealDB engine is the floor;
+  topcoat's router+views added ≈0.6 MB and protocol-ws ≈0.25 MB.
   `wasm-opt -Oz` (binaryen) typically shaves another 20-30% and slots in
   after wasm-bindgen in the `just wasm` recipe if it's ever worth
   installing.
@@ -196,29 +212,20 @@ Load-bearing findings (probed on 3.2.3, tests + canaries pin them):
 - `jsonwebtoken` requires the private key as PKCS#8 PEM (`openssl pkcs8
   -topk8`), not SEC1 "EC PRIVATE KEY".
 
-## Roadmap (the rest of the idea)
+## What remains (all optional)
 
-1. **Direct client → SurrealDB for the diary** — `DEFINE ACCESS ... TYPE
-   JWT` on the server database, per-table `PERMISSIONS` for diary tables, a
-   cookie-gated endpoint minting short-lived tokens, `/rpc` exposed through
-   the tunnel. `outbox::open` already takes any endpoint; the flush
-   transport becomes a direct `Surreal<Any>` write instead of a fetch.
-2. **Local-first reads** — mirror `diary_entries` into the local store,
-   render from it, pull server changes via `CHANGEFEED` + `SHOW CHANGES`
-   (changefeeds defined server-side only; the wasm engine's changefeed GC
-   has an open upstream issue), push via this outbox.
-3. **SSR in the service worker** — topcoat 0.5.0 (2026-07-27) shipped the
-   feature split this item was blocked on: hyper/tokio now sit behind an
-   opt-in `serve` feature, and `topcoat = { default-features = false,
-   features = ["router", "view", "discover"] }` compiles on wasm32 —
-   `#[page]`, discovery, and `Router::handle(req)` included (probe-verified;
-   the site runs 0.5.0 as of this branch). One wall left: page/component
-   render futures are `+ Send` with no wasm cfg
-   (`topcoat_view::Component::render`, router `PageRenderFn`), and browser
-   interop futures are `!Send` — the exact fragility `outbox::flush`'s
-   signature dodges. So a worker page fn can't await indxdb queries
-   directly; either bounce local-store reads through
-   `wasm_bindgen_futures::spawn_local` + a oneshot channel (the receiver is
-   `Send`), or land the small upstream PR cfg-gating those bounds on the
-   single-threaded target. Then the worker can answer `GET /diary` offline
-   by running the same page fn against the local store.
+The original roadmap — direct client→SurrealDB, local-first reads, SSR in
+the service worker — is fully shipped (2026-08-04, one branch, phased).
+Leftover niceties, none load-bearing:
+
+1. **`wasm-opt -Oz`** (binaryen) typically shaves 20–30% off the module;
+   slots in after wasm-bindgen in `just wasm` if ever worth installing.
+2. **Upstream topcoat PR** cfg-gating the `+ Send` bounds on
+   `Component::render` / `PageRenderFn` for wasm32 — would retire the
+   oneshot bridge in `diary-worker::ssr`, nothing else.
+3. **Pull as `CHANGEFEED` + `SHOW CHANGES`** if the full-snapshot pull
+   ever gets heavy (it is a personal diary; it will not soon). Changefeeds
+   must stay server-side only — the wasm engine's changefeed GC has an
+   open upstream issue (#6311).
+4. **Live queries over the direct websocket** for real-time cross-device
+   updates, if two devices ever compose at once in practice.

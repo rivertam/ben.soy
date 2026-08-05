@@ -72,16 +72,17 @@ Invariants:
   without credentials (a cookie gate breaks install), and the bytes only
   disclose that a diary app exists — which the public repo and the login
   redirect already do. Keep anything private out of them.
-- With JS, saves are local-first (the wasm store) and flushed ONLY by the
-  service worker via `POST /api/diary/entries`; the same worker pass then
-  pulls `GET /api/diary/snapshot` (admin-gated, `no-store`) to reconcile
-  the device mirror. Never add a page-side POST: one sync implementation —
-  `diary_core::sync::run` over the outbox — is what keeps replays and
-  pulls safe (a garbage pull response must be a mirror no-op, never "zero
-  entries"). Without JS (or when the wasm store refuses: no `wasm-dist/`
-  build served, private-mode IndexedDB), the plain form POST to
-  `/diary/write` still works. The pre-wasm IndexedDB queue (`diary-queue`)
-  is drained by a one-way migration in the worker.
+- With JS, saves are local-first (the wasm store) and synced ONLY by the
+  service worker: `POST /api/diary/entries` + `GET /api/diary/snapshot`
+  (admin-gated, `no-store`), or straight to the database over a websocket
+  when direct sync is flagged on (docs/diary-sync.md). Never add a
+  page-side POST: one sync implementation — `diary_core::sync::run` over
+  the outbox — is what keeps replays and pulls safe (a garbage pull
+  response must be a mirror no-op, never "zero entries"). Without JS (or
+  when the wasm store refuses: no `wasm-dist/` build served, private-mode
+  IndexedDB), the plain form POST to `/diary/write` still works. The
+  pre-wasm IndexedDB queue (`diary-queue`) is drained by a one-way
+  migration in the worker.
 - The API keys an entry by the CLIENT's composition second — a queued
   entry keeps the time it was written, not the time it synced — inside a
   bounded window (a year back, 5 minutes forward; outside is a 422, never
@@ -89,17 +90,19 @@ Invariants:
   double-post). Replays dedupe: same second + same body is "already
   saved"; an occupied second probes forward ≤5 s, re-running the dedupe
   at every probe. Overwriting an entry stays impossible.
-- Offline reads are deliberate, device-local, and Ben's choice — and
-  since the pull landed, they cover the WHOLE diary, not just a cached
-  page: the local store mirrors every entry, alongside the last good
-  `GET /diary` copy, hashed assets, and the versioned wasm pair. The
-  worker refetches the page copy after any flush that saved entries (the
-  page renders saves optimistically and never reloads, so nothing else
-  would). The mirror, that cache, and the queue OUTLIVE sign-out and
-  `COOKIE_KEY` rotation — a signed-out or stolen device reads the full
-  diary offline; wiping it means clearing the site's data in Chrome on
-  the device. That is the accepted trust model: device possession is the
-  boundary, the server stays the auth boundary whenever it is reachable.
+- Offline reads are deliberate, device-local, and Ben's choice — and they
+  cover the WHOLE diary: the local store mirrors every entry, and when a
+  navigation's network fetch fails the worker RENDERS the page from that
+  mirror (the same Rust router and views the server runs, compiled to
+  wasm) — pagination, permalinks, and pending rows included. There is no
+  cached-HTML copy anymore; only hashed assets and the versioned wasm
+  pair sit in Cache Storage. The mirror, those caches, and the queue
+  OUTLIVE sign-out and `COOKIE_KEY` rotation — a signed-out or stolen
+  device reads the full diary offline; wiping it means clearing the
+  site's data in Chrome on the device. That is the accepted trust model:
+  device possession is the boundary, and the server stays the auth
+  boundary whenever it is reachable (offline SSR answers only after the
+  network fetch fails).
 - A flush stops and keeps the queue on 401/404 (sign in again), 403/5xx/
   network (retry later); only 400/409/413/415/422 mark an entry failed,
   and failed text stays on the page with a discard button — queued diary
