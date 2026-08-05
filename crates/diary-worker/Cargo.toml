@@ -28,7 +28,16 @@ futures-channel = "0.3"
 js-sys = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-surrealdb = { version = "=3.2.3", default-features = false, features = ["kv-indxdb"] }
+# protocol-ws joins kv-indxdb for direct mode. Deliberately NOT
+# protocol-http: the stateless-http engine's authenticate() silently does
+# not stick on server 3.2.3 (each /rpc arrives anonymous — probed), and
+# denied reads filter to EMPTY rather than erroring. The websocket session
+# holds its principal for the connection's life; each sync pass opens a
+# fresh short-lived connection, so no heartbeat or reconnect machinery.
+surrealdb = { version = "=3.2.3", default-features = false, features = [
+    "kv-indxdb",
+    "protocol-ws",
+] }
 topcoat = { version = "0.5.0", default-features = false, features = [
     "router",
     "view",

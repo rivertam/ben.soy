@@ -387,6 +387,88 @@ async fn snapshot_entries(data: &Data) -> std::result::Result<Vec<DiaryEntry>, S
     store::all_entries(&open_db(data).await?).await
 }
 
+/// The private half of the direct-sync keypair (PKCS#8 PEM). Both halves
+/// set = flag on; the public half lives in `data.rs` (it defines the access
+/// method at bootstrap) and the browser-facing endpoint in `diary_sync.rs`
+/// (the loader advertises it).
+const DIRECT_SYNC_PRIVATE_KEY_VAR: &str = "DIARY_SYNC_JWT_PRIVATE_KEY";
+/// Fifteen minutes — a sync pass mints fresh every time, so the TTL only
+/// bounds how long a leaked token stays live.
+const DIRECT_SYNC_TOKEN_TTL_SECONDS: i64 = 900;
+
+/// `POST /api/diary/token` — mint one short-lived record-access token for
+/// direct client→SurrealDB sync (docs/diary-sync.md). Admin cookie plus
+/// positive same-origin evidence, like every diary POST; 404 while the
+/// flag is off so the surface does not advertise itself. The claims MUST
+/// carry `id` (the record identity): that is what makes SurrealDB build a
+/// fully permission-bound RECORD session instead of a database-level one.
+#[route(POST "/api/diary/token")]
+async fn api_token(cx: &Cx, body: Body) -> Result<Response> {
+    let Some(current) = viewer(cx) else {
+        return Ok(api_error(StatusCode::UNAUTHORIZED, "sign in"));
+    };
+    if !is_admin(&current.email) {
+        return Ok(api_error(StatusCode::NOT_FOUND, "not found"));
+    }
+    if !is_same_origin(headers(cx)) {
+        return Ok(api_error(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    // No meaningful body; drain within the same bound as the other POSTs.
+    if to_bytes(body, BODY_LIMIT_BYTES).await.is_err() {
+        return Ok(api_error(StatusCode::PAYLOAD_TOO_LARGE, "no body needed"));
+    }
+    let (Some(private_key), Ok(namespace), Ok(database)) = (
+        optional_env(DIRECT_SYNC_PRIVATE_KEY_VAR),
+        std::env::var(benjisponge::data::NAMESPACE_VAR),
+        std::env::var(benjisponge::data::DATABASE_VAR),
+    ) else {
+        return Ok(api_error(StatusCode::NOT_FOUND, "not found"));
+    };
+    match mint_direct_token(&private_key, &namespace, &database) {
+        Ok(token) => Ok(api_json(
+            StatusCode::OK,
+            serde_json::json!({ "token": token, "ns": namespace, "db": database }).to_string(),
+        )),
+        Err(error) => {
+            log_failure("token", &error);
+            Ok(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "token minting failed",
+            ))
+        }
+    }
+}
+
+fn optional_env(variable: &str) -> Option<String> {
+    std::env::var(variable)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn mint_direct_token(
+    private_key_pem: &str,
+    namespace: &str,
+    database: &str,
+) -> std::result::Result<String, String> {
+    let key = jsonwebtoken::EncodingKey::from_ec_pem(private_key_pem.as_bytes())
+        .map_err(|error| format!("private key rejected (must be PKCS#8 PEM): {error}"))?;
+    let now = Timestamp::now().as_second();
+    let claims = serde_json::json!({
+        "ns": namespace,
+        "db": database,
+        "ac": "diary_sync",
+        "id": "diary_device:admin",
+        "iat": now,
+        "exp": now + DIRECT_SYNC_TOKEN_TTL_SECONDS,
+    });
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256),
+        &claims,
+        &key,
+    )
+    .map_err(|error| format!("token encoding failed: {error}"))
+}
+
 /// The probe-and-dedupe algorithm itself lives in `diary_core::store` now —
 /// the same code the device-local store runs — so this adapter only fetches
 /// the handle. (Its native `mem://` tests, including the killer-replay walk,
@@ -585,6 +667,9 @@ mod tests {
         assert!(!crate::content::routes::is_trackable_route(
             "/api/diary/snapshot"
         ));
+        assert!(!crate::content::routes::is_trackable_route(
+            "/api/diary/token"
+        ));
         assert!(
             crate::content::access::hidden_page(PATH).is_none(),
             "{PATH} must never be a grantable hidden page"
@@ -616,6 +701,7 @@ mod tests {
     fn shared_contract_matches_the_server_glue() {
         assert_eq!(diary_core::contract::API_PATH, "/api/diary/entries");
         assert_eq!(diary_core::contract::SNAPSHOT_PATH, "/api/diary/snapshot");
+        assert_eq!(diary_core::contract::TOKEN_PATH, "/api/diary/token");
         assert!(
             include_str!("../schema.surql")
                 .contains(&format!("string::len($value) <= {MAX_ENTRY_CHARS}")),

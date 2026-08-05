@@ -67,6 +67,16 @@ pub async fn apply_pull(db: &Db, incoming: &[SnapshotEntry]) -> Result<u32, Outb
 
 async fn apply_once(db: &Db, incoming: &[SnapshotEntry]) -> Result<u32, OutboxError> {
     let local = outbox::all_local(db).await?;
+    // The wipe guard: an EMPTY snapshot never deletes a populated mirror.
+    // SurrealDB answers permission-denied reads as empty results, not
+    // errors, so a session that silently lost its grant (probed on 3.2.3:
+    // stateless-http authenticate does exactly this) would otherwise look
+    // like an emptied diary and take the whole mirror with it. A genuinely
+    // emptied server diary converges again the moment any entry exists —
+    // the next non-empty snapshot applies its deletes as usual.
+    if incoming.is_empty() && local.iter().any(|row| row.state == STATE_SYNCED) {
+        return Ok(0);
+    }
     let plan = diff(&local, incoming);
     let changes = (plan.creates.len() + plan.updates.len() + plan.deletes.len()) as u32;
     if changes == 0 {
@@ -117,6 +127,67 @@ async fn apply_once(db: &Db, incoming: &[SnapshotEntry]) -> Result<u32, OutboxEr
         .check()
         .map_err(|error| OutboxError::Db(error.to_string()))?;
     Ok(changes)
+}
+
+/// The direct transport: the remote IS a `Surreal<Any>` handle — connected
+/// and `authenticate()`d by the caller (natively in tests over `mem://`;
+/// on wasm over the `https://` engine with a minted record-access token).
+/// Push runs the SAME probe-and-dedupe `store::save_entry` the server's
+/// replay endpoint runs — one algorithm, two engines — and pull is the same
+/// snapshot read the endpoint serves. This is the isomorphism the crate
+/// exists for.
+pub struct DirectRemote {
+    pub db: Db,
+}
+
+impl Remote for DirectRemote {
+    async fn push(&self, entry: WireEntry) -> SendOutcome {
+        match crate::store::save_entry(&self.db, entry.written_at, &entry.body).await {
+            Ok(saved) => SendOutcome::Saved(crate::contract::SavedRef {
+                id: saved.id,
+                written_at: saved.written_at,
+            }),
+            // The server replay endpoint answers probe exhaustion with 409;
+            // classify identically so the entry lands failed, not retried
+            // forever.
+            Err(crate::store::SaveError::Exhausted) => SendOutcome::Rejected(409),
+            Err(crate::store::SaveError::Store(error)) => {
+                if is_auth_error(&error) {
+                    SendOutcome::Auth
+                } else {
+                    SendOutcome::Retry
+                }
+            }
+        }
+    }
+
+    async fn pull(&self) -> PullOutcome {
+        match crate::store::all_entries(&self.db).await {
+            Ok(entries) => PullOutcome::Data(
+                entries
+                    .into_iter()
+                    .map(|entry| SnapshotEntry {
+                        id: entry.id,
+                        written_at: entry.written_at,
+                        body: entry.body,
+                    })
+                    .collect(),
+            ),
+            Err(error) if is_auth_error(&error) => PullOutcome::Auth,
+            Err(_) => PullOutcome::Retry,
+        }
+    }
+}
+
+/// The SDK flattens auth failures to strings (like the conflict retry in
+/// docs/surrealdb-notes.md, matching them is upstream's own pattern). Keep
+/// the net wide enough for expired sessions and missing permissions, narrow
+/// enough that transport noise still classifies Retry.
+fn is_auth_error(error: &str) -> bool {
+    let lowered = error.to_ascii_lowercase();
+    lowered.contains("authent") // "authentication", "not authenticated"
+        || lowered.contains("session has expired")
+        || lowered.contains("not enough permissions")
 }
 
 struct PullPlan<'a> {
@@ -401,6 +472,88 @@ mod tests {
         assert_eq!(report.pulled, None);
         assert_eq!(*net_remote.pulls.borrow(), 1);
         assert_eq!(outbox::queued(&db).await.unwrap().len(), 1);
+    }
+
+    /// The direct transport, store to store: the remote IS another
+    /// `Surreal<Any>` — the exact wasm shape minus `authenticate()`, which
+    /// only the engine cares about. Push runs the real probe, pull the real
+    /// snapshot; deletes propagate.
+    #[tokio::test]
+    async fn direct_remote_syncs_store_to_store() {
+        let server = TestServer::start().await;
+        let remote = DirectRemote {
+            db: server.db.clone(),
+        };
+        let device_db = device().await;
+        outbox::enqueue(&device_db, 1_753_640_000, "straight to the database", 1)
+            .await
+            .unwrap();
+        outbox::enqueue(&device_db, 1_753_640_060, "second entry", 2)
+            .await
+            .unwrap();
+        let report = run(&device_db, &remote).await.unwrap();
+        assert_eq!(report.saved, 2);
+        assert_eq!(report.blocked, None);
+        let server_rows = store::all_entries(&server.db).await.unwrap();
+        assert_eq!(server_rows.len(), 2);
+        // A server-side delete propagates through the same handle. (Only
+        // one of two: an EMPTY snapshot deliberately never wipes a
+        // populated mirror — the guard has its own test.)
+        store::remove_entry(&server.db, &server_rows[0].id)
+            .await
+            .unwrap();
+        let report = run(&device_db, &remote).await.unwrap();
+        assert_eq!(report.pulled, Some(1));
+        let rows = outbox::all_local(&device_db).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "second entry");
+    }
+
+    /// The wipe guard: a silently-deauthed session's pull (SurrealDB
+    /// filters denied reads to empty instead of erroring) must never empty
+    /// a populated mirror; a genuinely emptied server converges again from
+    /// the next non-empty snapshot.
+    #[tokio::test]
+    async fn an_empty_snapshot_never_wipes_a_populated_mirror() {
+        let db = device().await;
+        outbox::enqueue(&db, 1_753_640_000, "history", 1)
+            .await
+            .unwrap();
+        outbox::flush(&db, |wire: WireEntry| {
+            let id = store::entry_key(wire.written_at).unwrap();
+            std::future::ready(SendOutcome::Saved(SavedRef {
+                id,
+                written_at: wire.written_at,
+            }))
+        })
+        .await
+        .unwrap();
+        assert_eq!(apply_pull(&db, &[]).await.unwrap(), 0);
+        assert_eq!(
+            outbox::all_local(&db).await.unwrap().len(),
+            1,
+            "mirror intact"
+        );
+        // A later non-empty snapshot's deletes still apply — convergence
+        // is deferred, not lost.
+        let replacement = snap("2026-01-01T07-00-00-05-00", 1_767_250_800, "only survivor");
+        assert_eq!(apply_pull(&db, &[replacement]).await.unwrap(), 2);
+        let rows = outbox::all_local(&db).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "only survivor");
+    }
+
+    #[test]
+    fn auth_errors_classify_as_auth_everything_else_retries() {
+        assert!(is_auth_error("There was a problem with authentication"));
+        assert!(is_auth_error("The session has expired"));
+        assert!(is_auth_error(
+            "Not enough permissions to perform this action"
+        ));
+        assert!(!is_auth_error("Connection refused (os error 111)"));
+        assert!(!is_auth_error(
+            "There was a problem with the key-value store: Transaction conflict"
+        ));
     }
 
     /// The plan's two-device walk, end to end against a REAL server store:

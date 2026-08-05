@@ -288,7 +288,8 @@ function flushGuarded() {
 async function flush() {
   await ensureWasm();
   await migrateLegacy();
-  const report = JSON.parse(await wasm_bindgen.diary_sync(API_PATH, SNAPSHOT_PATH));
+  const direct = (self.DIARY_SYNC.assets && self.DIARY_SYNC.assets.direct) || "";
+  const report = JSON.parse(await wasm_bindgen.diary_sync(API_PATH, SNAPSHOT_PATH, direct));
   await broadcast(report);
   if (report.blocked === "net") {
     throw new Error("diary flush interrupted; sync will retry");

@@ -84,10 +84,11 @@ async fn serve_loader(cx: &Cx) -> Result<Response> {
     let config = asset_config(cx);
     let css = config.resolve(crate::components::SITE_CSS);
     let js = config.resolve(DIARY_JS);
+    let direct = std::env::var(DIRECT_ENDPOINT_VAR).unwrap_or_default();
     Ok(bytes_response(
         "text/javascript; charset=utf-8",
         NO_CACHE,
-        loader_js(&dist.version, &css, &js).into_bytes(),
+        loader_js(&dist.version, &css, &js, direct.trim()).into_bytes(),
     ))
 }
 
@@ -115,14 +116,26 @@ async fn serve_wasm(cx: &Cx) -> Result<Response> {
     ))
 }
 
+/// The public SurrealDB endpoint the browser syncs against directly when
+/// the flag is on — MUST be a websocket scheme (`wss://db.benjisponge.com`;
+/// `ws://127.0.0.1:5800` in dev). Stateless HTTP is deliberately not
+/// supported: server 3.2.3 does not persist http-session auth, so every
+/// query after `authenticate()` would arrive anonymous and denied reads
+/// filter to empty (probed; the worker also carries a `$access` canary and
+/// diary-core a wipe guard for exactly this class of failure). Empty/unset
+/// = HTTP-endpoint sync, the default. The URL is not a secret — auth is
+/// the minted token.
+const DIRECT_ENDPOINT_VAR: &str = "DIARY_DIRECT_SYNC_ENDPOINT";
+
 /// The whole loader: one global naming the current pair, plus the hashed
-/// asset URLs the worker's offline SSR links. Everything after `?v=` is
-/// this process's content hash, so a page and a worker that read the same
-/// loader can never mix versions — and because the loader is served
-/// no-cache, a deploy that changes only the stylesheet still changes these
-/// bytes and rolls a new worker version, which re-primes its own assets.
-fn loader_js(version: &str, css: &str, js: &str) -> String {
-    let assets = serde_json::json!({ "css": [css], "js": js });
+/// asset URLs the worker's offline SSR links and the direct-sync endpoint
+/// when flagged. Everything after `?v=` is this process's content hash, so
+/// a page and a worker that read the same loader can never mix versions —
+/// and because the loader is served no-cache, a deploy that changes only
+/// the stylesheet (or flips the flag) still changes these bytes and rolls
+/// a new worker version, which re-primes its own assets.
+fn loader_js(version: &str, css: &str, js: &str, direct: &str) -> String {
+    let assets = serde_json::json!({ "css": [css], "js": js, "direct": direct });
     format!(
         "self.DIARY_SYNC={{v:\"{version}\",glue:\"{GLUE_PATH}?v={version}\",wasm:\"{WASM_PATH}?v={version}\",assets:{assets}}};\n"
     )
@@ -233,11 +246,14 @@ mod tests {
             "abc123",
             "/_topcoat/assets/site-feed.css",
             "/_topcoat/assets/d.js",
+            "",
         );
         assert_eq!(
             js,
-            "self.DIARY_SYNC={v:\"abc123\",glue:\"/diary-sync-glue.js?v=abc123\",wasm:\"/diary-sync_bg.wasm?v=abc123\",assets:{\"css\":[\"/_topcoat/assets/site-feed.css\"],\"js\":\"/_topcoat/assets/d.js\"}};\n"
+            "self.DIARY_SYNC={v:\"abc123\",glue:\"/diary-sync-glue.js?v=abc123\",wasm:\"/diary-sync_bg.wasm?v=abc123\",assets:{\"css\":[\"/_topcoat/assets/site-feed.css\"],\"direct\":\"\",\"js\":\"/_topcoat/assets/d.js\"}};\n"
         );
+        let flagged = loader_js("abc123", "/c.css", "/d.js", "https://db.example.com");
+        assert!(flagged.contains("\"direct\":\"https://db.example.com\""));
     }
 
     #[test]

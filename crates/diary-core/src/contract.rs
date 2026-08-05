@@ -126,6 +126,10 @@ pub fn rejection_reason(status: u16) -> String {
 /// The snapshot endpoint the worker pulls the mirror from.
 pub const SNAPSHOT_PATH: &str = "/api/diary/snapshot";
 
+/// The token mint for direct client→SurrealDB sync (flag-gated; 404 when
+/// the flag is off).
+pub const TOKEN_PATH: &str = "/api/diary/token";
+
 /// One entry in a pull snapshot — the server fields, nothing else. The
 /// server serializes exactly this; the worker deserializes exactly this.
 /// `deny_unknown_fields` for the same reason as [`WireEntry`]: a drift

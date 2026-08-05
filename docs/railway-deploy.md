@@ -2,7 +2,9 @@
 
 Production runs on Railway: the Topcoat web container, one SurrealDB service,
 and a `cloudflared` Tunnel connector. Cloudflare keeps DNS and CDN duties only.
-The database is private Railway infrastructure and is never a Tunnel ingress.
+The database is private Railway infrastructure and is not a Tunnel ingress —
+with one deliberate, flag-gated exception: the diary direct-sync `db.`
+hostname while `DIARY_SYNC_*` is set (see below and cloudflare-deploy.md).
 
 ## Services
 
@@ -63,6 +65,22 @@ Podrick reset — [podrick.md](podrick.md)), `SITE_ORIGIN=https://benjisponge.co
 and, for sign-in ([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
 and `GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows
 managed at `/admin/permissions`, not environment variables.
+
+Diary direct sync ([diary-sync.md](diary-sync.md)) is OFF until all three of
+its variables are set on the web service — set none of them until flipping
+the flag deliberately:
+
+```text
+DIARY_SYNC_JWT_PUBLIC_KEY   # ES256 public PEM; bootstrap DEFINEs the access method
+DIARY_SYNC_JWT_PRIVATE_KEY  # matching PKCS#8 private PEM; mints /api/diary/token
+DIARY_DIRECT_SYNC_ENDPOINT  # wss://db.benjisponge.com — MUST be a ws scheme
+```
+
+Generate the pair with `openssl ecparam -genkey -name prime256v1 -noout |
+openssl pkcs8 -topk8 -nocrypt` (private) and `openssl ec -pubout` (public).
+Flag-on also needs the `db.` Tunnel hostname
+([cloudflare-deploy.md](cloudflare-deploy.md)); unsetting the variables
+removes the access method again at the next boot.
 
 `HOST=0.0.0.0` is baked into the web image; Railway injects `PORT`. Pin it to
 `8080` so the Tunnel origin stays stable.

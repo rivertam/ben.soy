@@ -51,6 +51,9 @@ form_urlencoded = "1.2.2"
 http = "1"
 inventory = "0.3.24"
 jiff = { version = "0.2.34", features = ["tzdb-bundle-always"] }
+# Mints the diary direct-sync tokens (ES256; the private key env var must
+# be PKCS#8 PEM — jsonwebtoken rejects SEC1 "EC PRIVATE KEY" files).
+jsonwebtoken = "9"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-webpki-roots",

@@ -89,17 +89,96 @@ pub async fn diary_import(json: String) -> Result<u32, JsError> {
     outbox::import(&db, &legacy).await.map_err(outbox_error)
 }
 
-/// One full sync pass — flush every pending entry to the replay endpoint,
-/// then pull the snapshot and reconcile the mirror — as one call, so the
-/// worker's single Web Lock hold covers both halves. Returns the
-/// `FlushReport` as JSON in the shape the page's BroadcastChannel message
-/// has always had (plus `pulled`, which stale pages ignore).
+/// One full sync pass — flush every pending entry, then pull and reconcile
+/// the mirror — as one call, so the worker's single Web Lock hold covers
+/// both halves. `direct_endpoint` non-empty = the flag is on: mint a token,
+/// authenticate a remote `Surreal<Any>` handle, and sync store-to-store
+/// (`DirectRemote` — the same probe the server runs, no app server in the
+/// path). Any failure ARMING direct mode (mint refused, connect failed)
+/// falls back to the HTTP endpoints for this pass — sync never goes quiet
+/// because the flag half-works. Returns the `FlushReport` as JSON in the
+/// shape the page's BroadcastChannel message has always had.
 #[wasm_bindgen]
-pub async fn diary_sync(push_url: String, pull_url: String) -> Result<String, JsError> {
+pub async fn diary_sync(
+    push_url: String,
+    pull_url: String,
+    direct_endpoint: String,
+) -> Result<String, JsError> {
     let db = db().await?;
-    let remote = HttpRemote { push_url, pull_url };
-    let report = sync::run(&db, &remote).await.map_err(outbox_error)?;
+    let report = if direct_endpoint.trim().is_empty() {
+        let remote = HttpRemote { push_url, pull_url };
+        sync::run(&db, &remote).await.map_err(outbox_error)?
+    } else {
+        match direct_remote(direct_endpoint.trim()).await {
+            Ok(remote) => sync::run(&db, &remote).await.map_err(outbox_error)?,
+            Err(_) => {
+                let remote = HttpRemote { push_url, pull_url };
+                sync::run(&db, &remote).await.map_err(outbox_error)?
+            }
+        }
+    };
     serde_json::to_string(&report).map_err(json_error)
+}
+
+#[derive(serde::Deserialize)]
+struct TokenGrant {
+    token: String,
+    ns: String,
+    db: String,
+}
+
+/// Arm the direct transport for ONE pass: fresh token, fresh short-lived
+/// websocket connection (dropped with the pass — a cached connection would
+/// die with the idling service worker anyway), authenticate, and then the
+/// load-bearing canary: `$access` must name our access method. SurrealDB
+/// filters permission-denied reads to EMPTY results rather than erroring,
+/// so a session that silently failed to carry its grant would pull "an
+/// empty diary" — the canary (plus diary-core's wipe guard) is what keeps
+/// that from ever touching the mirror.
+async fn direct_remote(endpoint: &str) -> Result<sync::DirectRemote, String> {
+    let grant = fetch_token().await?;
+    let remote = surrealdb::engine::any::connect(endpoint)
+        .await
+        .map_err(|error| error.to_string())?;
+    remote
+        .use_ns(grant.ns)
+        .use_db(grant.db)
+        .await
+        .map_err(|error| error.to_string())?;
+    remote
+        .authenticate(grant.token)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut canary = remote
+        .query("RETURN $access")
+        .await
+        .map_err(|error| error.to_string())?
+        .check()
+        .map_err(|error| error.to_string())?;
+    let access: Option<String> = canary.take(0).map_err(|error| error.to_string())?;
+    if access.as_deref() != Some("diary_sync") {
+        return Err(format!("session carries access {access:?}, not diary_sync"));
+    }
+    Ok(sync::DirectRemote { db: remote })
+}
+
+/// Mint one token from the cookie-gated endpoint. Any non-200 (404 = flag
+/// off server-side, 401 = signed out) is a setup failure — the caller falls
+/// back to HTTP sync, whose own classification shows the right banner.
+async fn fetch_token() -> Result<TokenGrant, String> {
+    let init = RequestInit::new();
+    init.set_method("POST");
+    init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_cache(RequestCache::NoStore);
+    let request = Request::new_with_str_and_init(diary_core::contract::TOKEN_PATH, &init)
+        .map_err(|_| "token request build failed".to_string())?;
+    let (status, text) = perform(&request)
+        .await
+        .map_err(|_| "token fetch failed".to_string())?;
+    if status != 200 {
+        return Err(format!("token endpoint answered {status}"));
+    }
+    serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
 /// The HTTP transport: the replay POST and the snapshot GET, both through

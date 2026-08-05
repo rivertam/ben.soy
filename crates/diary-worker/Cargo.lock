@@ -3696,6 +3696,7 @@ dependencies = [
  "surrealdb-types",
  "surrealdb-types-derive",
  "tokio",
+ "tokio-tungstenite",
  "tokio-tungstenite-wasm",
  "tokio-util",
  "tracing",
@@ -4608,6 +4609,7 @@ dependencies = [
  "rand 0.9.5",
  "sha1",
  "thiserror 2.0.19",
+ "url",
  "utf-8",
 ]
 

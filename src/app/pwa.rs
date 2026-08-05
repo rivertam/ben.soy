@@ -142,7 +142,7 @@ mod tests {
             "importScripts(self.DIARY_SYNC.glue)",
             "module_or_path",
             // flush-then-pull as ONE call inside the one lock hold
-            "diary_sync(API_PATH, SNAPSHOT_PATH)",
+            "diary_sync(API_PATH, SNAPSHOT_PATH, direct)",
             // the one-way legacy migration and the store it drains
             "diary_import",
             "\"diary-queue\"",

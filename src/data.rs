@@ -31,6 +31,14 @@ pub const DATABASE_VAR: &str = "SURREALDB_DATABASE";
 pub const USERNAME_VAR: &str = "SURREALDB_USERNAME";
 pub const PASSWORD_VAR: &str = "SURREALDB_PASSWORD";
 
+/// The diary direct-sync verification key (PEM, public half). When set, the
+/// schema bootstrap defines the `diary_sync` access method with it; unset,
+/// the access method is REMOVED and no token can open a session — the whole
+/// direct-sync surface rides this one variable (docs/diary-sync.md). It is
+/// config rather than committed schema so dev and prod hold different
+/// keypairs and so flag-off means surface-off.
+pub const DIRECT_SYNC_PUBLIC_KEY_VAR: &str = "DIARY_SYNC_JWT_PUBLIC_KEY";
+
 const SCHEMA: &str = include_str!("schema.surql");
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -139,8 +147,43 @@ pub async fn connect(config: &DataConfig) -> Result<Db, DataError> {
         .map_err(connect_error)?
         .check()
         .map_err(connect_error)?;
+    define_direct_sync_access(&db).await?;
     db.health().await.map_err(connect_error)?;
     Ok(db)
+}
+
+/// Reconcile the diary direct-sync access method with the environment, the
+/// same way the committed schema reconciles on every connect. MUST stay
+/// `TYPE RECORD WITH JWT`: a plain `TYPE JWT` session carries a
+/// database-level Viewer role floor that reads EVERY table regardless of
+/// PERMISSIONS (probed on 3.2.3); record sessions are fully
+/// permission-bound, which is the entire point. The PEM rides a bound
+/// parameter — never string-built into the statement.
+async fn define_direct_sync_access(db: &Db) -> Result<(), DataError> {
+    match std::env::var(DIRECT_SYNC_PUBLIC_KEY_VAR)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(public_key) => db
+            .query(
+                "DEFINE ACCESS OVERWRITE diary_sync ON DATABASE TYPE RECORD \
+                 WITH JWT ALGORITHM ES256 KEY $public_key \
+                 DURATION FOR SESSION 15m",
+            )
+            .bind(("public_key", public_key))
+            .await
+            .map_err(connect_error)?
+            .check()
+            .map_err(connect_error)
+            .map(|_| ()),
+        None => db
+            .query("REMOVE ACCESS IF EXISTS diary_sync ON DATABASE")
+            .await
+            .map_err(connect_error)?
+            .check()
+            .map_err(connect_error)
+            .map(|_| ()),
+    }
 }
 
 fn connect_error(error: surrealdb::Error) -> DataError {

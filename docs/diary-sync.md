@@ -167,6 +167,35 @@ repo commits only the ~40-line patch file. When a surrealdb release fixes
 #6711 fully: bump the workspace pin, delete the `[patch]` block, the
 script, the patch file, and this section.
 
+## Direct sync (flag-off by default)
+
+With `DIARY_SYNC_JWT_PUBLIC_KEY` + `DIARY_SYNC_JWT_PRIVATE_KEY` +
+`DIARY_DIRECT_SYNC_ENDPOINT` set (railway-deploy.md), the sync pass skips
+the site's endpoints entirely: the worker POSTs `/api/diary/token` (admin
+cookie; the app server's ONLY remaining role), opens a fresh short-lived
+WEBSOCKET to the endpoint, `authenticate()`s, verifies the `$access` canary,
+and then `sync::DirectRemote` pushes with the same `store::save_entry`
+probe the server runs and pulls the same snapshot read — one algorithm, two
+engines, natively tested store-to-store. Any failure arming the pass falls
+back to the HTTP endpoints, so a half-configured flag never silences sync.
+
+Load-bearing findings (probed on 3.2.3, tests + canaries pin them):
+
+- The access method MUST be `TYPE RECORD WITH JWT` and the token MUST carry
+  an `id` claim (`diary_device:admin`). Plain `TYPE JWT` sessions get a
+  database-level Viewer role that reads EVERY table regardless of
+  PERMISSIONS.
+- The endpoint MUST be `ws://`/`wss://`. The stateless-http engine's
+  `authenticate()` does not stick on server 3.2.3 — every later request
+  arrives anonymous.
+- SurrealDB filters permission-denied reads to EMPTY results instead of
+  erroring, so a silently-deauthed session pulls "an empty diary". Three
+  layers keep that from touching the mirror: the setup canary
+  (`RETURN $access`), the wipe guard (an empty snapshot never deletes a
+  populated mirror), and per-pass fresh tokens (15-minute TTL).
+- `jsonwebtoken` requires the private key as PKCS#8 PEM (`openssl pkcs8
+  -topk8`), not SEC1 "EC PRIVATE KEY".
+
 ## Roadmap (the rest of the idea)
 
 1. **Direct client → SurrealDB for the diary** — `DEFINE ACCESS ... TYPE
