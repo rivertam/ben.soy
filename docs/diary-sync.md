@@ -9,11 +9,16 @@ the rest of it.
 
 - `crates/diary-core` — the whole queue, shared. `contract` is the replay
   protocol (`WireEntry`, the composition-second window, body normalization,
-  response classification); `outbox` is the queue itself, written against
-  the SAME `Surreal<Any>` handle `src/data.rs` uses for the real database.
-  `cargo test -p diary-core` runs the outbox against `mem://`; the phone runs
-  the identical code against `indxdb://diary` (SurrealDB's IndexedDB engine).
-  Nothing in the crate knows which engine it is on — that is the point.
+  response classification); `store` is the entry model, the Eastern key
+  projection (`eastern` moved here from the lifting archive), and the shared
+  probe-and-dedupe queries; `outbox` is the DEVICE-LOCAL single store —
+  mirror and queue in one `diary_entries` table, where a queued entry is
+  just a row with `state = 'pending'`. All of it is written against the SAME
+  `Surreal<Any>` handle `src/data.rs` uses for the real database.
+  `cargo test -p diary-core` runs everything against `mem://`; the phone
+  runs the identical code against `indxdb://diary` (SurrealDB's IndexedDB
+  engine). Nothing in the crate knows which engine it is on — that is the
+  point.
 - `crates/diary-worker` — the wasm skin: five `#[wasm_bindgen]` exports
   (`diary_enqueue/snapshot/discard/import/flush`) plus the one genuinely
   browser-shaped piece, the `fetch` transport injected into
@@ -34,34 +39,31 @@ the rest of it.
   Web Lock, Background Sync, BroadcastChannel, DOM. The queue policy they
   used to implement in duplicate lives in `diary-core::outbox` now.
 
-## Flush semantics (unchanged, now tested)
+## Stable ids and flush semantics
 
-Oldest-first by enqueue time; stop on auth (401/404) or retryable trouble
-(network, 403, 5xx, captive-portal 200) so composition order survives;
-permanent rejections (400/409/413/415/422) mark the entry failed and keep
-its text for manual copy. The server's same-second+same-body dedupe remains
-the real idempotency guarantee. All of it is pinned by native tests in
-`diary-core` — the policy that used to live only in sw.js is exercised by
-`cargo test` on every check.
+An entry's id — its permalink — is predicted at ENQUEUE with the identical
+probe-and-dedupe loop the server runs (`store::save_entry` vs the outbox's
+local placement): same second + same body at any probed key is the same
+entry (a double-tap converges instead of minting a twin the server would
+store twice); a different body probes the second forward. The permalink is
+right from birth, the server's own probe stays as the cross-device
+backstop, and page reconciliation collapses to "does the DOM already show
+this data-id" against the server-shipped `<template id="diary-bubble">` —
+the old five-bucket painter and provisional map are gone.
 
-The `FlushReport` carries `saved_entries` — for each drained entry, its
-local qid plus the id/written_at the server's response assigned (collision
-probes can bump the second, so the server's identity is the truth). That is
-what lets the page be optimistic: a sent message renders synchronously in
-the submit handler, survives every repaint as a draft or queued bubble
-(reconciled by qid), and flips to a delivered message with a real permalink
-when the report lands — no post-flush reload, which is also why the worker
-refreshes the cached /diary copy itself after a saving flush. On-their-way
-bubbles wear their final look (same style, same stamp shape) so delivery
-rewrites nothing visible; the dashed queued styling and "will sync" label
-appear only when a flush report says the queue is actually blocked, and
-"failed" only when the server rejected the entry. Two mid-flush
-subtleties the page covers: the worker deletes each saved entry from the
-store immediately but reports once at the end, so a pending entry that
-vanishes from a snapshot un-reported rides a provisional bucket instead of
-blinking away; and a report for an entry the server-rendered HTML already
-shows (a page opened mid-flush) retires bubbles by qid without drawing the
-message twice.
+Flushes send oldest-first by enqueue time; stop on auth (401/404) or
+retryable trouble (network, 403, 5xx, captive-portal 200) so composition
+order survives; permanent rejections (400/409/413/415/422) mark the entry
+failed IN PLACE and keep its text for manual copy. A delivered entry flips
+`pending -> synced` in place too — never deleted — so no snapshot can watch
+a message blink out of existence mid-flush. The `FlushReport` still carries
+`saved_entries` (local id -> server identity); it matters only for the rare
+server bump, where the local row is re-keyed to the server's id (and if
+that key is held by a DIFFERENT pending row, the delivered row is simply
+released — its text is safe server-side and the pull that follows in the
+same lock places it). The dashed queued styling and "will sync" label
+appear only when a report says the queue is actually blocked; "failed" only
+when the server rejected the entry.
 
 `outbox::flush` takes the transport as a generic closure with deliberately
 NO `Send` bounds: browser futures are `!Send`, native test futures don't
@@ -78,6 +80,13 @@ anywhere re-runs safely. The emptied database is left behind for any
 straggler old worker. Page kicks are deliberately unconditional (the old
 "any pending?" check is gone) because only the worker can see both stores
 while the migration exists.
+
+The v1 wasm queue (`diary_outbox`, the separate outbox table before the
+single store) drains the same way, inside `outbox::open` itself: rows port
+into `diary_entries` under predicted keys (unprojectable timestamps land
+under synthetic `failed-*` keys as failed rows — never dropped), then the
+old rows delete one by one. It is a STANDING step, not one-shot: during
+deploy skew an old worker happily re-creates the table.
 
 ## Serving and cache pairing
 

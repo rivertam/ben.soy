@@ -40,11 +40,14 @@ async fn db() -> Result<outbox::Db, JsError> {
     Ok(db)
 }
 
-/// Queue one entry composed now. `written_at` is the composition second the
-/// server will key the entry by; `enqueued_at_ms` orders the flush. Both
-/// arrive as f64 because JS numbers do — they are integral and far inside
-/// f64's exact range. Returns the queued record's qid so the page can match
-/// its optimistic bubble to the store's entry exactly, no body comparison.
+/// Queue one entry composed now. `written_at` is the composition second;
+/// `enqueued_at_ms` orders the flush. Both arrive as f64 because JS numbers
+/// do — they are integral and far inside f64's exact range. Returns the
+/// placed row as JSON: its `id` is the predicted permalink key (the second
+/// may have been probed forward past a neighbor), which is exactly what the
+/// page stamps on its bubble — a same-second double-tap returns the
+/// original row, so the page sees the duplicate in the existing `data-id`
+/// and drops its extra clone.
 #[wasm_bindgen]
 pub async fn diary_enqueue(
     written_at: f64,
@@ -52,26 +55,28 @@ pub async fn diary_enqueue(
     enqueued_at_ms: f64,
 ) -> Result<String, JsError> {
     let db = db().await?;
-    let queued = outbox::enqueue(&db, written_at as i64, &body, enqueued_at_ms as i64)
+    let placed = outbox::enqueue(&db, written_at as i64, &body, enqueued_at_ms as i64)
         .await
         .map_err(outbox_error)?;
-    Ok(queued.qid)
+    serde_json::to_string(&placed).map_err(json_error)
 }
 
-/// The whole queue as JSON, oldest first — what the page renders under the
-/// transcript.
+/// Every not-yet-synced row as JSON, oldest first — what the page renders
+/// as pending/failed bubbles. Synced history is deliberately absent: the
+/// server-rendered transcript already shows it.
 #[wasm_bindgen]
 pub async fn diary_snapshot() -> Result<String, JsError> {
     let db = db().await?;
-    let entries = outbox::entries(&db).await.map_err(outbox_error)?;
+    let entries = outbox::queued(&db).await.map_err(outbox_error)?;
     serde_json::to_string(&entries).map_err(json_error)
 }
 
-/// Drop one failed entry — the page's discard button.
+/// Drop one queued or failed entry — the page's discard button. (Synced
+/// history is out of reach by design.)
 #[wasm_bindgen]
-pub async fn diary_discard(qid: String) -> Result<(), JsError> {
+pub async fn diary_discard(id: String) -> Result<(), JsError> {
     let db = db().await?;
-    outbox::remove(&db, &qid).await.map_err(outbox_error)
+    outbox::discard(&db, &id).await.map_err(outbox_error)
 }
 
 /// Import the legacy IndexedDB queue (the worker reads the old records out

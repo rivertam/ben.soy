@@ -167,7 +167,15 @@ async fn diary(cx: &Cx) -> Result {
                     }
                     <section class="diary-history" aria-label="Diary messages">
                         for entry in entries.iter().rev() {
-                            <article class="diary-message">
+                            // data-id is the reconciliation contract with
+                            // diary.js: entry ids are stable from the moment
+                            // of enqueue, so "does the DOM already show this
+                            // id" is the page's entire dedupe logic.
+                            <article
+                                class="diary-message"
+                                data-id=(entry.id.as_str())
+                                data-state="synced"
+                            >
                                 <p class="leading-relaxed whitespace-pre-wrap text-ink2">
                                     (entry.body.as_str())
                                 </p>
@@ -179,8 +187,27 @@ async fn diary(cx: &Cx) -> Result {
                             </article>
                         }
                     </section>
-                    // diary.js fills this with queued/failed offline entries.
+                    // diary.js appends bubbles here for rows the server
+                    // HTML does not show, by cloning the template below.
                     <section id="diary-queue" class="diary-queue" hidden=""></section>
+                    // The one definition of bubble markup the page JS may
+                    // draw from — cloned, never built from strings, so the
+                    // Tailwind scan sees every class and the markup cannot
+                    // drift from the server's transcript articles.
+                    <template id="diary-bubble">
+                        <article class="diary-message" data-id="" data-state="draft">
+                            <p class="leading-relaxed whitespace-pre-wrap text-ink2"></p>
+                            <p class="mt-2 text-right font-meta text-[0.6875rem] text-muted">
+                                <span class="diary-note text-ink2"></span>
+                                <a class="quiet-link" hidden=""></a>
+                                <button
+                                    type="button"
+                                    class="diary-discard quiet-link ml-3 cursor-pointer font-meta text-xs"
+                                    hidden=""
+                                >"discard"</button>
+                            </p>
+                        </article>
+                    </template>
                     if store_ok && page_number > 1 {
                         <p class="text-center font-meta text-xs">
                             <a class="quiet-link" href=(page_url(page_number - 1))>
@@ -814,7 +841,6 @@ mod tests {
             "\"diary-compose\"",
             "\"diary-body\"",
             "\"diary-queue\"",
-            "dataset.discard",
             "form.submit()",
             "preventDefault",
             // the Rust queue module: loader → pinned glue → instantiation,
@@ -825,11 +851,17 @@ mod tests {
             "diary_enqueue",
             "diary_snapshot",
             "diary_discard",
-            // the optimistic transcript: saved entries render in place from
-            // the flush report, matched to the server's own markup
+            // the reconciliation contract: bubbles clone the server-shipped
+            // template and are keyed by data-id — the page's whole dedupe
+            // rule is "does the DOM already show this id"
+            "\"diary-bubble\"",
+            ".diary-message[data-id=",
+            "CSS.escape",
+            "dataset.state",
+            ".diary-note",
+            ".diary-discard",
             "saved_entries",
             "diary-message-queued",
-            "quiet-link",
             // the placeholder toggle and the offline fallback guard
             "diary-empty",
             "navigator.onLine === false",
@@ -845,6 +877,12 @@ mod tests {
         assert!(
             !DIARY_JS_SRC.contains("location.assign") && !DIARY_JS_SRC.contains("location.reload"),
             "diary.js reintroduced a post-flush navigation"
+        );
+        // The template is the ONE definition of bubble markup; JS must never
+        // grow a hand-built article again.
+        assert!(
+            !DIARY_JS_SRC.contains("createElement(\"article\""),
+            "diary.js rebuilt bubble markup outside the template"
         );
     }
 }
