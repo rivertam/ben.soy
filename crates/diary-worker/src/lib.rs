@@ -16,8 +16,9 @@
 
 use std::cell::RefCell;
 
-use diary_core::contract::{SendOutcome, WireEntry, classify_response};
+use diary_core::contract::{PullOutcome, SendOutcome, WireEntry, classify_pull, classify_response};
 use diary_core::outbox;
+use diary_core::sync::{self, Remote};
 use js_sys::{Function, Promise, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -88,26 +89,42 @@ pub async fn diary_import(json: String) -> Result<u32, JsError> {
     outbox::import(&db, &legacy).await.map_err(outbox_error)
 }
 
-/// Flush the queue to the replay endpoint; returns the `FlushReport` as
-/// JSON in the shape the page's BroadcastChannel message has always had,
-/// plus `saved_entries` — the delivered messages the page renders in place.
+/// One full sync pass — flush every pending entry to the replay endpoint,
+/// then pull the snapshot and reconcile the mirror — as one call, so the
+/// worker's single Web Lock hold covers both halves. Returns the
+/// `FlushReport` as JSON in the shape the page's BroadcastChannel message
+/// has always had (plus `pulled`, which stale pages ignore).
 #[wasm_bindgen]
-pub async fn diary_flush(api_url: String) -> Result<String, JsError> {
+pub async fn diary_sync(push_url: String, pull_url: String) -> Result<String, JsError> {
     let db = db().await?;
-    let report = outbox::flush(&db, |entry| send(api_url.clone(), entry))
-        .await
-        .map_err(outbox_error)?;
+    let remote = HttpRemote { push_url, pull_url };
+    let report = sync::run(&db, &remote).await.map_err(outbox_error)?;
     serde_json::to_string(&report).map_err(json_error)
 }
 
-/// One replay POST through the ambient `fetch`, resolved off the GLOBAL
-/// scope rather than `window` because this runs inside the service worker
-/// as well as the page. Any JS-side failure classifies as Retry: transport
-/// trouble is never the entry's fault.
-async fn send(api_url: String, entry: WireEntry) -> SendOutcome {
-    match try_send(&api_url, &entry).await {
-        Ok(outcome) => outcome,
-        Err(_) => SendOutcome::Retry,
+/// The HTTP transport: the replay POST and the snapshot GET, both through
+/// the ambient `fetch` resolved off the GLOBAL scope rather than `window`
+/// because this runs inside the service worker as well as the page. Any
+/// JS-side failure classifies as Retry — transport trouble is never the
+/// entry's fault, and a failed pull must be a mirror no-op.
+struct HttpRemote {
+    push_url: String,
+    pull_url: String,
+}
+
+impl Remote for HttpRemote {
+    async fn push(&self, entry: WireEntry) -> SendOutcome {
+        match try_send(&self.push_url, &entry).await {
+            Ok(outcome) => outcome,
+            Err(_) => SendOutcome::Retry,
+        }
+    }
+
+    async fn pull(&self) -> PullOutcome {
+        match try_pull(&self.pull_url).await {
+            Ok(outcome) => outcome,
+            Err(_) => PullOutcome::Retry,
+        }
     }
 }
 
@@ -120,9 +137,24 @@ async fn try_send(api_url: &str, entry: &WireEntry) -> Result<SendOutcome, JsVal
     init.set_body(&JsValue::from_str(&body));
     let request = Request::new_with_str_and_init(api_url, &init)?;
     request.headers().set("Content-Type", "application/json")?;
+    let (status, text) = perform(&request).await?;
+    Ok(classify_response(status, &text))
+}
+
+async fn try_pull(api_url: &str) -> Result<PullOutcome, JsValue> {
+    let init = RequestInit::new();
+    init.set_method("GET");
+    init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_cache(RequestCache::NoStore);
+    let request = Request::new_with_str_and_init(api_url, &init)?;
+    let (status, text) = perform(&request).await?;
+    Ok(classify_pull(status, &text))
+}
+
+async fn perform(request: &Request) -> Result<(u16, String), JsValue> {
     let global = js_sys::global();
     let fetch = Reflect::get(&global, &JsValue::from_str("fetch"))?.dyn_into::<Function>()?;
-    let promise: Promise = fetch.call1(&global, &request)?.dyn_into()?;
+    let promise: Promise = fetch.call1(&global, request)?.dyn_into()?;
     let response: Response = JsFuture::from(promise).await?.dyn_into()?;
     let status = response.status();
     let text = match response.text() {
@@ -133,7 +165,7 @@ async fn try_send(api_url: &str, entry: &WireEntry) -> Result<SendOutcome, JsVal
             .unwrap_or_default(),
         Err(_) => String::new(),
     };
-    Ok(classify_response(status, &text))
+    Ok((status, text))
 }
 
 fn outbox_error(error: outbox::OutboxError) -> JsError {

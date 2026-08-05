@@ -137,6 +137,10 @@ pub struct FlushReport {
     pub failed: u32,
     pub blocked: Option<Blocked>,
     pub saved_entries: Vec<SavedEntry>,
+    /// How many mirror rows the pull that follows a flush changed — `None`
+    /// when the pull was skipped or classified Auth/Retry (a no-op). Filled
+    /// by `sync::run`, not by [`flush`] itself; stale pages ignore it.
+    pub pulled: Option<u32>,
 }
 
 /// One entry a flush landed: the local id it was queued under and the
@@ -217,6 +221,22 @@ pub async fn queued(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
             "SELECT record::id(id) AS id, written_at, body, state, reason, enqueued_at \
              FROM diary_entries WHERE state != 'synced' \
              ORDER BY enqueued_at ASC, id ASC",
+        )
+        .await
+        .map_err(db_error)?
+        .check()
+        .map_err(db_error)?;
+    response.take(0).map_err(db_error)
+}
+
+/// Every local row in every state, oldest write first — the pull's diff
+/// input ([`crate::sync::apply_pull`] decides creates/updates/deletes
+/// against this).
+pub(crate) async fn all_local(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
+    let mut response = db
+        .query(
+            "SELECT record::id(id) AS id, written_at, body, state, reason, enqueued_at \
+             FROM diary_entries ORDER BY written_at ASC, id ASC",
         )
         .await
         .map_err(db_error)?
@@ -319,6 +339,7 @@ where
         failed: count_state(&after, STATE_FAILED),
         blocked,
         saved_entries,
+        pulled: None,
     })
 }
 
@@ -1081,10 +1102,11 @@ mod tests {
                 written_at: 1_753_640_000,
                 body: "Dear diary,".to_string(),
             }],
+            pulled: Some(2),
         };
         assert_eq!(
             serde_json::to_string(&report).unwrap(),
-            r#"{"saved":1,"pending":1,"failed":0,"blocked":"net","saved_entries":[{"qid":"2026-07-27T14-30-45-04-00","id":"2026-07-27T14-30-46-04-00","written_at":1753640000,"body":"Dear diary,"}]}"#
+            r#"{"saved":1,"pending":1,"failed":0,"blocked":"net","saved_entries":[{"qid":"2026-07-27T14-30-45-04-00","id":"2026-07-27T14-30-46-04-00","written_at":1753640000,"body":"Dear diary,"}],"pulled":2}"#
         );
         let quiet = FlushReport {
             saved: 0,
@@ -1092,10 +1114,11 @@ mod tests {
             failed: 0,
             blocked: None,
             saved_entries: Vec::new(),
+            pulled: None,
         };
         assert_eq!(
             serde_json::to_string(&quiet).unwrap(),
-            r#"{"saved":0,"pending":0,"failed":0,"blocked":null,"saved_entries":[]}"#
+            r#"{"saved":0,"pending":0,"failed":0,"blocked":null,"saved_entries":[],"pulled":null}"#
         );
     }
 }

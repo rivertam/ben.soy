@@ -123,6 +123,56 @@ pub fn rejection_reason(status: u16) -> String {
     format!("rejected (HTTP {status})")
 }
 
+/// The snapshot endpoint the worker pulls the mirror from.
+pub const SNAPSHOT_PATH: &str = "/api/diary/snapshot";
+
+/// One entry in a pull snapshot — the server fields, nothing else. The
+/// server serializes exactly this; the worker deserializes exactly this.
+/// `deny_unknown_fields` for the same reason as [`WireEntry`]: a drift
+/// between the two sides must fail loudly, never half-parse.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotEntry {
+    pub id: String,
+    pub written_at: i64,
+    pub body: String,
+}
+
+/// The snapshot wire shape: `{"entries": [...]}`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotWire {
+    pub entries: Vec<SnapshotEntry>,
+}
+
+/// What one pull attempt means for the mirror.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PullOutcome {
+    /// A strictly parsed snapshot from OUR server. The only outcome that
+    /// may touch the mirror.
+    Data(Vec<SnapshotEntry>),
+    /// 401/404: signed out or the wrong account. No mirror changes.
+    Auth,
+    /// Anything else — network failure, 5xx, or a 200 whose body is not our
+    /// exact snapshot JSON (a captive portal). No mirror changes. This
+    /// classification is load-bearing: a pull that read hotel-wifi HTML as
+    /// "zero entries" would delete every synced row on the device.
+    Retry,
+}
+
+/// Classify one response from the snapshot endpoint, mirroring
+/// [`classify_response`]'s rules for the push side.
+pub fn classify_pull(status: u16, body: &str) -> PullOutcome {
+    match status {
+        200..=299 => match serde_json::from_str::<SnapshotWire>(body) {
+            Ok(wire) => PullOutcome::Data(wire.entries),
+            Err(_) => PullOutcome::Retry,
+        },
+        401 | 404 => PullOutcome::Auth,
+        _ => PullOutcome::Retry,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

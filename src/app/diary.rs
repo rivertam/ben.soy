@@ -30,7 +30,9 @@
 //! double-post, and a queued entry keeps the time it was written, not the
 //! time it synced. Details in docs/auth.md.
 
-use diary_core::contract::{WireEntry, normalize_body, written_at_in_window};
+use diary_core::contract::{
+    SnapshotEntry, SnapshotWire, WireEntry, normalize_body, written_at_in_window,
+};
 use diary_core::eastern;
 use diary_core::store::{self, DiaryEntry, MAX_PAGE, PAGE_SIZE, SaveError, SavedWrite};
 use jiff::Timestamp;
@@ -457,6 +459,48 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
+/// `GET /api/diary/snapshot` — the pull half of sync: every entry, in the
+/// exact `SnapshotWire` shape the worker strictly parses (a drift fails
+/// loudly on the client, which classifies it Retry and leaves the mirror
+/// alone). Same admin gate as the page; `no-store` like every diary
+/// response. No same-origin requirement: it is a GET, and cross-origin
+/// callers can neither read the JSON (no CORS headers) nor change anything.
+#[route(GET "/api/diary/snapshot")]
+async fn api_snapshot(cx: &Cx) -> Result<Response> {
+    let Some(current) = viewer(cx) else {
+        return Ok(api_error(StatusCode::UNAUTHORIZED, "sign in"));
+    };
+    if !is_admin(&current.email) {
+        return Ok(api_error(StatusCode::NOT_FOUND, "not found"));
+    }
+    let entries = match snapshot_entries(app_context::<Data>(cx)).await {
+        Ok(entries) => entries,
+        Err(error) => {
+            log_failure("snapshot", &error);
+            return Ok(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "store unreachable",
+            ));
+        }
+    };
+    let wire = SnapshotWire {
+        entries: entries
+            .into_iter()
+            .map(|entry| SnapshotEntry {
+                id: entry.id,
+                written_at: entry.written_at,
+                body: entry.body,
+            })
+            .collect(),
+    };
+    let body = serde_json::to_string(&wire).expect("snapshot shape always serializes");
+    Ok(api_json(StatusCode::OK, body))
+}
+
+async fn snapshot_entries(data: &Data) -> std::result::Result<Vec<DiaryEntry>, String> {
+    store::all_entries(&open_db(data).await?).await
+}
+
 /// The probe-and-dedupe algorithm itself lives in `diary_core::store` now —
 /// the same code the device-local store runs — so this adapter only fetches
 /// the handle. (Its native `mem://` tests, including the killer-replay walk,
@@ -707,6 +751,9 @@ mod tests {
         assert!(!crate::content::routes::is_trackable_route(
             "/api/diary/entries"
         ));
+        assert!(!crate::content::routes::is_trackable_route(
+            "/api/diary/snapshot"
+        ));
         assert!(
             crate::content::access::hidden_page(PATH).is_none(),
             "{PATH} must never be a grantable hidden page"
@@ -737,6 +784,7 @@ mod tests {
     #[test]
     fn shared_contract_matches_the_server_glue() {
         assert_eq!(diary_core::contract::API_PATH, "/api/diary/entries");
+        assert_eq!(diary_core::contract::SNAPSHOT_PATH, "/api/diary/snapshot");
         assert!(
             include_str!("../schema.surql")
                 .contains(&format!("string::len($value) <= {MAX_ENTRY_CHARS}")),

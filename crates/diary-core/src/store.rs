@@ -92,6 +92,21 @@ pub async fn entry_page(db: &Db, page_number: usize) -> Result<(Vec<DiaryEntry>,
     Ok((entries, total))
 }
 
+/// Every entry, oldest first — the pull snapshot's source. (On a local
+/// store the extra state columns are simply not projected.)
+pub async fn all_entries(db: &Db) -> Result<Vec<DiaryEntry>, String> {
+    let mut response = db
+        .query(
+            "SELECT record::id(id) AS id, written_at, body FROM diary_entries \
+             ORDER BY written_at ASC, id ASC",
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .check()
+        .map_err(|error| error.to_string())?;
+    response.take(0).map_err(|error| error.to_string())
+}
+
 pub async fn entry_by_id(db: &Db, id: &str) -> Result<Option<DiaryEntry>, String> {
     let mut response = db
         .query("SELECT *, record::id(id) AS id FROM type::record('diary_entries', $id)")

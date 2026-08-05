@@ -124,6 +124,7 @@ mod tests {
             "\"diary-page-v1\"",
             "\"diary-assets-v1\"",
             "\"/api/diary/entries\"",
+            "\"/api/diary/snapshot\"",
             "\"diary-flush\"",
             "self.skipWaiting()",
             "clients.claim()",
@@ -139,7 +140,8 @@ mod tests {
             "importScripts(SYNC_LOADER)",
             "importScripts(self.DIARY_SYNC.glue)",
             "module_or_path",
-            "diary_flush",
+            // flush-then-pull as ONE call inside the one lock hold
+            "diary_sync(API_PATH, SNAPSHOT_PATH)",
             // the one-way legacy migration and the store it drains
             "diary_import",
             "\"diary-queue\"",

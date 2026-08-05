@@ -17,6 +17,7 @@ pub mod contract;
 pub mod eastern;
 pub mod outbox;
 pub mod store;
+pub mod sync;
 
 /// The one handle type every side uses: the server's remote connection, the
 /// tests' `mem://`, the worker's `indxdb://`. Nothing downstream knows which.

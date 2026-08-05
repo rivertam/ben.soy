@@ -22,6 +22,7 @@ const ASSET_CACHE = "diary-assets-v1";
 const LIVE_CACHES = [PAGE_CACHE, ASSET_CACHE];
 const DIARY_PATH = "/diary";
 const API_PATH = "/api/diary/entries";
+const SNAPSHOT_PATH = "/api/diary/snapshot";
 const SYNC_TAG = "diary-flush";
 const FLUSH_LOCK = "diary-flush";
 const SYNC_LOADER = "/diary-sync.js";
@@ -264,17 +265,19 @@ function flushGuarded() {
   );
 }
 
-/* The queue policy — oldest-first, stop on retryable trouble, mark
- * permanent rejections failed — lives in Rust now (diary-core::outbox);
- * so does the POST itself. This wrapper migrates, delegates, reports.
- * Throwing on "net" makes this Background Sync attempt count as failed, so
- * the browser retries with backoff; auth can't be fixed by retrying (and
- * retries burn the bounded attempt budget), so that resolves quietly and
- * the page shows the sign-in banner instead. */
+/* The whole sync pass — flush then pull, policy and transport in Rust
+ * (diary-core::sync over the local store) — runs INSIDE the one lock hold:
+ * the pull's snapshot is then always newer than the last save, which is
+ * what keeps a stale dump from deleting a freshly delivered row. This
+ * wrapper migrates, delegates, reports. Throwing on "net" makes this
+ * Background Sync attempt count as failed, so the browser retries with
+ * backoff; auth can't be fixed by retrying (and retries burn the bounded
+ * attempt budget), so that resolves quietly and the page shows the sign-in
+ * banner instead. */
 async function flush() {
   await ensureWasm();
   await migrateLegacy();
-  const report = JSON.parse(await wasm_bindgen.diary_flush(API_PATH));
+  const report = JSON.parse(await wasm_bindgen.diary_sync(API_PATH, SNAPSHOT_PATH));
   await broadcast(report);
   if (report.saved > 0) {
     await refreshPageCache();
@@ -338,6 +341,8 @@ async function broadcast(report) {
     // What actually landed — id, server timestamp, text — so pages can
     // flip queued bubbles to delivered messages without reloading.
     saved_entries: report.saved_entries,
+    // Mirror rows the pull changed (null when the pull was a no-op).
+    pulled: report.pulled,
   });
   channel.close();
 }
