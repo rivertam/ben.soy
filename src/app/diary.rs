@@ -35,6 +35,7 @@ use diary_core::contract::{
 };
 use diary_core::eastern;
 use diary_core::store::{self, DiaryEntry, MAX_PAGE, PAGE_SIZE, SaveError, SavedWrite};
+use diary_core::views::{self, Bubble, diary_room, entry_detail};
 use jiff::Timestamp;
 use topcoat::{
     Result,
@@ -68,17 +69,12 @@ const BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const NO_STORE: &str = "no-store";
 /// The offline queue's page-side half; the worker and manifest ride stable
 /// routes in `pwa.rs` (a service worker's URL is its identity, so it cannot
-/// be a hashed asset), and the queue's Rust half rides `diary_sync.rs`.
-const DIARY_JS: Asset = asset!("./diary/diary.js");
-
-const META_LABEL: &str =
-    "font-meta text-[0.6875rem] leading-normal tracking-[0.13em] uppercase text-muted";
-const TEXTAREA: &str = "w-full min-w-0 min-h-[3rem] px-3 py-[0.65rem] text-ink bg-card \
-     border border-hairline rounded-[0.2rem] font-body text-sm leading-relaxed outline-none \
-     placeholder:text-muted placeholder:opacity-100 \
-     hover:border-[color-mix(in_srgb,var(--color-ink2)_45%,var(--color-hairline))] \
-     focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-oxide \
-     focus-visible:outline-offset-2";
+/// be a hashed asset), and the queue's Rust half rides `diary_sync.rs` —
+/// which also resolves THIS const into the loader for offline SSR. One
+/// declaration on purpose: a second `asset!` of the same file registers a
+/// duplicate serving route and panics at router build (which `just check`
+/// never runs).
+pub(super) const DIARY_JS: Asset = asset!("./diary/diary.js");
 
 #[query_params(error = redirect("?"))]
 struct DiaryQuery {
@@ -112,7 +108,7 @@ async fn diary(cx: &Cx) -> Result {
         Ok((entries, total)) => {
             // Past-the-end page numbers bounce to the last real page.
             if page_number > last_page(total) {
-                return Err(redirect(&page_url(last_page(total))).into());
+                return Err(redirect(&views::page_url(last_page(total))).into());
             }
             (entries, total, true)
         }
@@ -122,6 +118,18 @@ async fn diary(cx: &Cx) -> Result {
         }
     };
     let last = last_page(total);
+    // The transcript, bubbles, template, and compose form are the SHARED
+    // components (diary_core::views) — the same markup the service worker's
+    // offline SSR renders, so the two renderers cannot drift. Server-only
+    // inserts ride the notice slot.
+    let notice_view = view! {
+        if let Some(message) = notice {
+            <p class="border-l-2 border-oxide pl-3 font-meta text-sm text-ink2">
+                (message)
+            </p>
+        }
+    }?;
+    let bubbles: Vec<Bubble> = entries.iter().rev().map(Bubble::synced).collect();
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
@@ -130,124 +138,14 @@ async fn diary(cx: &Cx) -> Result {
             runtime: false,
             analytics: false,
             pwa: true,
-            <div class="diary-room" data-page=(page_number)>
-                <div class="diary-room-bar">
-                    <span class=(META_LABEL)>"diary · just you"</span>
-                    if total > PAGE_SIZE {
-                        <span class="font-meta text-xs text-muted">
-                            (format!("page {page_number} of {last}"))
-                        </span>
-                    }
-                </div>
-                <div id="diary-transcript" class="diary-transcript" tabindex="0">
-                    if store_ok && page_number < last {
-                        <p class="text-center font-meta text-xs">
-                            <a class="quiet-link" href=(page_url(page_number + 1))>
-                                "↑ older messages"
-                            </a>
-                        </p>
-                    }
-                    if let Some(message) = notice {
-                        <p class="border-l-2 border-oxide pl-3 font-meta text-sm text-ink2">
-                            (message)
-                        </p>
-                    }
-                    if !store_ok {
-                        <p class="text-ink2">
-                            "The diary store is unreachable, so nothing can be listed "
-                            "right now. Entries are safe where they are; try again in "
-                            "a moment."
-                        </p>
-                    }
-                    // diary.js hides this the moment any bubble renders —
-                    // an optimistic first message must not sit under a
-                    // placeholder that contradicts it.
-                    if store_ok && total == 0 {
-                        <p id="diary-empty" class="my-auto text-center text-sm text-muted">
-                            "No messages yet. Say something below."
-                        </p>
-                    }
-                    <section class="diary-history" aria-label="Diary messages">
-                        for entry in entries.iter().rev() {
-                            // data-id is the reconciliation contract with
-                            // diary.js: entry ids are stable from the moment
-                            // of enqueue, so "does the DOM already show this
-                            // id" is the page's entire dedupe logic.
-                            <article
-                                class="diary-message"
-                                data-id=(entry.id.as_str())
-                                data-state="synced"
-                            >
-                                <p class="leading-relaxed whitespace-pre-wrap text-ink2">
-                                    (entry.body.as_str())
-                                </p>
-                                <p class="mt-2 text-right font-meta text-[0.6875rem] text-muted">
-                                    <a class="quiet-link" href=(entry_url(&entry.id))>
-                                        (entry_stamp(entry))
-                                    </a>
-                                </p>
-                            </article>
-                        }
-                    </section>
-                    // diary.js appends bubbles here for rows the server
-                    // HTML does not show, by cloning the template below.
-                    <section id="diary-queue" class="diary-queue" hidden=""></section>
-                    // The one definition of bubble markup the page JS may
-                    // draw from — cloned, never built from strings, so the
-                    // Tailwind scan sees every class and the markup cannot
-                    // drift from the server's transcript articles.
-                    <template id="diary-bubble">
-                        <article class="diary-message" data-id="" data-state="draft">
-                            <p class="leading-relaxed whitespace-pre-wrap text-ink2"></p>
-                            <p class="mt-2 text-right font-meta text-[0.6875rem] text-muted">
-                                <span class="diary-note text-ink2"></span>
-                                <a class="quiet-link" hidden=""></a>
-                                <button
-                                    type="button"
-                                    class="diary-discard quiet-link ml-3 cursor-pointer font-meta text-xs"
-                                    hidden=""
-                                >"discard"</button>
-                            </p>
-                        </article>
-                    </template>
-                    if store_ok && page_number > 1 {
-                        <p class="text-center font-meta text-xs">
-                            <a class="quiet-link" href=(page_url(page_number - 1))>
-                                "newer messages ↓"
-                            </a>
-                        </p>
-                    }
-                </div>
-                <form
-                    method="post"
-                    action="/diary/write"
-                    id="diary-compose"
-                    class="diary-compose"
-                >
-                    <div class="diary-compose-row">
-                        <label class="min-w-0 flex-1" for="diary-body">
-                            <span class="sr-only">"New diary message"</span>
-                            // autofocus lands the cursor in the box on
-                            // desktop; touch browsers ignore it rather
-                            // than popping the keyboard. diary.js adds
-                            // Enter-to-send for keyboard environments.
-                            <textarea
-                                class=(TEXTAREA)
-                                id="diary-body"
-                                name="body"
-                                rows="2"
-                                required=""
-                                autofocus=""
-                                placeholder="Message yourself…"
-                            ></textarea>
-                        </label>
-                        <button
-                            type="submit"
-                            class="oxlink mb-3 shrink-0 cursor-pointer font-meta text-sm"
-                        >"send ↑"</button>
-                    </div>
-                </form>
-            </div>
+            diary_room(
+                page_number: page_number,
+                last_page: last,
+                total: total,
+                store_ok: store_ok,
+                entries: bubbles,
+                notice: notice_view,
+            )
             <script type="module" src=(DIARY_JS)></script>
         )
     }
@@ -280,7 +178,7 @@ async fn diary_entry(cx: &Cx) -> Result {
         };
     }
     if uri(cx).query().is_some() {
-        return Err(redirect(&entry_url(entry_path)).into());
+        return Err(redirect(&views::entry_url(entry_path)).into());
     }
     let loaded = entry_by_id(app_context::<Data>(cx), entry_path).await;
     let entry = match &loaded {
@@ -296,7 +194,9 @@ async fn diary_entry(cx: &Cx) -> Result {
             None
         }
     };
-    let heading = entry.map(entry_date).unwrap_or_else(|| "Diary".to_string());
+    let heading = entry
+        .map(|found| views::entry_date(&found.id))
+        .unwrap_or_else(|| "Diary".to_string());
     let title = format!("Diary · {heading}");
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
@@ -308,23 +208,9 @@ async fn diary_entry(cx: &Cx) -> Result {
             pwa: true,
             page_head(stamp: "diary", title: heading.as_str(), lede: "")
             if let Some(entry) = entry {
-                <section class="mt-8 max-w-prose">
-                    <p class="font-meta text-xs text-muted">(entry_stamp(entry))</p>
-                    <p class="mt-3 leading-relaxed whitespace-pre-wrap text-ink2">
-                        (entry.body.as_str())
-                    </p>
-                    <form
-                        method="post"
-                        action="/diary/delete"
-                        class="mt-10 border-t border-hairline pt-4 text-right"
-                    >
-                        <input type="hidden" name="path" value=(entry.id.as_str())>
-                        <button
-                            type="submit"
-                            class="quiet-link cursor-pointer font-meta text-xs"
-                        >"delete this entry"</button>
-                    </form>
-                </section>
+                // The stamp/body/delete core is the shared component the
+                // worker's offline permalink pages render too.
+                entry_detail(id: entry.id.clone(), body: entry.body.clone())
             } else {
                 <p class="mt-8 max-w-prose text-ink2">
                     "The diary store is unreachable, so this entry did not "
@@ -627,61 +513,6 @@ fn last_page(total: usize) -> usize {
     total.div_ceil(PAGE_SIZE).max(1)
 }
 
-fn page_url(page_number: usize) -> String {
-    if page_number <= 1 {
-        PATH.to_string()
-    } else {
-        format!("{PATH}?page={page_number}")
-    }
-}
-
-fn entry_url(id: &str) -> String {
-    format!("{PATH}/{id}")
-}
-
-/// "Jul 27, 2026 · 2:30 PM", from the id's Eastern wall clock. Stored ids
-/// always parse; anything else falls back to the raw id.
-fn entry_stamp(entry: &DiaryEntry) -> String {
-    match eastern::parse_public_path(&entry.id).and_then(|instant| display_parts(&instant.local)) {
-        Some((date, time)) => format!("{date} · {time}"),
-        None => entry.id.clone(),
-    }
-}
-
-/// The date half alone — the entry page's heading.
-fn entry_date(entry: &DiaryEntry) -> String {
-    match eastern::parse_public_path(&entry.id).and_then(|instant| display_parts(&instant.local)) {
-        Some((date, _)) => date,
-        None => entry.id.clone(),
-    }
-}
-
-/// `YYYY-MM-DD HH:MM:SS` → ("Jul 27, 2026", "2:30 PM"). The shape is
-/// guaranteed by `parse_public_path`; anything else returns `None`.
-fn display_parts(local: &str) -> Option<(String, String)> {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    if local.len() != 19 || !local.is_ascii() {
-        return None;
-    }
-    let month: usize = local[5..7].parse().ok()?;
-    let day: u32 = local[8..10].parse().ok()?;
-    let hour: u32 = local[11..13].parse().ok()?;
-    if !(1..=12).contains(&month) || hour > 23 {
-        return None;
-    }
-    let suffix = if hour < 12 { "AM" } else { "PM" };
-    let clock_hour = match hour % 12 {
-        0 => 12,
-        hour => hour,
-    };
-    Some((
-        format!("{} {day}, {}", MONTHS[month - 1], &local[..4]),
-        format!("{clock_hour}:{} {suffix}", &local[14..16]),
-    ))
-}
-
 /// Bounce back to the diary with a static notice code — never echoed input.
 fn back(notice: &'static str) -> Response {
     see_other(&format!("{PATH}?notice={notice}"))
@@ -815,14 +646,19 @@ mod tests {
         assert_eq!(last_page(1), 1);
         assert_eq!(last_page(PAGE_SIZE), 1);
         assert_eq!(last_page(PAGE_SIZE + 1), 2);
-        assert_eq!(page_url(1), "/diary");
-        assert_eq!(page_url(3), "/diary?page=3");
+        // URL shapes now live in views (the worker's SSR uses them too);
+        // pinned here because these routes' redirects embed them.
+        assert_eq!(views::page_url(1), "/diary");
+        assert_eq!(views::page_url(3), "/diary?page=3");
         assert_eq!(
-            entry_url("2026-07-27T10-00-00-04-00"),
+            views::entry_url("2026-07-27T10-00-00-04-00"),
             "/diary/2026-07-27T10-00-00-04-00"
         );
     }
 
+    /// Stamp formatting (midnight/noon/garbage walks included) moved to
+    /// `diary_core::views` with the markup; what stays pinned here is the
+    /// projection the redirects rely on.
     #[test]
     fn entry_ids_project_like_lifting_permalinks() {
         let instant = eastern::eastern_instant("2026-07-27 18:30:45", 0).unwrap();
@@ -833,32 +669,8 @@ mod tests {
         // parse_public_path; that is safe because a valid id is plain
         // printable ASCII — the Location header build cannot fail on it.
         assert!(id.bytes().all(|byte| (0x21..=0x7e).contains(&byte)));
-        let entry = DiaryEntry {
-            id,
-            written_at: 0,
-            body: String::new(),
-        };
-        assert_eq!(entry_stamp(&entry), "Jul 27, 2026 · 2:30 PM");
-        assert_eq!(entry_date(&entry), "Jul 27, 2026");
-    }
-
-    #[test]
-    fn stamps_handle_midnight_noon_and_garbage() {
-        assert_eq!(
-            display_parts("2026-01-05 00:07:00").unwrap(),
-            ("Jan 5, 2026".to_string(), "12:07 AM".to_string())
-        );
-        assert_eq!(
-            display_parts("2026-12-31 12:00:59").unwrap(),
-            ("Dec 31, 2026".to_string(), "12:00 PM".to_string())
-        );
-        assert_eq!(display_parts("not a stamp"), None);
-        let unparseable = DiaryEntry {
-            id: "garbage".to_string(),
-            written_at: 0,
-            body: String::new(),
-        };
-        assert_eq!(entry_stamp(&unparseable), "garbage");
+        assert_eq!(views::entry_stamp(&id), "Jul 27, 2026 · 2:30 PM");
+        assert_eq!(views::entry_date(&id), "Jul 27, 2026");
     }
 
     /// Key projection and probe-validity tests moved to `diary_core::store`

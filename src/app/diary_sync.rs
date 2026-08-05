@@ -33,9 +33,19 @@ use std::time::SystemTime;
 use sha2::{Digest, Sha256};
 use topcoat::{
     Result,
+    asset::asset_config,
     context::Cx,
     router::{Body, Response, StatusCode, header, route, uri},
 };
+
+// The worker's offline SSR links the site stylesheet and the diary page
+// script; both are resolved HERE (the server is the only side holding an
+// `AssetConfig`) and carried to the worker inside the loader — no Asset
+// machinery ever runs on wasm. The script asset is diary.rs's one
+// declaration (a second `asset!` of the same file would register a
+// duplicate route and panic at router build). Fonts are deliberately
+// absent: offline pages fall back to system fonts.
+use super::diary::DIARY_JS;
 
 const GLUE_PATH: &str = "/diary-sync-glue.js";
 const WASM_PATH: &str = "/diary-sync_bg.wasm";
@@ -67,14 +77,17 @@ static CACHE: Mutex<Option<(Stamp, Arc<Dist>)>> = Mutex::new(None);
 // serve_* names — a route item literally named `wasm` or `glue` would turn
 // same-named local bindings below into constant patterns.
 #[route(GET "/diary-sync.js")]
-async fn serve_loader() -> Result<Response> {
+async fn serve_loader(cx: &Cx) -> Result<Response> {
     let Some(dist) = dist() else {
         return Ok(missing());
     };
+    let config = asset_config(cx);
+    let css = config.resolve(crate::components::SITE_CSS);
+    let js = config.resolve(DIARY_JS);
     Ok(bytes_response(
         "text/javascript; charset=utf-8",
         NO_CACHE,
-        loader_js(&dist.version).into_bytes(),
+        loader_js(&dist.version, &css, &js).into_bytes(),
     ))
 }
 
@@ -102,12 +115,16 @@ async fn serve_wasm(cx: &Cx) -> Result<Response> {
     ))
 }
 
-/// The whole loader: one global naming the current pair. Everything after
-/// `?v=` is this process's content hash, so a page and a worker that read
-/// the same loader can never mix versions.
-fn loader_js(version: &str) -> String {
+/// The whole loader: one global naming the current pair, plus the hashed
+/// asset URLs the worker's offline SSR links. Everything after `?v=` is
+/// this process's content hash, so a page and a worker that read the same
+/// loader can never mix versions — and because the loader is served
+/// no-cache, a deploy that changes only the stylesheet still changes these
+/// bytes and rolls a new worker version, which re-primes its own assets.
+fn loader_js(version: &str, css: &str, js: &str) -> String {
+    let assets = serde_json::json!({ "css": [css], "js": js });
     format!(
-        "self.DIARY_SYNC={{v:\"{version}\",glue:\"{GLUE_PATH}?v={version}\",wasm:\"{WASM_PATH}?v={version}\"}};\n"
+        "self.DIARY_SYNC={{v:\"{version}\",glue:\"{GLUE_PATH}?v={version}\",wasm:\"{WASM_PATH}?v={version}\",assets:{assets}}};\n"
     )
 }
 
@@ -211,11 +228,15 @@ mod tests {
     const LOADER_PATH: &str = "/diary-sync.js";
 
     #[test]
-    fn loader_pins_a_matched_pair() {
-        let js = loader_js("abc123");
+    fn loader_pins_a_matched_pair_and_the_ssr_assets() {
+        let js = loader_js(
+            "abc123",
+            "/_topcoat/assets/site-feed.css",
+            "/_topcoat/assets/d.js",
+        );
         assert_eq!(
             js,
-            "self.DIARY_SYNC={v:\"abc123\",glue:\"/diary-sync-glue.js?v=abc123\",wasm:\"/diary-sync_bg.wasm?v=abc123\"};\n"
+            "self.DIARY_SYNC={v:\"abc123\",glue:\"/diary-sync-glue.js?v=abc123\",wasm:\"/diary-sync_bg.wasm?v=abc123\",assets:{\"css\":[\"/_topcoat/assets/site-feed.css\"],\"js\":\"/_topcoat/assets/d.js\"}};\n"
         );
     }
 

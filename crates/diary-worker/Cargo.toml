@@ -18,10 +18,22 @@ crate-type = ["cdylib"]
 # match the CLI installed by the Justfile `wasm` recipe and deploy/Dockerfile
 # exactly — the glue and the binary are a matched pair.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-diary-core = { path = "../diary-core" }
+diary-core = { path = "../diary-core", features = ["view"] }
+# Offline SSR: the serve-less topcoat router + the shared views. This is the
+# 0.5.0 feature split working as designed — hyper/tokio never enter this
+# graph. The oneshot channel is the Send bridge: page render futures must be
+# Send (topcoat bounds), indxdb query futures are not, so reads run in
+# spawn_local and hand results back through a receiver (which IS Send).
+futures-channel = "0.3"
 js-sys = "0.3"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 surrealdb = { version = "=3.2.3", default-features = false, features = ["kv-indxdb"] }
+topcoat = { version = "0.5.0", default-features = false, features = [
+    "router",
+    "view",
+    "discover",
+] }
 wasm-bindgen = "=0.2.126"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [

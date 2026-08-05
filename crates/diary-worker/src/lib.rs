@@ -175,3 +175,217 @@ fn outbox_error(error: outbox::OutboxError) -> JsError {
 fn json_error(error: serde_json::Error) -> JsError {
     JsError::new(&error.to_string())
 }
+
+// --------------------------------------------------------------------------
+// Offline SSR: the same topcoat router machinery the server runs — pages
+// discovered by inventory, dispatched by `Router::handle`, no sockets, no
+// hyper (the 0.5.0 `serve` split) — rendering the SAME diary_core::views the
+// server page renders. sw.js calls `diary_render` when a navigation's
+// network fetch fails; anything unmatched or errored returns None and the
+// worker falls back to its offline stub.
+
+mod ssr {
+    use std::cell::Cell;
+
+    use diary_core::outbox::{self, LocalEntry};
+    use diary_core::store::PAGE_SIZE;
+    use diary_core::views::{Bubble, diary_room, entry_detail, entry_date, offline_page};
+    use topcoat::{
+        Result,
+        context::{Cx, app_context},
+        router::{
+            Body, Request, Router, RouterBuilderDiscoverExt, StatusCode, page, path_param,
+            to_bytes, uri,
+        },
+        view::view,
+    };
+    use wasm_bindgen::prelude::*;
+
+    use crate::db;
+
+    /// The local store handle for page fns. The HANDLE is Send+Sync (an Arc
+    /// over channels); only its query futures are !Send — hence the oneshot
+    /// bridge below.
+    #[derive(Clone)]
+    struct WorkerStore(outbox::Db);
+
+    /// The hashed asset URLs the offline chrome links, resolved server-side
+    /// into the /diary-sync.js loader and passed through sw.js verbatim.
+    #[derive(Clone, serde::Deserialize)]
+    struct WorkerAssets {
+        #[serde(default)]
+        css: Vec<String>,
+        #[serde(default)]
+        js: String,
+    }
+
+    thread_local! {
+        /// Built once per worker lifetime and leaked: `handle` borrows the
+        /// router across awaits, and a &'static reference is the simple way
+        /// to keep that borrow out of a RefCell. A worker's config cannot
+        /// change after evaluation, so once is also correct.
+        static ROUTER: Cell<Option<&'static Router>> = const { Cell::new(None) };
+    }
+
+    async fn router(assets_json: &str) -> std::result::Result<&'static Router, JsError> {
+        if let Some(router) = ROUTER.with(|cell| cell.get()) {
+            return Ok(router);
+        }
+        let db = db().await?;
+        let assets: WorkerAssets = serde_json::from_str(assets_json).unwrap_or(WorkerAssets {
+            css: Vec::new(),
+            js: String::new(),
+        });
+        let built = Router::builder()
+            .discover()
+            .app_context(WorkerStore(db))
+            .app_context(assets)
+            .build();
+        let leaked: &'static Router = Box::leak(Box::new(built));
+        ROUTER.with(|cell| cell.set(Some(leaked)));
+        Ok(leaked)
+    }
+
+    /// Render one GET as the offline diary. `None` = nothing to say (an
+    /// unmatched path or a render failure) — the caller serves its stub.
+    #[wasm_bindgen]
+    pub async fn diary_render(url: String, assets_json: String) -> Result<Option<String>, JsError> {
+        let router = router(&assets_json).await?;
+        let request = Request::builder()
+            .method("GET")
+            .uri(url)
+            .body(Body::empty())
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        let response = router.handle(request).await;
+        if response.status() != StatusCode::OK {
+            return Ok(None);
+        }
+        let bytes = to_bytes(response.into_body(), 8 * 1024 * 1024)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// The Send bridge: run a !Send indxdb read inside `spawn_local` (same
+    /// thread — wasm is single-threaded) and await the oneshot receiver,
+    /// which IS Send, from the page future that must be.
+    async fn all_rows(store: &WorkerStore) -> std::result::Result<Vec<LocalEntry>, String> {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        let db = store.0.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = tx.send(outbox::all_local(&db).await.map_err(|e| e.to_string()));
+        });
+        rx.await.map_err(|_| "render read dropped".to_string())?
+    }
+
+    async fn one_row(
+        store: &WorkerStore,
+        id: String,
+    ) -> std::result::Result<Option<LocalEntry>, String> {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        let db = store.0.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = tx.send(outbox::entry(&db, &id).await.map_err(|e| e.to_string()));
+        });
+        rx.await.map_err(|_| "render read dropped".to_string())?
+    }
+
+    /// `?page=N`, clamped — worker page fns NEVER redirect (the server's
+    /// bounce dance would loop straight back into the offline fallback).
+    fn requested_page(query: Option<&str>) -> usize {
+        query
+            .and_then(|q| {
+                q.split('&')
+                    .find_map(|pair| pair.strip_prefix("page="))
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .filter(|number| *number >= 1)
+            .unwrap_or(1)
+    }
+
+    #[page("/diary")]
+    async fn offline_diary(cx: &Cx) -> Result {
+        let store = app_context::<WorkerStore>(cx);
+        let assets = app_context::<WorkerAssets>(cx);
+        let (bubbles, total, last, page_number, store_ok) = match all_rows(store).await {
+            Ok(mut rows) => {
+                rows.sort_by(|a, b| {
+                    (a.written_at, a.id.as_str()).cmp(&(b.written_at, b.id.as_str()))
+                });
+                let total = rows.len();
+                let last = total.div_ceil(PAGE_SIZE).max(1);
+                let page_number = requested_page(uri(cx).query()).min(last);
+                // Newest-first pages, each rendered oldest→newest — the
+                // ascending twin of the server's DESC LIMIT/START + rev().
+                let end = total.saturating_sub((page_number - 1) * PAGE_SIZE);
+                let start = end.saturating_sub(PAGE_SIZE);
+                let bubbles: Vec<Bubble> = rows[start..end]
+                    .iter()
+                    .map(|row| Bubble::from_local(row, true))
+                    .collect();
+                (bubbles, total, last, page_number, true)
+            }
+            Err(_) => (Vec::new(), 0, 1, 1, false),
+        };
+        let empty_notice = view! {}?;
+        let room = view! {
+            diary_room(
+                page_number: page_number,
+                last_page: last,
+                total: total,
+                store_ok: store_ok,
+                entries: bubbles,
+                notice: empty_notice,
+            )
+        }?;
+        view! {
+            offline_page(
+                title: "Diary — offline",
+                css_hrefs: assets.css.clone(),
+                diary_js: assets.js.clone(),
+                (room)
+            )
+        }
+    }
+
+    #[topcoat::router::path_param]
+    struct EntryPath(str);
+
+    #[page("/diary/{entry_path}")]
+    async fn offline_entry(cx: &Cx) -> Result {
+        let store = app_context::<WorkerStore>(cx);
+        let assets = app_context::<WorkerAssets>(cx);
+        let entry_path = path_param::<EntryPath>(cx);
+        let found = if diary_core::eastern::parse_public_path(entry_path).is_some() {
+            one_row(store, entry_path.to_string()).await.ok().flatten()
+        } else {
+            None
+        };
+        let body = match &found {
+            Some(row) => {
+                let heading = entry_date(&row.id);
+                view! {
+                    <h1 class="mt-8 font-display text-xl">(heading)</h1>
+                    entry_detail(id: row.id.clone(), body: row.body.clone())
+                }?
+            }
+            None => view! {
+                <p class="mt-8 max-w-prose text-ink2">
+                    "This entry is not in the device's local store. It may "
+                    "exist on the server — try again online."
+                </p>
+            }?,
+        };
+        view! {
+            offline_page(
+                title: "Diary — offline",
+                css_hrefs: assets.css.clone(),
+                diary_js: assets.js.clone(),
+                <div>
+                    (body)
+                    <p class="mt-6"><a class="quiet-link" href="/diary">"← diary"</a></p>
+                </div>
+            )
+        }
+    }
+}

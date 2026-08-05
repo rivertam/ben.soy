@@ -1,25 +1,28 @@
 /* The /diary service worker (registered by diary.js with scope "/diary" —
  * public pages are never controlled). Two jobs:
  *
- * 1. Offline reads: keep a device-local copy of the last good GET /diary and
- *    serve it when the network can't; hashed /_topcoat/assets/ and the
- *    versioned wasm pair ride cache-first caches (immutable by contract).
- * 2. The write queue: flush pending entries to the JSON endpoint. The queue
- *    itself is Rust — crates/diary-core compiled to wasm, stored in a local
- *    SurrealDB over IndexedDB (docs/diary-sync.md) — and this file is only
- *    the browser glue: import the module, hold the Web Lock, migrate the
- *    pre-wasm IndexedDB queue, broadcast the report, and throw on retryable
- *    trouble so Background Sync retries with backoff. Flushing lives HERE
- *    and only here — pages enqueue and kick. The server dedupes replays
- *    (same second, same body); that is the real idempotency guarantee, the
- *    lock only trims wasted duplicate work.
+ * 1. Offline reads: when a navigation's network fetch fails, RENDER the
+ *    page from the device mirror — the same Rust router and views the
+ *    server runs, compiled to wasm (diary_render). Hashed assets and the
+ *    versioned wasm pair ride a cache-first cache (immutable by contract);
+ *    there is no cached-HTML copy anymore, the mirror is the offline copy.
+ * 2. The write queue: one sync pass (flush then pull) against the JSON
+ *    endpoints. The policy is Rust — crates/diary-core over a local
+ *    SurrealDB (docs/diary-sync.md) — and this file is only the browser
+ *    glue: import the module, hold the Web Lock, migrate the pre-wasm
+ *    IndexedDB queue, broadcast the report, and throw on retryable trouble
+ *    so Background Sync retries with backoff. Syncing lives HERE and only
+ *    here — pages enqueue and kick. The server dedupes replays (same
+ *    second, same body); that is the real idempotency guarantee, the lock
+ *    only trims wasted duplicate work.
  */
 
 "use strict";
 
-const PAGE_CACHE = "diary-page-v1";
 const ASSET_CACHE = "diary-assets-v1";
-const LIVE_CACHES = [PAGE_CACHE, ASSET_CACHE];
+// diary-page-v1 (the old cached-HTML offline copy) is deliberately absent:
+// activate() deletes any diary-* cache not listed here.
+const LIVE_CACHES = [ASSET_CACHE];
 const DIARY_PATH = "/diary";
 const API_PATH = "/api/diary/entries";
 const SNAPSHOT_PATH = "/api/diary/snapshot";
@@ -93,7 +96,10 @@ async function activate() {
 async function primeOwnPair() {
   try {
     const cache = await caches.open(ASSET_CACHE);
-    for (const url of [self.DIARY_SYNC.glue, self.DIARY_SYNC.wasm]) {
+    const ssrAssets = self.DIARY_SYNC.assets
+      ? [...(self.DIARY_SYNC.assets.css || []), self.DIARY_SYNC.assets.js].filter(Boolean)
+      : [];
+    for (const url of [self.DIARY_SYNC.glue, self.DIARY_SYNC.wasm, ...ssrAssets]) {
       if (await cache.match(url)) {
         continue;
       }
@@ -155,35 +161,40 @@ self.addEventListener("fetch", (event) => {
   // passes through with no respondWith at all.
 });
 
-/* Network-first. Only a real 200 from this origin for exactly /diary with no
- * query is cached: navigations arrive redirect-mode "manual", so the
- * signed-out 303 surfaces as an opaqueredirect (status 0, type
- * "opaqueredirect"), and caching one would poison the offline copy. Offline,
- * the cached /diary answers ANY in-scope navigation — page 1 carries full
- * entry bodies, so it is the useful fallback for permalinks too. */
+/* Network-first — the server stays the auth boundary whenever it is
+ * reachable. Only when the fetch itself fails does the wasm router render
+ * the page from the device mirror: real pagination, real permalinks,
+ * pending rows included. The stub survives as the wasm-refused last
+ * resort (first-install-offline, private-mode IndexedDB). */
 async function navigationResponse(request, url) {
   try {
-    const response = await fetch(request);
-    if (
-      response.ok &&
-      response.type === "basic" &&
-      url.pathname === DIARY_PATH &&
-      url.search === ""
-    ) {
-      const cache = await caches.open(PAGE_CACHE);
-      await cache.put(DIARY_PATH, response.clone());
-    }
-    return response;
+    return await fetch(request);
   } catch (error) {
     if (request.method !== "GET") {
-      // Answering a failed form POST with the cached page would look like
+      // Answering a failed form POST with a rendered page would look like
       // success while silently eating the body — surface the failure so
       // the browser shows its error page and the text stays recoverable.
       throw error;
     }
-    const cache = await caches.open(PAGE_CACHE);
-    const cached = await cache.match(DIARY_PATH);
-    return cached || offlineStub();
+    try {
+      await ensureWasm();
+      const html = await wasm_bindgen.diary_render(
+        url.pathname + url.search,
+        JSON.stringify((self.DIARY_SYNC && self.DIARY_SYNC.assets) || {})
+      );
+      if (html) {
+        return new Response(html, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+    } catch (renderError) {
+      // fall through to the stub
+    }
+    return offlineStub();
   }
 }
 
@@ -279,33 +290,8 @@ async function flush() {
   await migrateLegacy();
   const report = JSON.parse(await wasm_bindgen.diary_sync(API_PATH, SNAPSHOT_PATH));
   await broadcast(report);
-  if (report.saved > 0) {
-    await refreshPageCache();
-  }
   if (report.blocked === "net") {
     throw new Error("diary flush interrupted; sync will retry");
-  }
-}
-
-/* The page renders saved entries optimistically and never reloads after a
- * flush, so the offline copy of /diary must be refreshed HERE — without
- * this, an offline open would show a transcript missing everything saved
- * since the last online navigation. Same guards as navigationResponse: only
- * a real 200 that still lives at /diary (not a login redirect) is stored.
- * Best-effort — the next online navigation refreshes it anyway. */
-async function refreshPageCache() {
-  try {
-    const response = await fetch(DIARY_PATH, { credentials: "same-origin" });
-    if (
-      response.ok &&
-      response.type === "basic" &&
-      new URL(response.url).pathname === DIARY_PATH
-    ) {
-      const cache = await caches.open(PAGE_CACHE);
-      await cache.put(DIARY_PATH, response);
-    }
-  } catch (error) {
-    // offline again already, or the fetch failed — the cached copy stays
   }
 }
 

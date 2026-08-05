@@ -121,7 +121,6 @@ mod tests {
     #[test]
     fn sw_js_pins_the_offline_protocol() {
         for needle in [
-            "\"diary-page-v1\"",
             "\"diary-assets-v1\"",
             "\"/api/diary/entries\"",
             "\"/api/diary/snapshot\"",
@@ -129,9 +128,11 @@ mod tests {
             "self.skipWaiting()",
             "clients.claim()",
             "\"navigate\"",
-            // the opaqueredirect guard: only real 200s become the offline copy
+            // offline navigations RENDER from the mirror (the wasm router);
+            // the stub only answers when the module itself refuses
+            "diary_render(",
+            "offlineStub()",
             "response.type === \"basic\"",
-            "url.search === \"\"",
             "/_topcoat/assets/",
             "navigator.locks.request",
             "new BroadcastChannel(\"diary\")",
@@ -162,7 +163,6 @@ mod tests {
     fn page_and_worker_agree_on_shared_names() {
         for shared in [
             "\"diary-flush\"",
-            "\"diary-page-v1\"",
             "\"diary-assets-v1\"",
             "\"/diary-sync.js\"",
             "DIARY_SYNC.glue",

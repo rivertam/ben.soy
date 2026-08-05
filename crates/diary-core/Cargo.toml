@@ -15,6 +15,16 @@ jiff = { version = "0.2.34", default-features = false, features = [
 serde = { workspace = true }
 serde_json = { workspace = true }
 surrealdb = { workspace = true }
+# The shared diary views (feature "view"): pure components — props in,
+# markup out, zero awaits — which is what keeps Component::render's +Send
+# bound satisfiable on wasm32. View-only topcoat compiles for wasm; the
+# server's full-featured topcoat unifies with it in the root workspace.
+topcoat = { version = "0.5.0", default-features = false, features = [
+    "view",
+], optional = true }
+
+[features]
+view = ["dep:topcoat"]
 
 [dev-dependencies]
 # The isomorphism proof: the same outbox code the service worker runs against

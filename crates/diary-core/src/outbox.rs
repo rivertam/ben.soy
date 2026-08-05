@@ -230,9 +230,8 @@ pub async fn queued(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
 }
 
 /// Every local row in every state, oldest write first — the pull's diff
-/// input ([`crate::sync::apply_pull`] decides creates/updates/deletes
-/// against this).
-pub(crate) async fn all_local(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
+/// input ([`crate::sync::apply_pull`]) and the worker's offline SSR read.
+pub async fn all_local(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
     let mut response = db
         .query(
             "SELECT record::id(id) AS id, written_at, body, state, reason, enqueued_at \
@@ -243,6 +242,11 @@ pub(crate) async fn all_local(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
         .check()
         .map_err(db_error)?;
     response.take(0).map_err(db_error)
+}
+
+/// One local row by id, any state — the worker's offline permalink read.
+pub async fn entry(db: &Db, id: &str) -> Result<Option<LocalEntry>, OutboxError> {
+    local_by_id(db, id).await
 }
 
 /// Drop a queued or failed row — the page's discard button. Synced rows are

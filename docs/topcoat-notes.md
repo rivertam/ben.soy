@@ -223,6 +223,17 @@ separately from the crate, so `cargo install topcoat-cli --version <v>
   `topcoat::font::link(…)`) only work inside `view!` **within a
   `#[page]`/`#[component]`/`#[layout]`/`#[shard]` fn** — the expansion needs a
   hidden `__cx`. A plain `async fn` containing `view!` cannot call components.
+- `#[component]` treats EVERY parameter as a prop except one literally named
+  `cx: &Cx` — naming it `_cx` makes it a required prop (`missing required
+  property …::_cx`). A component that never touches context can simply omit
+  the parameter entirely; the macro supplies `__cx` regardless
+  (diary-core's shared views do this).
+- Each `asset!` invocation registers the file's serving route at discovery,
+  and TWO invocations of the same file (or two `tailwind::stylesheet!()`
+  calls — it is an `asset!` underneath) panic the router build with
+  "duplicate route registered", which `just check` never runs. One `pub`
+  const per asset, imported everywhere else (`chrome::SITE_CSS`,
+  `diary::DIARY_JS` are the shared ones).
 - Page-shell pattern used in this repo (`src/components/chrome.rs`): `#[component] shell(title: &str, body: View)`;
   pages do `let body = view! { … }?;` then `view! { shell(title: "…", body: body) }`.
 - Unquoted text in `view!` is a compile error — every literal string is quoted.
@@ -246,7 +257,12 @@ separately from the crate, so `cargo install topcoat-cli --version <v>
 - The catch: page/component render futures are `+ Send` with no wasm cfg
   (`topcoat_view::Component::render`, router `PageRenderFn`), and browser
   interop futures are `!Send` — a page fn cannot directly await an indxdb
-  query or JsFuture. Either bounce such work through
-  `wasm_bindgen_futures::spawn_local` + a oneshot channel (the receiver half
-  is `Send`), or upstream a cfg-gated bound. The diary's plan for this is
-  roadmap item 3 in `docs/diary-sync.md`.
+  query or JsFuture. Two working answers, both SHIPPED in the diary worker
+  (`crates/diary-worker/src/lib.rs::ssr`, live-verified in a real service
+  worker): keep shared components PURE (zero awaits — a future that never
+  suspends over `!Send` state is `Send` for free), and bounce actual store
+  reads through `wasm_bindgen_futures::spawn_local` + a oneshot channel
+  (the receiver half is `Send`). `Router::builder().discover().app_context(…)
+  .build().handle(request)` then serves `#[page]`s from inside the worker;
+  `Surreal<Any>` itself is Send+Sync as a HANDLE and registers fine as app
+  context — only its query futures are `!Send`.

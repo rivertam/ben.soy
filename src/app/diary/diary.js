@@ -14,7 +14,6 @@
 
 const SW_URL = "/sw.js";
 const SCOPE = "/diary";
-const PAGE_CACHE = "diary-page-v1";
 const ASSET_CACHE = "diary-assets-v1";
 const SYNC_TAG = "diary-flush";
 const SYNC_LOADER = "/diary-sync.js";
@@ -420,24 +419,15 @@ function hookDiscards() {
 /* ------------------------------------------------------------ caching ---- */
 
 /* First-visit priming: the first load is uncontrolled, so without this an
- * install-then-airplane-mode launch would land on the browser's offline
- * page. Everything here rides the HTTP cache (the assets are immutable), so
- * it is nearly free; failures are fine — the worker takes over from the
- * next load. The redirect guard keeps a login page from ever being stored
- * as /diary. The wasm pair is primed too, so the first offline open can
- * still render and enqueue. */
+ * install-then-airplane-mode launch would land on the stub. Everything here
+ * rides the HTTP cache (the assets are immutable), so it is nearly free;
+ * failures are fine — the worker primes its own set on activate. There is
+ * no page copy to prime anymore: offline reads render from the mirror. */
 async function primeCaches() {
   if (!("caches" in window)) {
     return;
   }
   try {
-    const page = await caches.open(PAGE_CACHE);
-    if (!(await page.match(SCOPE))) {
-      const response = await fetch(SCOPE, { credentials: "same-origin" });
-      if (response.ok && new URL(response.url).pathname === SCOPE) {
-        await page.put(SCOPE, response);
-      }
-    }
     const assets = await caches.open(ASSET_CACHE);
     const urls = new Set();
     for (const node of document.querySelectorAll(

@@ -1097,6 +1097,7 @@ dependencies = [
  "serde_json",
  "surrealdb",
  "tokio",
+ "topcoat",
 ]
 
 [[package]]
