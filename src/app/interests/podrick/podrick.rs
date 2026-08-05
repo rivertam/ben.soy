@@ -23,10 +23,10 @@ mod seed_install;
 
 // The permanent-path format is a public URL contract shared with /lifting and
 // the diary. Podrick reuses the implementation rather than restating it; it
-// needs only `public_path` and `utc_timestamp` from the module.
-#[allow(dead_code)]
-#[path = "../lifting/archive/eastern.rs"]
-mod eastern;
+// needs only `public_path` and `utc_timestamp`. The module lives in
+// diary-core now (the diary's wasm worker compiles it too), which also ends
+// this binary's old `#[path]` re-mount.
+use diary_core::eastern;
 
 use announce::{Announcer, TickReport};
 use discord::Discord;

@@ -14,9 +14,11 @@ State at capture: fitness version 135, spire version 11; 360 workouts /
 - `api/manifest.tsv` — `name  status  method  path?query` for every capture.
 - `api/<name>.json` — response body, byte-exact as served.
 - `api/<name>.headers` — full response headers for representative cases.
-- `d1/workout_triples.json` — all 360 `(started_at_utc, started_at_local,
-  eastern_offset_minutes, duration_seconds, id)` rows; the validation corpus
-  for the Rust Eastern-projection module (`benjisponge::eastern`).
+- `crates/diary-core/tests/fixtures/d1/workout_triples.json` — all 360
+  `(started_at_utc, started_at_local, eastern_offset_minutes,
+  duration_seconds, id)` rows; the validation corpus for the Eastern
+  projection, which lives in `diary_core::eastern` now (moved there so the
+  diary's wasm worker can compute entry keys with the identical code).
 - `d1/spire_rows.json` — all spire runs, every column except `raw`.
 - `d1/meta_versions.json`, `d1/counts.json` — provenance.
 

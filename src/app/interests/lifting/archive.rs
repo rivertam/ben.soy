@@ -20,7 +20,10 @@
 
 pub(crate) mod api;
 pub(crate) mod db;
-pub(crate) mod eastern;
+// The Eastern projection moved to diary-core (diary entry ids share it and
+// the wasm worker compiles it); this re-export keeps every archive-relative
+// path working unchanged.
+pub(crate) use diary_core::eastern;
 pub(crate) mod filters;
 pub(crate) mod import;
 pub(crate) mod manual;

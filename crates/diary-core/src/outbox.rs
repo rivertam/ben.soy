@@ -19,15 +19,11 @@
 use std::future::Future;
 
 use serde::{Deserialize, Serialize};
-use surrealdb::{
-    Surreal,
-    engine::any::{self, Any},
-    types::SurrealValue,
-};
+use surrealdb::{engine::any, types::SurrealValue};
 
 use crate::contract::{SendOutcome, WireEntry, normalize_lines, rejection_reason};
 
-pub type Db = Surreal<Any>;
+pub use crate::Db;
 
 /// Local namespace/database names. Nothing else ever lives in this store.
 const NAMESPACE: &str = "diary";

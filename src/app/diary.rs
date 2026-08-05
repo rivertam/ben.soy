@@ -30,10 +30,10 @@
 //! double-post, and a queued entry keeps the time it was written, not the
 //! time it synced. Details in docs/auth.md.
 
-use diary_core::contract::{COLLISION_PROBES, WireEntry, normalize_body, written_at_in_window};
-use jiff::{Timestamp, tz::TimeZone};
-use serde::{Deserialize, Serialize};
-use surrealdb::types::SurrealValue;
+use diary_core::contract::{WireEntry, normalize_body, written_at_in_window};
+use diary_core::eastern;
+use diary_core::store::{self, DiaryEntry, MAX_PAGE, PAGE_SIZE, SaveError, SavedWrite};
+use jiff::Timestamp;
 use topcoat::{
     Result,
     asset::{Asset, asset},
@@ -52,17 +52,11 @@ use crate::content::access::is_admin;
 use crate::util::urlencode;
 
 use super::analytics::is_same_origin;
-use super::interests::lifting::archive::eastern;
 use super::login::viewer;
 use super::not_found::not_found_page;
 
 pub(crate) const PATH: &str = "/diary";
 const LOGIN_REDIRECT: &str = "/login?next=%2Fdiary";
-const PAGE_SIZE: usize = 20;
-/// Far past any real diary and far under the store's signed-64-bit `START`
-/// limit. Wilder `?page=` values behave like unparseable ones (redirect to
-/// `/diary`) instead of surfacing a SurrealDB parse error as a fake outage.
-const MAX_PAGE: usize = 1_000_000;
 /// A worst-case urlencoded body of `MAX_ENTRY_CHARS` multibyte characters
 /// runs to several hundred KB; 1 MiB matches the fitness import's bound.
 /// (The char bound itself, the replay window, and the collision probes now
@@ -83,15 +77,6 @@ const TEXTAREA: &str = "w-full min-w-0 min-h-[3rem] px-3 py-[0.65rem] text-ink b
      hover:border-[color-mix(in_srgb,var(--color-ink2)_45%,var(--color-hairline))] \
      focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-oxide \
      focus-visible:outline-offset-2";
-
-/// One stored entry. `id` is the Eastern public-path record key;
-/// `written_at` is UTC epoch seconds, the instant the key projects.
-#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
-struct DiaryEntry {
-    id: String,
-    written_at: i64,
-    body: String,
-}
 
 #[query_params(error = redirect("?"))]
 struct DiaryQuery {
@@ -368,20 +353,6 @@ async fn delete_entry(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
-/// The saved-or-deduped outcome `save_queued_entry` reports back as JSON.
-struct SavedEntry {
-    id: String,
-    written_at: i64,
-    deduped: bool,
-}
-
-enum SaveError {
-    /// Every probed second held a different entry — give up rather than
-    /// stamp the entry minutes away from its composition time.
-    Exhausted,
-    Store(String),
-}
-
 /// `POST /api/diary/entries` — the queue-replay twin of `/diary/write`.
 /// Same authorization gate; the differences are deliberate: JSON in and out
 /// (real status codes a background fetch can act on, where the form's
@@ -459,62 +430,17 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
-/// Replay-safe insert. The id derives from the client's epoch; a collision
-/// holding the SAME body is a replay of a write whose response was lost, so
-/// it counts as saved. A different body probes forward one second at a
-/// time, re-running the dedupe check at EVERY probed id — the killer replay
-/// is "bumped to T+1, response lost, retried from T", which must land on
-/// the T+1 dedupe, not insert again at T+2. Check-first, then CREATE, then
-/// re-check when CREATE fails: a lost race is indistinguishable from a
-/// replayed twin, and neither is an error (never sniff the store's error
-/// strings). Never overwrites — the form path's rule holds here too.
-///
-/// Invariant: the stored `written_at` is always the epoch its id projects
-/// from, so `/diary`'s `ORDER BY written_at DESC, id DESC` and the
-/// permalink agree about when an entry happened.
+/// The probe-and-dedupe algorithm itself lives in `diary_core::store` now —
+/// the same code the device-local store runs — so this adapter only fetches
+/// the handle. (Its native `mem://` tests, including the killer-replay walk,
+/// moved with it.)
 async fn save_queued_entry(
     data: &Data,
     written_at: i64,
     body: &str,
-) -> std::result::Result<SavedEntry, SaveError> {
-    for offset in 0..COLLISION_PROBES {
-        let epoch = written_at + offset;
-        let Some(id) = entry_key(epoch) else {
-            return Err(SaveError::Store(format!("unprojectable epoch {epoch}")));
-        };
-        match entry_by_id(data, &id).await.map_err(SaveError::Store)? {
-            Some(existing) if existing.body == body => {
-                return Ok(SavedEntry {
-                    id,
-                    written_at: existing.written_at,
-                    deduped: true,
-                });
-            }
-            Some(_) => continue,
-            None => {}
-        }
-        match insert_entry(data, &id, epoch, body).await {
-            Ok(()) => {
-                return Ok(SavedEntry {
-                    id,
-                    written_at: epoch,
-                    deduped: false,
-                });
-            }
-            Err(error) => match entry_by_id(data, &id).await.map_err(SaveError::Store)? {
-                Some(existing) if existing.body == body => {
-                    return Ok(SavedEntry {
-                        id,
-                        written_at: existing.written_at,
-                        deduped: true,
-                    });
-                }
-                Some(_) => continue,
-                None => return Err(SaveError::Store(error)),
-            },
-        }
-    }
-    Err(SaveError::Exhausted)
+) -> std::result::Result<SavedWrite, SaveError> {
+    let db = open_db(data).await.map_err(SaveError::Store)?;
+    store::save_entry(&db, written_at, body).await
 }
 
 fn is_json_content_type(headers: &HeaderMap) -> bool {
@@ -539,89 +465,36 @@ fn api_error(status: StatusCode, message: &'static str) -> Response {
     api_json(status, serde_json::json!({ "error": message }).to_string())
 }
 
-/// One page of entries, newest first, plus the total count — one round trip.
+/// The queries live in `diary_core::store` (the same code the device-local
+/// store runs); these adapters fetch the shared handle from `Data` and keep
+/// every call site's old shape, including the all-errors-are-Strings rule
+/// the outage branches match on.
+async fn open_db(data: &Data) -> std::result::Result<diary_core::Db, String> {
+    data.db().await.map_err(|error| error.to_string())
+}
+
 async fn entry_page(
     data: &Data,
     page_number: usize,
 ) -> std::result::Result<(Vec<DiaryEntry>, usize), String> {
-    #[derive(Deserialize, SurrealValue)]
-    struct CountRow {
-        count: i64,
-    }
-
-    let db = data.db().await.map_err(|error| error.to_string())?;
-    let start = page_number.saturating_sub(1).saturating_mul(PAGE_SIZE);
-    // LIMIT/START are server-computed integers, formatted rather than bound
-    // to keep the statement inside plainly supported syntax. The id
-    // tie-break is deterministic: same-table keys compare as strings, and
-    // the DST-fold pair (…-04-00 before …-05-00) even sorts chronologically.
-    let mut response = db
-        .query(format!(
-            "SELECT *, record::id(id) AS id FROM diary_entries \
-                 ORDER BY written_at DESC, id DESC LIMIT {PAGE_SIZE} START {start};
-             SELECT count() FROM diary_entries GROUP ALL;"
-        ))
-        .await
-        .map_err(|error| error.to_string())?
-        .check()
-        .map_err(|error| error.to_string())?;
-    let entries: Vec<DiaryEntry> = response.take(0).map_err(|error| error.to_string())?;
-    let counts: Vec<CountRow> = response.take(1).map_err(|error| error.to_string())?;
-    let total = counts
-        .into_iter()
-        .next()
-        .map(|row| row.count.max(0) as usize)
-        .unwrap_or(0);
-    Ok((entries, total))
+    store::entry_page(&open_db(data).await?, page_number).await
 }
 
 async fn entry_by_id(data: &Data, id: &str) -> std::result::Result<Option<DiaryEntry>, String> {
-    let db = data.db().await.map_err(|error| error.to_string())?;
-    let mut response = db
-        .query("SELECT *, record::id(id) AS id FROM type::record('diary_entries', $id)")
-        .bind(("id", id.to_string()))
-        .await
-        .map_err(|error| error.to_string())?
-        .check()
-        .map_err(|error| error.to_string())?;
-    let entries: Vec<DiaryEntry> = response.take(0).map_err(|error| error.to_string())?;
-    Ok(entries.into_iter().next())
+    store::entry_by_id(&open_db(data).await?, id).await
 }
 
-/// CREATE, not UPSERT: two entries in the same second would collide on the
-/// key, and overwriting a diary entry is worse than asking me to resubmit.
 async fn insert_entry(
     data: &Data,
     id: &str,
     written_at: i64,
     body: &str,
 ) -> std::result::Result<(), String> {
-    let db = data.db().await.map_err(|error| error.to_string())?;
-    db.query(
-        "CREATE ONLY type::record('diary_entries', $id)
-             SET written_at = $written_at,
-                 body = $body",
-    )
-    .bind(("id", id.to_string()))
-    .bind(("written_at", written_at))
-    .bind(("body", body.to_string()))
-    .await
-    .map_err(|error| error.to_string())?
-    .check()
-    .map_err(|error| error.to_string())?;
-    Ok(())
+    store::insert_entry(&open_db(data).await?, id, written_at, body).await
 }
 
-/// Idempotent: deleting an already-deleted entry succeeds quietly.
 async fn remove_entry(data: &Data, id: &str) -> std::result::Result<(), String> {
-    let db = data.db().await.map_err(|error| error.to_string())?;
-    db.query("DELETE type::record('diary_entries', $id)")
-        .bind(("id", id.to_string()))
-        .await
-        .map_err(|error| error.to_string())?
-        .check()
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    store::remove_entry(&open_db(data).await?, id).await
 }
 
 /// The shared preamble both POSTs run before believing anything in the body.
@@ -662,24 +535,11 @@ fn parse_single_field(body: &[u8], name: &str) -> Option<String> {
 }
 
 /// The record key and stored timestamp for a new form entry, from one
-/// instant.
+/// instant. (`store::entry_key` is the projection itself — shared with the
+/// queue, which keys offline entries by their composition second.)
 fn now_entry() -> Option<(String, i64)> {
     let now = Timestamp::now().as_second();
-    Some((entry_key(now)?, now))
-}
-
-/// The record key a UTC epoch second projects to: the Eastern public path
-/// that becomes the permalink. Factored from `now_entry` so queued offline
-/// entries can be keyed by their composition second. `None` only for epochs
-/// outside jiff's representable range.
-fn entry_key(epoch: i64) -> Option<String> {
-    let utc = Timestamp::from_second(epoch)
-        .ok()?
-        .to_zoned(TimeZone::UTC)
-        .strftime("%Y-%m-%d %H:%M:%S")
-        .to_string();
-    let instant = eastern::eastern_instant(&utc, 0).ok()?;
-    Some(eastern::public_path(&instant))
+    Some((store::entry_key(now)?, now))
 }
 
 fn requested_page(raw: Option<&str>) -> Option<usize> {
@@ -926,56 +786,15 @@ mod tests {
         assert_eq!(entry_stamp(&unparseable), "garbage");
     }
 
+    /// Key projection and probe-validity tests moved to `diary_core::store`
+    /// with the code; what stays here is the one seam the server owns — the
+    /// form path's "now" must key exactly like the queue's client epochs.
     #[test]
     fn fresh_entry_keys_parse_and_stamp_now() {
         let (id, written_at) = now_entry().expect("now projects");
         assert!(eastern::parse_public_path(&id).is_some(), "bad key {id}");
         assert!(written_at > 1_750_000_000, "implausible epoch {written_at}");
-        // now_entry IS entry_key applied to "now" — the form path and the
-        // queue path must never disagree about key derivation.
-        assert_eq!(entry_key(written_at).as_deref(), Some(id.as_str()));
-    }
-
-    #[test]
-    fn entry_keys_project_from_client_epochs() {
-        let epoch = "2026-07-27T18:30:45Z"
-            .parse::<Timestamp>()
-            .unwrap()
-            .as_second();
-        assert_eq!(
-            entry_key(epoch).as_deref(),
-            Some("2026-07-27T14-30-45-04-00")
-        );
-        // Same wall clock on both sides of the November fold: the embedded
-        // offset digits keep the keys distinct and parseable.
-        let edt = "2026-11-01T05:30:00Z"
-            .parse::<Timestamp>()
-            .unwrap()
-            .as_second();
-        let est = "2026-11-01T06:30:00Z"
-            .parse::<Timestamp>()
-            .unwrap()
-            .as_second();
-        assert_eq!(entry_key(edt).as_deref(), Some("2026-11-01T01-30-00-04-00"));
-        assert_eq!(entry_key(est).as_deref(), Some("2026-11-01T01-30-00-05-00"));
-        assert!(entry_key(i64::MIN).is_none());
-    }
-
-    #[test]
-    fn collision_probes_stay_valid_across_the_fold() {
-        // Probing +1s across the fall-back instant keeps producing distinct,
-        // parseable keys. (They are NOT string-monotonic across the fold —
-        // fine: /diary orders by written_at first; ids only tie-break.)
-        let base = "2026-11-01T05:59:58Z"
-            .parse::<Timestamp>()
-            .unwrap()
-            .as_second();
-        let mut seen = std::collections::BTreeSet::new();
-        for offset in 0..COLLISION_PROBES {
-            let id = entry_key(base + offset).expect("probe projects");
-            assert!(eastern::parse_public_path(&id).is_some(), "bad probe {id}");
-            assert!(seen.insert(id), "duplicate probe key");
-        }
+        assert_eq!(store::entry_key(written_at).as_deref(), Some(id.as_str()));
     }
 
     /// diary.js is the page half of the offline queue; these literals are

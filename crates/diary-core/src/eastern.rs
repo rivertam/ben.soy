@@ -7,6 +7,12 @@
 //! bucket, and permanent URL uses the Eastern projection computed here.
 //! DST is delegated entirely to the IANA database (jiff, bundled tzdb —
 //! the production container image has no /usr/share/zoneinfo).
+//!
+//! Lives in diary-core (not the site crate) because diary entry ids use the
+//! same projection ([`crate::store::entry_key`]) and the wasm service worker
+//! must compute them too; the lifting archive re-imports it from here.
+//! Everything is pure calendar math over the bundled tzdb — no clock reads,
+//! so no `jiff/js` feature is needed on wasm32.
 
 use std::sync::OnceLock;
 
