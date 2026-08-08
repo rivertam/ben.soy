@@ -662,7 +662,7 @@ mod tests {
         // Permission-denied CREATEs return an empty success in SurrealDB.
         // The current insert adapter must turn that into an error rather than
         // acknowledging text that was not stored.
-        authenticate_as(&db, TestTokenGeneration::Version(2)).await;
+        authenticate_as(&db, TestTokenGeneration::Version(CURRENT_WIRE_VERSION + 1)).await;
         let mismatched = DiaryEntry::from_parts(entry_key(107).unwrap(), 107, "not acknowledged");
         assert!(
             insert_entry(&db, &mismatched)
