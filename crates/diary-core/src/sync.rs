@@ -10,20 +10,19 @@
 //! [`run`] must execute as ONE critical section per device (the service
 //! worker holds the `diary-flush` Web Lock across it): the pull's snapshot
 //! is then always newer than the last push, so a stale dump can never
-//! delete a freshly delivered row. [`apply_pull`] additionally guards every
-//! statement on `state = 'synced'` — a pending or failed row is NEVER
-//! touched by a pull, even at the same id; the pending row wins and
-//! converges after its own flush.
+//! delete a freshly delivered row. The device store owns the local
+//! reconciliation details; this module only sequences its [`Remote`].
 
 use crate::Db;
-use crate::contract::{PullOutcome, SendOutcome, SnapshotEntry, WireEntry};
-use crate::outbox::{self, Blocked, FlushReport, LocalEntry, OutboxError, STATE_SYNCED};
+use crate::contract::{PullOutcome, SendOutcome};
+use crate::entry::{ComposedEntry, SavedRef};
+use crate::outbox::{self, Blocked, FlushReport, OutboxError};
 
 /// The transport to one remote diary. Implementations classify their own
 /// failures ([`PullOutcome`] / [`SendOutcome`]); nothing here retries — the
 /// caller's next kick is the retry.
 pub trait Remote {
-    fn push(&self, entry: WireEntry) -> impl Future<Output = SendOutcome>;
+    fn push(&self, entry: ComposedEntry) -> impl Future<Output = SendOutcome>;
     fn pull(&self) -> impl Future<Output = PullOutcome>;
 }
 
@@ -36,117 +35,39 @@ pub async fn run<R: Remote>(db: &Db, remote: &R) -> Result<FlushReport, OutboxEr
     if report.blocked != Some(Blocked::Auth)
         && let PullOutcome::Data(entries) = remote.pull().await
     {
-        report.pulled = Some(apply_pull(db, &entries).await?);
+        report.pulled = Some(outbox::reconcile(db, &entries).await?);
     }
     Ok(report)
 }
 
-/// Make the local mirror agree with a snapshot: create missing rows as
-/// synced, update synced rows the server changed, delete synced rows the
-/// server no longer has. The diff is computed in Rust and applied as one
-/// small transaction (usually empty or a handful of statements; the
-/// first-ever hydration is the one large batch). Deletes are one `=`-shaped
-/// record delete each, per docs/surrealdb-notes.md.
-///
-/// Returns how many rows changed.
-pub async fn apply_pull(db: &Db, incoming: &[SnapshotEntry]) -> Result<u32, OutboxError> {
-    // Same-record write races (the page enqueueing while this runs) abort
-    // one side with a retryable conflict; re-read and re-apply, per the
-    // reference handling in the site's analytics module.
-    let mut last_error = None;
-    for _ in 0..3 {
-        match apply_once(db, incoming).await {
-            Err(OutboxError::Db(message)) if message.contains("Resource busy") => {
-                last_error = Some(OutboxError::Db(message));
-            }
-            other => return other,
-        }
-    }
-    Err(last_error.expect("loop only exits early or stores an error"))
-}
-
-async fn apply_once(db: &Db, incoming: &[SnapshotEntry]) -> Result<u32, OutboxError> {
-    let local = outbox::all_local(db).await?;
-    // The wipe guard: an EMPTY snapshot never deletes a populated mirror.
-    // SurrealDB answers permission-denied reads as empty results, not
-    // errors, so a session that silently lost its grant (probed on 3.2.3:
-    // stateless-http authenticate does exactly this) would otherwise look
-    // like an emptied diary and take the whole mirror with it. A genuinely
-    // emptied server diary converges again the moment any entry exists —
-    // the next non-empty snapshot applies its deletes as usual.
-    if incoming.is_empty() && local.iter().any(|row| row.state == STATE_SYNCED) {
-        return Ok(0);
-    }
-    let plan = diff(&local, incoming);
-    let changes = (plan.creates.len() + plan.updates.len() + plan.deletes.len()) as u32;
-    if changes == 0 {
-        return Ok(0);
-    }
-
-    let mut statements = String::from("BEGIN TRANSACTION;\n");
-    let mut string_binds: Vec<(String, String)> = Vec::new();
-    let mut int_binds: Vec<(String, i64)> = Vec::new();
-    for (index, entry) in plan.creates.iter().enumerate() {
-        statements.push_str(&format!(
-            "CREATE ONLY type::record('diary_entries', $c{index}_id) \
-             SET written_at = $c{index}_wa, body = $c{index}_body, \
-             state = 'synced', enqueued_at = 0;\n"
-        ));
-        string_binds.push((format!("c{index}_id"), entry.id.clone()));
-        int_binds.push((format!("c{index}_wa"), entry.written_at));
-        string_binds.push((format!("c{index}_body"), entry.body.clone()));
-    }
-    for (index, entry) in plan.updates.iter().enumerate() {
-        statements.push_str(&format!(
-            "UPDATE type::record('diary_entries', $u{index}_id) \
-             SET written_at = $u{index}_wa, body = $u{index}_body \
-             WHERE state = 'synced';\n"
-        ));
-        string_binds.push((format!("u{index}_id"), entry.id.clone()));
-        int_binds.push((format!("u{index}_wa"), entry.written_at));
-        string_binds.push((format!("u{index}_body"), entry.body.clone()));
-    }
-    for (index, id) in plan.deletes.iter().enumerate() {
-        statements.push_str(&format!(
-            "DELETE type::record('diary_entries', $d{index}_id) WHERE state = 'synced';\n"
-        ));
-        string_binds.push((format!("d{index}_id"), id.clone()));
-    }
-    statements.push_str("COMMIT TRANSACTION;");
-
-    let mut query = db.query(statements);
-    for (name, value) in string_binds {
-        query = query.bind((name, value));
-    }
-    for (name, value) in int_binds {
-        query = query.bind((name, value));
-    }
-    query
-        .await
-        .map_err(|error| OutboxError::Db(error.to_string()))?
-        .check()
-        .map_err(|error| OutboxError::Db(error.to_string()))?;
-    Ok(changes)
-}
-
 /// The direct transport: the remote IS a `Surreal<Any>` handle — connected
 /// and `authenticate()`d by the caller (natively in tests over `mem://`;
-/// on wasm over the `https://` engine with a minted record-access token).
+/// on wasm over the WebSocket engine with a minted record-access token).
 /// Push runs the SAME probe-and-dedupe `store::save_entry` the server's
 /// replay endpoint runs — one algorithm, two engines — and pull is the same
 /// snapshot read the endpoint serves. This is the isomorphism the crate
 /// exists for.
 pub struct DirectRemote {
-    pub db: Db,
+    db: Db,
+    validation_now: i64,
+}
+
+impl DirectRemote {
+    /// One direct remote is short-lived for one sync pass. Its validation
+    /// instant comes from the authenticated server connection, never the
+    /// composing device's potentially skewed clock.
+    pub fn new(db: Db, validation_now: i64) -> Self {
+        Self { db, validation_now }
+    }
 }
 
 impl Remote for DirectRemote {
-    async fn push(&self, entry: WireEntry) -> SendOutcome {
-        match crate::store::save_entry(&self.db, entry.written_at, &entry.body).await {
-            Ok(saved) => SendOutcome::Saved(crate::contract::SavedRef {
-                id: saved.id,
-                written_at: saved.written_at,
-            }),
+    async fn push(&self, entry: ComposedEntry) -> SendOutcome {
+        match crate::store::save_entry(&self.db, entry, self.validation_now).await {
+            Ok(saved) => SendOutcome::Saved(SavedRef::from(&saved.entry)),
+            Err(crate::store::SaveError::Rejected(rejection)) => {
+                SendOutcome::Rejected(rejection.status_code())
+            }
             // The server replay endpoint answers probe exhaustion with 409;
             // classify identically so the entry lands failed, not retried
             // forever.
@@ -163,16 +84,7 @@ impl Remote for DirectRemote {
 
     async fn pull(&self) -> PullOutcome {
         match crate::store::all_entries(&self.db).await {
-            Ok(entries) => PullOutcome::Data(
-                entries
-                    .into_iter()
-                    .map(|entry| SnapshotEntry {
-                        id: entry.id,
-                        written_at: entry.written_at,
-                        body: entry.body,
-                    })
-                    .collect(),
-            ),
+            Ok(entries) => PullOutcome::Data(entries),
             Err(error) if is_auth_error(&error) => PullOutcome::Auth,
             Err(_) => PullOutcome::Retry,
         }
@@ -190,55 +102,28 @@ fn is_auth_error(error: &str) -> bool {
         || lowered.contains("not enough permissions")
 }
 
-struct PullPlan<'a> {
-    creates: Vec<&'a SnapshotEntry>,
-    updates: Vec<&'a SnapshotEntry>,
-    deletes: Vec<String>,
-}
-
-fn diff<'a>(local: &[LocalEntry], incoming: &'a [SnapshotEntry]) -> PullPlan<'a> {
-    use std::collections::HashMap;
-    let by_id: HashMap<&str, &LocalEntry> =
-        local.iter().map(|row| (row.id.as_str(), row)).collect();
-    let mut incoming_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut creates = Vec::new();
-    let mut updates = Vec::new();
-    for entry in incoming {
-        incoming_ids.insert(entry.id.as_str());
-        match by_id.get(entry.id.as_str()) {
-            None => creates.push(entry),
-            Some(row) if row.state == STATE_SYNCED => {
-                if row.written_at != entry.written_at || row.body != entry.body {
-                    updates.push(entry);
-                }
-            }
-            // Pending/failed rows win; their own flush converges them.
-            Some(_) => {}
-        }
-    }
-    let deletes = local
-        .iter()
-        .filter(|row| row.state == STATE_SYNCED && !incoming_ids.contains(row.id.as_str()))
-        .map(|row| row.id.clone())
-        .collect();
-    PullPlan {
-        creates,
-        updates,
-        deletes,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
 
-    use crate::contract::{SavedRef, classify_pull};
+    use crate::contract::classify_pull;
+    use crate::entry::{DiaryEntry, SavedRef};
+    use crate::outbox::{LocalEntry, STATE_SYNCED};
     use crate::store;
 
     use super::*;
 
     async fn device() -> Db {
         outbox::open("mem://").await.expect("mem device opens")
+    }
+
+    async fn enqueue(
+        db: &Db,
+        written_at: i64,
+        body: &str,
+        enqueued_at: i64,
+    ) -> Result<LocalEntry, OutboxError> {
+        outbox::enqueue(db, ComposedEntry::new(written_at, body), enqueued_at).await
     }
 
     /// A real second store standing in for the server — pushes run the
@@ -257,16 +142,11 @@ mod tests {
                 .await
                 .expect("mem server opens");
             db.use_ns("diary").use_db("diary").await.expect("ns");
-            db.query(
-                "DEFINE TABLE diary_entries SCHEMAFULL PERMISSIONS NONE;
-                 DEFINE FIELD id ON diary_entries TYPE string;
-                 DEFINE FIELD written_at ON diary_entries TYPE int;
-                 DEFINE FIELD body ON diary_entries TYPE string;",
-            )
-            .await
-            .expect("schema applies")
-            .check()
-            .expect("schema statements succeed");
+            db.query(store::TEST_SCHEMA)
+                .await
+                .expect("schema applies")
+                .check()
+                .expect("schema statements succeed");
             TestServer {
                 db,
                 pulls: RefCell::new(0),
@@ -276,13 +156,10 @@ mod tests {
     }
 
     impl Remote for TestServer {
-        async fn push(&self, entry: WireEntry) -> SendOutcome {
+        async fn push(&self, entry: ComposedEntry) -> SendOutcome {
             *self.pushes.borrow_mut() += 1;
-            match store::save_entry(&self.db, entry.written_at, &entry.body).await {
-                Ok(saved) => SendOutcome::Saved(SavedRef {
-                    id: saved.id,
-                    written_at: saved.written_at,
-                }),
+            match store::save_entry(&self.db, entry.clone(), entry.written_at).await {
+                Ok(saved) => SendOutcome::Saved(SavedRef::from(&saved.entry)),
                 Err(_) => SendOutcome::Retry,
             }
         }
@@ -290,16 +167,7 @@ mod tests {
         async fn pull(&self) -> PullOutcome {
             *self.pulls.borrow_mut() += 1;
             match store::all_entries(&self.db).await {
-                Ok(entries) => PullOutcome::Data(
-                    entries
-                        .into_iter()
-                        .map(|entry| SnapshotEntry {
-                            id: entry.id,
-                            written_at: entry.written_at,
-                            body: entry.body,
-                        })
-                        .collect(),
-                ),
+                Ok(entries) => PullOutcome::Data(entries),
                 Err(_) => PullOutcome::Retry,
             }
         }
@@ -313,7 +181,7 @@ mod tests {
     }
 
     impl Remote for Scripted {
-        async fn push(&self, _entry: WireEntry) -> SendOutcome {
+        async fn push(&self, _entry: ComposedEntry) -> SendOutcome {
             self.push_outcome.clone()
         }
         async fn pull(&self) -> PullOutcome {
@@ -322,12 +190,8 @@ mod tests {
         }
     }
 
-    fn snap(id: &str, written_at: i64, body: &str) -> SnapshotEntry {
-        SnapshotEntry {
-            id: id.to_string(),
-            written_at,
-            body: body.to_string(),
-        }
+    fn snap(id: &str, written_at: i64, body: &str) -> DiaryEntry {
+        DiaryEntry::from_parts(id, written_at, body)
     }
 
     #[test]
@@ -358,6 +222,10 @@ mod tests {
             ),
             PullOutcome::Retry
         );
+        assert_eq!(
+            classify_pull(200, r#"{"version":2,"entries":[]}"#),
+            PullOutcome::Retry
+        );
         assert_eq!(classify_pull(401, ""), PullOutcome::Auth);
         assert_eq!(classify_pull(404, ""), PullOutcome::Auth);
         for retryable in [403, 500, 502, 503] {
@@ -369,7 +237,7 @@ mod tests {
     async fn apply_creates_updates_and_deletes_only_synced_rows() {
         let db = device().await;
         // Local state: one pending, one failed, two synced.
-        let pending = outbox::enqueue(&db, 1_753_640_000, "pending text", 1)
+        let pending = enqueue(&db, 1_753_640_000, "pending text", 1)
             .await
             .unwrap();
         let report = outbox::flush(&db, |_| std::future::ready(SendOutcome::Rejected(422)))
@@ -377,13 +245,11 @@ mod tests {
             .unwrap();
         assert_eq!(report.failed, 1); // the pending row became our failed row
         let failed_id = pending.id.clone();
-        let kept = outbox::enqueue(&db, 1_753_640_100, "kept synced", 2)
+        let kept = enqueue(&db, 1_753_640_100, "kept synced", 2).await.unwrap();
+        let dropped = enqueue(&db, 1_753_640_200, "dropped synced", 3)
             .await
             .unwrap();
-        let dropped = outbox::enqueue(&db, 1_753_640_200, "dropped synced", 3)
-            .await
-            .unwrap();
-        outbox::flush(&db, |wire: WireEntry| {
+        outbox::flush(&db, |wire: ComposedEntry| {
             let id = store::entry_key(wire.written_at).unwrap();
             std::future::ready(SendOutcome::Saved(SavedRef {
                 id,
@@ -392,7 +258,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let still_pending = outbox::enqueue(&db, 1_753_640_300, "still pending", 4)
+        let still_pending = enqueue(&db, 1_753_640_300, "still pending", 4)
             .await
             .unwrap();
 
@@ -413,7 +279,7 @@ mod tests {
                 "server twin of pending",
             ),
         ];
-        let changed = apply_pull(&db, &incoming).await.unwrap();
+        let changed = outbox::reconcile(&db, &incoming).await.unwrap();
         assert_eq!(changed, 3, "create + update + delete");
 
         let rows = outbox::all_local(&db).await.unwrap();
@@ -441,16 +307,14 @@ mod tests {
         );
         // Idempotent: the same snapshot again changes only what still
         // differs (the failed/pending guards keep refusing).
-        let changed = apply_pull(&db, &incoming).await.unwrap();
+        let changed = outbox::reconcile(&db, &incoming).await.unwrap();
         assert_eq!(changed, 0);
     }
 
     #[tokio::test]
     async fn run_skips_pull_when_auth_blocked_and_reports_it_otherwise() {
         let db = device().await;
-        outbox::enqueue(&db, 1_753_640_000, "blocked", 1)
-            .await
-            .unwrap();
+        enqueue(&db, 1_753_640_000, "blocked", 1).await.unwrap();
         let auth_remote = Scripted {
             push_outcome: SendOutcome::Auth,
             pull_outcome: PullOutcome::Data(Vec::new()),
@@ -481,14 +345,12 @@ mod tests {
     #[tokio::test]
     async fn direct_remote_syncs_store_to_store() {
         let server = TestServer::start().await;
-        let remote = DirectRemote {
-            db: server.db.clone(),
-        };
+        let remote = DirectRemote::new(server.db.clone(), 1_753_640_000);
         let device_db = device().await;
-        outbox::enqueue(&device_db, 1_753_640_000, "straight to the database", 1)
+        enqueue(&device_db, 1_753_640_000, "straight to the database", 1)
             .await
             .unwrap();
-        outbox::enqueue(&device_db, 1_753_640_060, "second entry", 2)
+        enqueue(&device_db, 1_753_640_060, "second entry", 2)
             .await
             .unwrap();
         let report = run(&device_db, &remote).await.unwrap();
@@ -509,6 +371,37 @@ mod tests {
         assert_eq!(rows[0].body, "second entry");
     }
 
+    #[tokio::test]
+    async fn direct_remote_rejects_invalid_entries_like_http() {
+        use crate::entry::{MAX_ENTRY_CHARS, MAX_PAST_SECONDS};
+
+        let server = TestServer::start().await;
+        let now = 1_753_640_000;
+        let remote = DirectRemote::new(server.db.clone(), now);
+        assert_eq!(
+            remote
+                .push(ComposedEntry::new(now, "x".repeat(MAX_ENTRY_CHARS + 1)))
+                .await,
+            SendOutcome::Rejected(422)
+        );
+        assert_eq!(
+            remote
+                .push(ComposedEntry::new(now - MAX_PAST_SECONDS, "too old"))
+                .await,
+            SendOutcome::Rejected(422)
+        );
+        assert!(store::all_entries(&server.db).await.unwrap().is_empty());
+
+        let saved = remote
+            .push(ComposedEntry::new(now, "  normalized\r\nbody  "))
+            .await;
+        assert!(matches!(saved, SendOutcome::Saved(_)));
+        assert_eq!(
+            store::all_entries(&server.db).await.unwrap()[0].body,
+            "normalized\nbody"
+        );
+    }
+
     /// The wipe guard: a silently-deauthed session's pull (SurrealDB
     /// filters denied reads to empty instead of erroring) must never empty
     /// a populated mirror; a genuinely emptied server converges again from
@@ -516,10 +409,8 @@ mod tests {
     #[tokio::test]
     async fn an_empty_snapshot_never_wipes_a_populated_mirror() {
         let db = device().await;
-        outbox::enqueue(&db, 1_753_640_000, "history", 1)
-            .await
-            .unwrap();
-        outbox::flush(&db, |wire: WireEntry| {
+        enqueue(&db, 1_753_640_000, "history", 1).await.unwrap();
+        outbox::flush(&db, |wire: ComposedEntry| {
             let id = store::entry_key(wire.written_at).unwrap();
             std::future::ready(SendOutcome::Saved(SavedRef {
                 id,
@@ -528,7 +419,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(apply_pull(&db, &[]).await.unwrap(), 0);
+        assert_eq!(outbox::reconcile(&db, &[]).await.unwrap(), 0);
         assert_eq!(
             outbox::all_local(&db).await.unwrap().len(),
             1,
@@ -537,7 +428,7 @@ mod tests {
         // A later non-empty snapshot's deletes still apply — convergence
         // is deferred, not lost.
         let replacement = snap("2026-01-01T07-00-00-05-00", 1_767_250_800, "only survivor");
-        assert_eq!(apply_pull(&db, &[replacement]).await.unwrap(), 2);
+        assert_eq!(outbox::reconcile(&db, &[replacement]).await.unwrap(), 2);
         let rows = outbox::all_local(&db).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].body, "only survivor");
@@ -567,21 +458,24 @@ mod tests {
         let device_b = device().await;
         let second = 1_753_640_000;
 
-        let entry_a = outbox::enqueue(&device_a, second, "from device A", 1)
+        let entry_a = enqueue(&device_a, second, "from device A", 1)
             .await
             .unwrap();
-        let entry_b = outbox::enqueue(&device_b, second, "from device B", 1)
+        let entry_b = enqueue(&device_b, second, "from device B", 1)
             .await
             .unwrap();
         assert_eq!(entry_a.id, entry_b.id, "both predicted the same key");
 
         let report_a = run(&device_a, &server).await.unwrap();
         assert_eq!(report_a.saved, 1);
-        assert_eq!(report_a.saved_entries[0].id, entry_a.id, "A kept its key");
+        assert_eq!(
+            report_a.saved_refs[0].saved.id, entry_a.id,
+            "A kept its key"
+        );
 
         let report_b = run(&device_b, &server).await.unwrap();
         assert_eq!(report_b.saved, 1);
-        let bumped_id = report_b.saved_entries[0].id.clone();
+        let bumped_id = report_b.saved_refs[0].saved.id.clone();
         assert_ne!(bumped_id, entry_b.id, "B got bumped a second forward");
 
         // B's mirror now holds BOTH entries under the server's identities.

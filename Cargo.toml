@@ -21,6 +21,7 @@ resolver = "3"
 diary-core = { path = "crates/diary-core" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2 = "0.11.0"
 surrealdb = { version = "=3.2.3", default-features = false }
 
 # The sync CLIs and the bot are standalone crates that live WITH their
@@ -61,7 +62,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.11.0"
+sha2 = { workspace = true }
 subtle = "2.6.1"
 surrealdb = { workspace = true, features = ["protocol-ws", "rustls"] }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }

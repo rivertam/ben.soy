@@ -142,7 +142,13 @@ async function persist(form, box, raw, draft, bubble) {
   try {
     const wasm = await ensureWasm();
     const entry = JSON.parse(
-      await wasm.diary_enqueue(draft.written_at, raw, Date.now()),
+      await wasm.diary_enqueue(
+        JSON.stringify({
+          version: wasm.diary_wire_version(),
+          entry: { written_at: draft.written_at, body: raw },
+          enqueued_at_ms: Date.now(),
+        }),
+      ),
     );
     const existing = byId(entry.id);
     if (existing && existing !== bubble) {
@@ -213,11 +219,21 @@ function applyEntry(bubble, entry) {
   if (!bubble) {
     return;
   }
+  const body = bubble.querySelector(".diary-body");
+  if (body) {
+    body.textContent = entry.body;
+  }
+  applyEntryState(bubble, entry);
+}
+
+/* Identity and sync-state presentation are one transition. Business
+ * presentation stays in applyEntry; a delivery acknowledgement can carry
+ * only the SavedRef and still unlock every state-dependent control. */
+function applyEntryState(bubble, entry) {
   if (entry.id) {
     bubble.dataset.id = entry.id;
   }
   bubble.dataset.state = entry.state;
-  bubble.firstElementChild.textContent = entry.body;
   const note = bubble.querySelector(".diary-note");
   const link = bubble.querySelector("a");
   const discard = bubble.querySelector(".diary-discard");
@@ -335,15 +351,14 @@ async function renderFromStore() {
  * store — one path for labels, prunes, and mid-flush page opens. */
 function onReport(report) {
   lastBlocked = report.blocked;
-  for (const ref of report.saved_entries || []) {
+  for (const ref of report.saved_refs || report.saved_entries || []) {
     const bubble = byId(ref.qid);
     if (!bubble || bubble.dataset.state === "synced") {
       continue;
     }
-    applyEntry(bubble, {
+    applyEntryState(bubble, {
       id: ref.id,
       written_at: ref.written_at,
-      body: ref.body,
       state: "synced",
       reason: null,
     });

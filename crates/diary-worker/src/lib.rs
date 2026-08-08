@@ -16,7 +16,11 @@
 
 use std::cell::RefCell;
 
-use diary_core::contract::{PullOutcome, SendOutcome, WireEntry, classify_pull, classify_response};
+use diary_core::contract::{
+    DirectTokenGrant, PullOutcome, PushWire, SendOutcome, classify_pull, classify_response,
+    decode_compose_command,
+};
+use diary_core::entry::ComposedEntry;
 use diary_core::outbox;
 use diary_core::sync::{self, Remote};
 use js_sys::{Function, Promise, Reflect};
@@ -25,6 +29,13 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestCache, RequestCredentials, RequestInit, Response};
 
 const LOCAL_ENDPOINT: &str = "indxdb://diary";
+
+/// Let the paired page asset stamp compose commands with this wasm build's
+/// contract generation instead of duplicating a version literal in JS.
+#[wasm_bindgen]
+pub fn diary_wire_version() -> u16 {
+    diary_core::contract::CURRENT_WIRE_VERSION
+}
 
 thread_local! {
     /// One connection per JS context (wasm is single-threaded; there is no
@@ -41,22 +52,16 @@ async fn db() -> Result<outbox::Db, JsError> {
     Ok(db)
 }
 
-/// Queue one entry composed now. `written_at` is the composition second;
-/// `enqueued_at_ms` orders the flush. Both arrive as f64 because JS numbers
-/// do — they are integral and far inside f64's exact range. Returns the
-/// placed row as JSON: its `id` is the predicted permalink key (the second
-/// may have been probed forward past a neighbor), which is exactly what the
-/// page stamps on its bubble — a same-second double-tap returns the
-/// original row, so the page sees the duplicate in the existing `data-id`
-/// and drops its extra clone.
+/// Queue one entry from the single versioned compose command serialized by
+/// the page. The wasm Interface stays fixed when business fields grow: they
+/// live inside the canonical `ComposedEntry`. Returns the placed row as
+/// JSON; its `id` is the predicted Entry Key.
 #[wasm_bindgen]
-pub async fn diary_enqueue(
-    written_at: f64,
-    body: String,
-    enqueued_at_ms: f64,
-) -> Result<String, JsError> {
+pub async fn diary_enqueue(command_json: String) -> Result<String, JsError> {
+    let command =
+        decode_compose_command(&command_json).map_err(|error| JsError::new(&error.to_string()))?;
     let db = db().await?;
-    let placed = outbox::enqueue(&db, written_at as i64, &body, enqueued_at_ms as i64)
+    let placed = outbox::enqueue(&db, command.entry, command.enqueued_at_ms)
         .await
         .map_err(outbox_error)?;
     serde_json::to_string(&placed).map_err(json_error)
@@ -120,23 +125,26 @@ pub async fn diary_sync(
     serde_json::to_string(&report).map_err(json_error)
 }
 
-#[derive(serde::Deserialize)]
-struct TokenGrant {
-    token: String,
-    ns: String,
-    db: String,
-}
-
 /// Arm the direct transport for ONE pass: fresh token, fresh short-lived
 /// websocket connection (dropped with the pass — a cached connection would
 /// die with the idling service worker anyway), authenticate, and then the
-/// load-bearing canary: `$access` must name our access method. SurrealDB
+/// load-bearing canary: `$access` must name our access method. The same
+/// authenticated query supplies the server clock used by the shared remote
+/// acceptance policy; the composing device's clock is not an authority.
+/// SurrealDB
 /// filters permission-denied reads to EMPTY results rather than erroring,
 /// so a session that silently failed to carry its grant would pull "an
 /// empty diary" — the canary (plus diary-core's wipe guard) is what keeps
 /// that from ever touching the mirror.
 async fn direct_remote(endpoint: &str) -> Result<sync::DirectRemote, String> {
     let grant = fetch_token().await?;
+    if !grant.supports_current() {
+        return Err(format!(
+            "direct sync generation {} does not match {}",
+            grant.version,
+            diary_core::contract::CURRENT_WIRE_VERSION
+        ));
+    }
     let remote = surrealdb::engine::any::connect(endpoint)
         .await
         .map_err(|error| error.to_string())?;
@@ -150,7 +158,7 @@ async fn direct_remote(endpoint: &str) -> Result<sync::DirectRemote, String> {
         .await
         .map_err(|error| error.to_string())?;
     let mut canary = remote
-        .query("RETURN $access")
+        .query("RETURN $access; RETURN time::unix();")
         .await
         .map_err(|error| error.to_string())?
         .check()
@@ -159,19 +167,28 @@ async fn direct_remote(endpoint: &str) -> Result<sync::DirectRemote, String> {
     if access.as_deref() != Some("diary_sync") {
         return Err(format!("session carries access {access:?}, not diary_sync"));
     }
-    Ok(sync::DirectRemote { db: remote })
+    let validation_now: Option<i64> = canary.take(1).map_err(|error| error.to_string())?;
+    let validation_now = validation_now.ok_or_else(|| "server clock is missing".to_string())?;
+    Ok(sync::DirectRemote::new(remote, validation_now))
 }
 
 /// Mint one token from the cookie-gated endpoint. Any non-200 (404 = flag
 /// off server-side, 401 = signed out) is a setup failure — the caller falls
 /// back to HTTP sync, whose own classification shows the right banner.
-async fn fetch_token() -> Result<TokenGrant, String> {
+async fn fetch_token() -> Result<DirectTokenGrant, String> {
     let init = RequestInit::new();
     init.set_method("POST");
     init.set_credentials(RequestCredentials::SameOrigin);
     init.set_cache(RequestCache::NoStore);
     let request = Request::new_with_str_and_init(diary_core::contract::TOKEN_PATH, &init)
         .map_err(|_| "token request build failed".to_string())?;
+    request
+        .headers()
+        .set(
+            diary_core::contract::WIRE_VERSION_HEADER,
+            &diary_core::contract::CURRENT_WIRE_VERSION.to_string(),
+        )
+        .map_err(|_| "token request version header failed".to_string())?;
     let (status, text) = perform(&request)
         .await
         .map_err(|_| "token fetch failed".to_string())?;
@@ -192,7 +209,7 @@ struct HttpRemote {
 }
 
 impl Remote for HttpRemote {
-    async fn push(&self, entry: WireEntry) -> SendOutcome {
+    async fn push(&self, entry: ComposedEntry) -> SendOutcome {
         match try_send(&self.push_url, &entry).await {
             Ok(outcome) => outcome,
             Err(_) => SendOutcome::Retry,
@@ -207,8 +224,9 @@ impl Remote for HttpRemote {
     }
 }
 
-async fn try_send(api_url: &str, entry: &WireEntry) -> Result<SendOutcome, JsValue> {
-    let body = serde_json::to_string(entry).map_err(|error| JsValue::from(error.to_string()))?;
+async fn try_send(api_url: &str, entry: &ComposedEntry) -> Result<SendOutcome, JsValue> {
+    let body = serde_json::to_string(&PushWire::new(entry.clone()))
+        .map_err(|error| JsValue::from(error.to_string()))?;
     let init = RequestInit::new();
     init.set_method("POST");
     init.set_credentials(RequestCredentials::SameOrigin);
@@ -268,7 +286,7 @@ mod ssr {
 
     use diary_core::outbox::{self, LocalEntry};
     use diary_core::store::PAGE_SIZE;
-    use diary_core::views::{Bubble, diary_room, entry_detail, entry_date, offline_page};
+    use diary_core::views::{Bubble, diary_room, entry_date, entry_detail, offline_page};
     use topcoat::{
         Result,
         context::{Cx, app_context},
@@ -445,7 +463,7 @@ mod ssr {
                 let heading = entry_date(&row.id);
                 view! {
                     <h1 class="mt-8 font-display text-xl">(heading)</h1>
-                    entry_detail(id: row.id.clone(), body: row.body.clone())
+                    entry_detail(entry: row.entry.clone())
                 }?
             }
             None => view! {

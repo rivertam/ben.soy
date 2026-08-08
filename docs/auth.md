@@ -83,13 +83,14 @@ Invariants:
   IndexedDB), the plain form POST to `/diary/write` still works. The
   pre-wasm IndexedDB queue (`diary-queue`) is drained by a one-way
   migration in the worker.
-- The API keys an entry by the CLIENT's composition second — a queued
-  entry keeps the time it was written, not the time it synced — inside a
-  bounded window (a year back, 5 minutes forward; outside is a 422, never
-  clamped, because clamping would mint a fresh key per replay and
-  double-post). Replays dedupe: same second + same body is "already
-  saved"; an occupied second probes forward ≤5 s, re-running the dedupe
-  at every probe. Overwriting an entry stays impossible.
+- The API starts placement from the CLIENT's composition second — not the
+  time the entry syncs — inside a bounded window (a year back, 5 minutes
+  forward; outside is a 422, never clamped, because clamping would mint a
+  fresh key per replay and double-post). At every candidate second,
+  identical Entry Content is "already saved" and different content probes
+  forward ≤5 s. A device collision may re-anchor the queued entry before
+  sync, and a server collision may re-anchor it again. Overwriting an entry
+  stays impossible.
 - Offline reads are deliberate, device-local, and Ben's choice — and they
   cover the WHOLE diary: the local store mirrors every entry, and when a
   navigation's network fetch fails the worker RENDERS the page from that
@@ -103,10 +104,11 @@ Invariants:
   device possession is the boundary, and the server stays the auth
   boundary whenever it is reachable (offline SSR answers only after the
   network fetch fails).
-- A flush stops and keeps the queue on 401/404 (sign in again), 403/5xx/
-  network (retry later); only 400/409/413/415/422 mark an entry failed,
-  and failed text stays on the page with a discard button — queued diary
-  text is never silently dropped.
+- A flush stops and keeps the queue on 401/404 (sign in again) and on
+  400/403/5xx/network trouble (retry later); a 400 can be an older server
+  rejecting a newer strict wire envelope during rollout. Only
+  409/413/415/422 mark an entry failed, and failed text stays on the page
+  with a discard button — queued diary text is never silently dropped.
 - `/sw.js` and the manifest keep stable un-hashed URLs (a worker's URL is
   its identity; a hashed URL would register a new worker every deploy).
   Served `no-cache` / day-long cache respectively via `pwa.rs`.

@@ -12,9 +12,9 @@
  *    glue: import the module, hold the Web Lock, migrate the pre-wasm
  *    IndexedDB queue, broadcast the report, and throw on retryable trouble
  *    so Background Sync retries with backoff. Syncing lives HERE and only
- *    here — pages enqueue and kick. The server dedupes replays (same
- *    second, same body); that is the real idempotency guarantee, the lock
- *    only trims wasted duplicate work.
+ *    here — pages enqueue and kick. The server dedupes replays through the
+ *    same bounded probe walk and whole Entry Content; that is the real
+ *    idempotency guarantee, the lock only trims wasted duplicate work.
  */
 
 "use strict";
@@ -270,10 +270,31 @@ self.addEventListener("message", (event) => {
   }
 });
 
+// One active drain, plus a dirty bit for every kick that arrives while it is
+// running. A boolean is enough: a follow-up pass drains the whole outbox, so
+// ten concurrent kicks need one more pass, not ten. Every event waits on the
+// same promise; if flush() rejects on retryable network trouble, that promise
+// still rejects and Background Sync keeps its backoff semantics.
+let flushFlight = null;
+let flushRequested = false;
+
 function flushGuarded() {
-  return navigator.locks.request(FLUSH_LOCK, { ifAvailable: true }, (lock) =>
-    lock ? flush() : undefined
-  );
+  flushRequested = true;
+  if (!flushFlight) {
+    flushFlight = drainFlushRequests();
+  }
+  return flushFlight;
+}
+
+async function drainFlushRequests() {
+  try {
+    while (flushRequested) {
+      flushRequested = false;
+      await navigator.locks.request(FLUSH_LOCK, () => flush());
+    }
+  } finally {
+    flushFlight = null;
+  }
 }
 
 /* The whole sync pass — flush then pull, policy and transport in Rust
@@ -325,9 +346,9 @@ async function broadcast(report) {
     failed: report.failed,
     saved: report.saved,
     blocked: report.blocked,
-    // What actually landed — id, server timestamp, text — so pages can
-    // flip queued bubbles to delivered messages without reloading.
-    saved_entries: report.saved_entries,
+    // Identity-only server acknowledgements. The page already holds the
+    // canonical content and only needs the rare bumped id/second.
+    saved_refs: report.saved_refs || report.saved_entries || [],
     // Mirror rows the pull changed (null when the pull was a no-op).
     pulled: report.pulled,
   });

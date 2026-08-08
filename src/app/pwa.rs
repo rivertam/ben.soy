@@ -155,6 +155,32 @@ mod tests {
         }
     }
 
+    /// A page enqueues before it kicks the worker. If a slow flush already
+    /// owns the Web Lock, that kick must dirty the active single-flight drain
+    /// instead of disappearing; its shared promise must remain the value
+    /// passed to `event.waitUntil`, so a network rejection still reaches
+    /// Background Sync.
+    #[test]
+    fn worker_coalesces_flush_kicks_without_dropping_a_locked_request() {
+        for needle in [
+            "let flushFlight = null;",
+            "let flushRequested = false;",
+            "flushRequested = true;",
+            "flushFlight = drainFlushRequests();",
+            "return flushFlight;",
+            "while (flushRequested)",
+            "flushRequested = false;",
+            "await navigator.locks.request(FLUSH_LOCK, () => flush());",
+            "flushFlight = null;",
+        ] {
+            assert!(SW_JS.contains(needle), "sw.js lost {needle:?}");
+        }
+        assert!(
+            !SW_JS.contains("ifAvailable"),
+            "a busy lock must queue/coalesce the follow-up flush, never drop it"
+        );
+    }
+
     /// Names both sides must agree on — renaming in one file only would
     /// strand the other side's queue, caches, channel, or wasm pair. (The
     /// legacy "diary-queue"/"entries" names are now worker-only: the page
@@ -169,14 +195,17 @@ mod tests {
             "DIARY_SYNC.wasm",
             "wasm_bindgen(",
             "new BroadcastChannel(\"diary\")",
-            // the flush report field the worker broadcasts and the page
-            // renders delivered messages from — rename it in one file only
-            // and saves silently stop appearing without a reload
-            "saved_entries",
+            // the current identity-only flush acknowledgement — rename it in
+            // one file only and saves silently stop reconciling
+            "saved_refs",
         ] {
             assert!(SW_JS.contains(shared), "sw.js lost {shared:?}");
             assert!(DIARY_JS.contains(shared), "diary.js lost {shared:?}");
         }
+        // New page/worker code can consume the predecessor wasm/worker's
+        // content-bearing report field during activation.
+        assert!(SW_JS.contains("saved_entries"));
+        assert!(DIARY_JS.contains("saved_entries"));
     }
 
     /// Same rule as favicon.rs and /diary itself: reachable, never listed.

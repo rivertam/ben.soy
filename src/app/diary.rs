@@ -9,8 +9,8 @@
 //! `analytics: false`, signed-out → login redirect, signed-in non-admin →
 //! the real 404. Its one listing is the `/admin` tool card.
 //!
-//! An entry is a timestamp and text, nothing else yet (metadata fields can
-//! join the schema later). The record key is the entry's Eastern public path
+//! An entry's business fields live in `EntryContent`; placement pairs them
+//! with a timestamp and Eastern public-path record key
 //! (`eastern::public_path`, the `/lifting/{path}` permalink shape), so keys
 //! sort chronologically and the permalink IS the id. `/diary` fetches newest
 //! first but renders each `PAGE_SIZE` page oldest-to-newest in a bottom-pinned
@@ -25,16 +25,15 @@
 //! The page doubles as an installable PWA with an offline write queue
 //! (`diary/diary.js` + `diary/sw.js`; stable routes in `pwa.rs`): with JS,
 //! saves go IndexedDB-first and replay through `POST /api/diary/entries`,
-//! which keys the entry by the CLIENT's composition second and dedupes
-//! replays (same second + same body) — Background Sync retries can never
-//! double-post, and a queued entry keeps the time it was written, not the
-//! time it synced. Details in docs/auth.md.
+//! which starts placement from the client's proposed second and dedupes
+//! replays (same probe walk + same Entry Content) — Background Sync retries
+//! can never double-post, and a queued entry keeps its placement time rather
+//! than the time it synced. Details in docs/auth.md.
 
-use diary_core::contract::{
-    SnapshotEntry, SnapshotWire, WireEntry, normalize_body, written_at_in_window,
-};
+use diary_core::contract::{DirectTokenGrant, SnapshotWire, WireError, decode_push};
 use diary_core::eastern;
-use diary_core::store::{self, DiaryEntry, MAX_PAGE, PAGE_SIZE, SaveError, SavedWrite};
+use diary_core::entry::{ComposedEntry, DiaryEntry};
+use diary_core::store::{self, MAX_PAGE, PAGE_SIZE, SaveError, SavedWrite};
 use diary_core::views::{self, Bubble, diary_room, entry_detail};
 use jiff::Timestamp;
 use topcoat::{
@@ -210,7 +209,7 @@ async fn diary_entry(cx: &Cx) -> Result {
             if let Some(entry) = entry {
                 // The stamp/body/delete core is the shared component the
                 // worker's offline permalink pages render too.
-                entry_detail(id: entry.id.clone(), body: entry.body.clone())
+                entry_detail(entry: entry.clone())
             } else {
                 <p class="mt-8 max-w-prose text-ink2">
                     "The diary store is unreachable, so this entry did not "
@@ -232,15 +231,13 @@ async fn write_entry(cx: &Cx, body: Body) -> Result<Response> {
     let Some(raw) = parse_single_field(&bytes, "body") else {
         return Ok(back("invalid"));
     };
-    let Some(entry_body) = normalize_body(&raw) else {
-        return Ok(back("invalid"));
-    };
-    let Some((id, written_at)) = now_entry() else {
-        return Ok(back("unavailable"));
-    };
-    match insert_entry(app_context::<Data>(cx), &id, written_at, &entry_body).await {
-        Ok(()) => Ok(back("saved")),
-        Err(error) => {
+    let validation_now = Timestamp::now().as_second();
+    let entry = ComposedEntry::new(validation_now, raw);
+    match save_queued_entry(app_context::<Data>(cx), entry, validation_now).await {
+        Ok(_) => Ok(back("saved")),
+        Err(SaveError::Rejected(_)) => Ok(back("invalid")),
+        Err(SaveError::Exhausted) => Ok(back("unavailable")),
+        Err(SaveError::Store(error)) => {
             log_failure("write", &error);
             Ok(back("unavailable"))
         }
@@ -271,8 +268,8 @@ async fn delete_entry(cx: &Cx, body: Body) -> Result<Response> {
 /// `POST /api/diary/entries` — the queue-replay twin of `/diary/write`.
 /// Same authorization gate; the differences are deliberate: JSON in and out
 /// (real status codes a background fetch can act on, where the form's
-/// 303-to-login is invisible), the CLIENT's composition second keys the
-/// entry, and replays dedupe instead of erroring. Worker-initiated fetches
+/// 303-to-login is invisible), the client's proposed second starts
+/// placement, and replays dedupe instead of erroring. Worker-initiated fetches
 /// pass `is_same_origin` — Chrome stamps same-origin `Sec-Fetch-Site` and
 /// `Origin` on them like any page fetch.
 #[route(POST "/api/diary/entries")]
@@ -301,26 +298,22 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
             ));
         }
     };
-    // `WireEntry` is the shared wire shape — the exact struct the worker
-    // serialized, deserialized with `deny_unknown_fields` so a drift fails
-    // loudly instead of half-parsing.
-    let entry: WireEntry = match serde_json::from_slice(&bytes) {
+    // Probe the version before decoding the canonical value. A newer
+    // worker must leave its row pending during deploy skew, not turn a
+    // temporarily unreadable semantic field into a permanent rejection.
+    let entry = match decode_push(&bytes) {
         Ok(entry) => entry,
-        Err(_) => return Ok(api_error(StatusCode::BAD_REQUEST, "malformed entry")),
+        Err(WireError::UnsupportedVersion(_)) => {
+            return Ok(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "diary wire version is newer than this server",
+            ));
+        }
+        Err(WireError::Malformed) => {
+            return Ok(api_error(StatusCode::BAD_REQUEST, "malformed entry"));
+        }
     };
-    if !written_at_in_window(entry.written_at, Timestamp::now().as_second()) {
-        return Ok(api_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "timestamp out of range",
-        ));
-    }
-    let Some(entry_body) = normalize_body(&entry.body) else {
-        return Ok(api_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "that didn't validate",
-        ));
-    };
-    match save_queued_entry(app_context::<Data>(cx), entry.written_at, &entry_body).await {
+    match save_queued_entry(app_context::<Data>(cx), entry, Timestamp::now().as_second()).await {
         Ok(saved) => Ok(api_json(
             StatusCode::OK,
             serde_json::json!({
@@ -330,6 +323,11 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
                 "deduped": saved.deduped,
             })
             .to_string(),
+        )),
+        Err(SaveError::Rejected(rejection)) => Ok(api_error(
+            StatusCode::from_u16(rejection.status_code())
+                .expect("entry rejections use valid HTTP status codes"),
+            rejection.message(),
         )),
         Err(SaveError::Exhausted) => Ok(api_error(
             StatusCode::CONFLICT,
@@ -343,6 +341,15 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
             ))
         }
     }
+}
+
+fn requested_wire_version(headers: &HeaderMap) -> Option<u16> {
+    headers
+        .get(diary_core::contract::WIRE_VERSION_HEADER)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
 }
 
 /// `GET /api/diary/snapshot` — the pull half of sync: every entry, in the
@@ -369,16 +376,7 @@ async fn api_snapshot(cx: &Cx) -> Result<Response> {
             ));
         }
     };
-    let wire = SnapshotWire {
-        entries: entries
-            .into_iter()
-            .map(|entry| SnapshotEntry {
-                id: entry.id,
-                written_at: entry.written_at,
-                body: entry.body,
-            })
-            .collect(),
-    };
+    let wire = SnapshotWire::new(entries);
     let body = serde_json::to_string(&wire).expect("snapshot shape always serializes");
     Ok(api_json(StatusCode::OK, body))
 }
@@ -413,6 +411,12 @@ async fn api_token(cx: &Cx, body: Body) -> Result<Response> {
     if !is_same_origin(headers(cx)) {
         return Ok(api_error(StatusCode::FORBIDDEN, "forbidden"));
     }
+    if requested_wire_version(headers(cx)) != Some(diary_core::contract::CURRENT_WIRE_VERSION) {
+        return Ok(api_error(
+            StatusCode::CONFLICT,
+            "diary wire version mismatch",
+        ));
+    }
     // No meaningful body; drain within the same bound as the other POSTs.
     if to_bytes(body, BODY_LIMIT_BYTES).await.is_err() {
         return Ok(api_error(StatusCode::PAYLOAD_TOO_LARGE, "no body needed"));
@@ -427,7 +431,8 @@ async fn api_token(cx: &Cx, body: Body) -> Result<Response> {
     match mint_direct_token(&private_key, &namespace, &database) {
         Ok(token) => Ok(api_json(
             StatusCode::OK,
-            serde_json::json!({ "token": token, "ns": namespace, "db": database }).to_string(),
+            serde_json::to_string(&DirectTokenGrant::new(token, namespace, database))
+                .expect("direct token grants always serialize"),
         )),
         Err(error) => {
             log_failure("token", &error);
@@ -475,11 +480,11 @@ fn mint_direct_token(
 /// moved with it.)
 async fn save_queued_entry(
     data: &Data,
-    written_at: i64,
-    body: &str,
+    entry: ComposedEntry,
+    validation_now: i64,
 ) -> std::result::Result<SavedWrite, SaveError> {
     let db = open_db(data).await.map_err(SaveError::Store)?;
-    store::save_entry(&db, written_at, body).await
+    store::save_entry(&db, entry, validation_now).await
 }
 
 fn is_json_content_type(headers: &HeaderMap) -> bool {
@@ -523,15 +528,6 @@ async fn entry_by_id(data: &Data, id: &str) -> std::result::Result<Option<DiaryE
     store::entry_by_id(&open_db(data).await?, id).await
 }
 
-async fn insert_entry(
-    data: &Data,
-    id: &str,
-    written_at: i64,
-    body: &str,
-) -> std::result::Result<(), String> {
-    store::insert_entry(&open_db(data).await?, id, written_at, body).await
-}
-
 async fn remove_entry(data: &Data, id: &str) -> std::result::Result<(), String> {
     store::remove_entry(&open_db(data).await?, id).await
 }
@@ -571,14 +567,6 @@ fn parse_single_field(body: &[u8], name: &str) -> Option<String> {
         }
     }
     value
-}
-
-/// The record key and stored timestamp for a new form entry, from one
-/// instant. (`store::entry_key` is the projection itself — shared with the
-/// queue, which keys offline entries by their composition second.)
-fn now_entry() -> Option<(String, i64)> {
-    let now = Timestamp::now().as_second();
-    Some((store::entry_key(now)?, now))
 }
 
 fn requested_page(raw: Option<&str>) -> Option<usize> {
@@ -644,7 +632,7 @@ fn log_failure(step: &str, error: &str) {
 
 #[cfg(test)]
 mod tests {
-    use diary_core::contract::MAX_ENTRY_CHARS;
+    use diary_core::entry::MAX_ENTRY_CHARS;
 
     use super::*;
 
@@ -691,6 +679,25 @@ mod tests {
         assert_eq!(parse_single_field(b"body=a&body=b", "body"), None);
         assert_eq!(parse_single_field(b"body=a&submit=Save", "body"), None);
         assert_eq!(parse_single_field(b"path=x", "body"), None);
+    }
+
+    #[test]
+    fn direct_token_requests_require_the_exact_worker_generation() {
+        let mut request_headers = HeaderMap::new();
+        assert_eq!(requested_wire_version(&request_headers), None);
+        request_headers.insert(
+            diary_core::contract::WIRE_VERSION_HEADER,
+            HeaderValue::from_str(&diary_core::contract::CURRENT_WIRE_VERSION.to_string()).unwrap(),
+        );
+        assert_eq!(
+            requested_wire_version(&request_headers),
+            Some(diary_core::contract::CURRENT_WIRE_VERSION)
+        );
+        request_headers.insert(
+            diary_core::contract::WIRE_VERSION_HEADER,
+            HeaderValue::from_static("not-a-version"),
+        );
+        assert_eq!(requested_wire_version(&request_headers), None);
     }
 
     /// The protocol items now live in `diary-core` (where the wasm worker
@@ -764,7 +771,8 @@ mod tests {
     /// form path's "now" must key exactly like the queue's client epochs.
     #[test]
     fn fresh_entry_keys_parse_and_stamp_now() {
-        let (id, written_at) = now_entry().expect("now projects");
+        let written_at = Timestamp::now().as_second();
+        let id = store::entry_key(written_at).expect("now projects");
         assert!(eastern::parse_public_path(&id).is_some(), "bad key {id}");
         assert!(written_at > 1_750_000_000, "implausible epoch {written_at}");
         assert_eq!(store::entry_key(written_at).as_deref(), Some(id.as_str()));
@@ -795,6 +803,7 @@ mod tests {
             "DIARY_SYNC.glue",
             "module_or_path: self.DIARY_SYNC.wasm",
             "diary_enqueue",
+            "diary_wire_version",
             "diary_snapshot",
             "diary_discard",
             // the reconciliation contract: bubbles clone the server-shipped
@@ -806,6 +815,9 @@ mod tests {
             "dataset.state",
             ".diary-note",
             ".diary-discard",
+            // current identity-only acknowledgements plus the rolling-deploy
+            // name understood by a predecessor worker
+            "saved_refs",
             "saved_entries",
             "diary-message-queued",
             // the placeholder toggle and the offline fallback guard

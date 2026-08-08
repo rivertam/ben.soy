@@ -3,29 +3,31 @@
 The /diary system is written in Rust on both sides of the wire, and the
 larger idea it started as — Remix-style loader/clientLoader isomorphism for
 a topcoat + SurrealDB app — is BUILT: one local table is both outbox and
-mirror; entry ids (permalinks) are predicted at enqueue with the same probe
+mirror; Entry Keys are predicted at enqueue with the same probe
 the server runs; the transcript markup is ONE set of pure components
 rendered by the server page, by the service worker's offline SSR
 (`Router::handle` inside the worker, the topcoat 0.5.0 serve split), and
 cloned by the page JS from a served `<template>`; sync is flush-then-pull
-through a two-method transport trait whose direct implementation is just
-another `Surreal<Any>` handle. The page JS cannot tell which renderer drew
-the HTML it reconciles against — that sentence is the whole design.
+through a two-method transport trait whose direct implementation wraps
+another `Surreal<Any>` handle plus the remote server's validation clock. The
+page JS cannot tell which renderer drew the HTML it reconciles against — that
+sentence is the whole design.
 
 ## Shape
 
-- `crates/diary-core` — everything shared. `contract` is the wire protocol
-  (`WireEntry`, the snapshot shapes, response/pull classification);
-  `eastern` the America/New_York projection (moved from the lifting
-  archive; permalink keys derive from it); `store` the entry model, key
-  projection, and probe-and-dedupe queries; `outbox` the DEVICE-LOCAL
-  single store — mirror and queue in one `diary_entries` table, a queued
-  entry just a row with `state = 'pending'` that flips in place on
-  delivery; `sync` the flush-then-pull pass over the two-method `Remote`
-  trait (`HttpRemote` lives in the worker; `DirectRemote` is a raw
-  `Surreal<Any>`), with the empty-snapshot wipe guard; `views` (feature
-  "view") the PURE components — transcript, bubble, compose, template,
-  minimal offline chrome — zero awaits, which is what satisfies topcoat's
+- `crates/diary-core` — everything shared. `entry` owns the canonical
+  lifecycle values; `contract` owns versioned transport envelopes and
+  response/pull classification; `eastern` owns the America/New_York
+  projection (Entry Keys derive from it); `placement` owns the shared
+  probe-and-dedupe algorithm; `store` is its server persistence Adapter;
+  `outbox` is its DEVICE-LOCAL Adapter and single store — mirror and queue
+  in one `diary_entries` table, including snapshot reconciliation and the
+  empty-snapshot wipe guard; `sync` only sequences flush then pull over the
+  two-method `Remote` Interface (`HttpRemote` lives in the worker;
+  `DirectRemote` wraps an authenticated `Surreal<Any>` plus the server time
+  captured for that sync pass); `views` (feature "view") the PURE components —
+  transcript, bubble, compose, template, minimal offline chrome — zero awaits,
+  which is what satisfies topcoat's
   `+ Send` render bounds on wasm for free. All of it runs against the SAME
   `Surreal<Any>` handle `src/data.rs` uses. `cargo test -p diary-core`
   exercises everything natively against `mem://` (including two-device
@@ -54,31 +56,114 @@ the HTML it reconciles against — that sentence is the whole design.
   asset cache, Web Lock, Background Sync, BroadcastChannel, and the page's
   template-clone bubble handling keyed by `data-id`.
 
+### Canonical diary-entry values
+
+The Diary Entry Module owns the lifecycle values used at the persistence and
+transport Seams:
+
+- `EntryContent` owns the business fields that determine replay equality.
+- `ComposedEntry` pairs `EntryContent` with the second proposed to placement;
+  a same-device collision can re-anchor it to a later probed second.
+- `DiaryEntry` carries the placement-selected record key and second; ordinary
+  placed rows use an Entry Key, with the legacy recovery exception below.
+- `SavedRef` is the server-confirmed identity, not another copy of content.
+- `LocalEntry` wraps a `DiaryEntry` with device-only state, failure reason,
+  and enqueue order.
+
+Snapshots carry `Vec<DiaryEntry>` directly, and each flush result pairs a
+queued id with its `SavedRef`. Persistence and transport Adapters carry these
+values instead of declaring parallel current wire, snapshot, and report entry
+shapes. Adding a durable `EntryContent` field has these production field-list
+Seams: `EntryContent`, the shared explicit `PROJECTION`, the server schema,
+and the device schema. A semantic change also bumps the wire generation and
+adds any required older-generation translation. It does not add per-query
+binds, write branches, snapshot mappings, flush-report content, placement or
+reconciliation comparisons, or CAS predicates.
+
+Presentation was deliberately not deepened in this refactor. A field that is
+composed or shown still needs feature-specific work in `views`, the served
+bubble template, the plain form, and `diary.js`; those are presentation edits,
+not another persistence or transport representation.
+
+`CURRENT_WIRE_VERSION` identifies the semantic generation carried by
+`ComposeCommand`, `PushWire`, and `SnapshotWire`. Generation 1 is the base
+entry shape. Readers strictly parse a known generation but continue accepting
+the preceding unversioned shape during rollout. An unsupported newer push
+receives a retryable response, and an unsupported newer snapshot is a mirror
+no-op, so deploy skew never permanently rejects queued text or wipes local
+history. Adding a semantic `EntryContent` field requires a new generation.
+Each device row also stores that entry generation. A worker flushes only rows
+from generations it understands, so an active older worker cannot project a
+newer pending value through its older field list, send only the fields it saw,
+and acknowledge away the rest. Rows written before this metadata existed are
+standing-backfilled as generation 1. Every older-code adapter treats a newer
+row as opaque: it is hidden from rendering and discard, still occupies its key
+for placement and reconciliation, and cannot compare equal through truncated
+content.
+
+Direct database sync has no HTTP entry envelope to carry that boundary. Its
+token request and returned grant both carry the current generation; the server
+refuses a pre-fence request, and the worker arms direct mode only on an exact
+grant match. During server/worker skew it falls back to the versioned HTTP
+transport instead of projecting newer server rows through an older field list.
+
+Remote acceptance is one store Interface shared by the HTTP and direct
+Adapters: it normalizes content, enforces the timestamp window and body bound,
+then runs placement. The outbox deliberately applies only intrinsic queue
+preparation (line normalization and nonempty content), so text that is too old
+or too long is still durable locally and can become an in-place 422 failure.
+
 ## Stable ids and flush semantics
 
-An entry's id — its permalink — is predicted at ENQUEUE with the identical
-probe-and-dedupe loop the server runs (`store::save_entry` vs the outbox's
-local placement): same second + same body at any probed key is the same
-entry (a double-tap converges instead of minting a twin the server would
-store twice); a different body probes the second forward. The permalink is
-right from birth, the server's own probe stays as the cross-device
-backstop, and page reconciliation collapses to "does the DOM already show
-this data-id" against the server-shipped `<template id="diary-bubble">` —
-the old five-bucket painter and provisional map are gone.
+An entry's Entry Key is predicted at ENQUEUE by running the same bounded
+placement algorithm the server runs. At every candidate key, identical Entry
+Content dedupes and different content probes forward. A same-device collision
+can therefore re-anchor the proposed second before the row is queued. The
+predicted key is permalink-shaped immediately, which keeps local
+reconciliation keyed by `data-id`, but it is not an Entry Reference until
+delivery or a snapshot marks the Device Entry synced. A cross-device collision
+can make the server's `SavedRef` bump the key and placement second again; the
+device store re-keys the row and the pull that follows converges the mirror. In
+the common case, proposed, predicted, and saved seconds agree.
+
+An unprojectable timestamp from a legacy queue is the exception: its text is
+kept failed under a synthetic `failed-*` Recovery Key. Recovery Keys are
+device-only preservation handles, never Entry Keys, permalinks, or replyable
+Entry References.
 
 Flushes send oldest-first by enqueue time; stop on auth (401/404) or
-retryable trouble (network, 403, 5xx, captive-portal 200) so composition
-order survives; permanent rejections (400/409/413/415/422) mark the entry
-failed IN PLACE and keep its text for manual copy. A delivered entry flips
+retryable trouble (network, 400/403, 5xx, captive-portal 200) so composition
+order survives; a 400 may be an older server rejecting a newer wire
+generation during rollout. Permanent rejections (409/413/415/422) mark the
+entry failed IN PLACE and keep its text for manual copy. A delivered entry flips
 `pending -> synced` in place too — never deleted — so no snapshot can watch
-a message blink out of existence mid-flush. The `FlushReport` still carries
-`saved_entries` (local id -> server identity); it matters only for the rare
-server bump, where the local row is re-keyed to the server's id (and if
+a message blink out of existence mid-flush. `FlushReport.saved_refs` pairs a
+local queued id with the server's identity-only `SavedRef`; it includes only
+writes whose exact local generation transitioned, so a stale acknowledgement
+can never mark a replacement row delivered. The mapping matters mainly for a
+rare server bump, where the local row is re-keyed to the server's id (and if
 that key is held by a DIFFERENT pending row, the delivered row is simply
-released — its text is safe server-side and the pull that follows in the
-same lock places it). The dashed queued styling and "will sync" label
-appear only when a report says the queue is actually blocked; "failed" only
-when the server rejected the entry.
+released — its text is safe server-side and the pull that follows in the same
+lock places it).
+
+Each current device row stores a SHA-256 write fingerprint derived from its
+entry generation, whole canonical `ComposedEntry`, and enqueue order. Delivery
+and rejection are compare-and-swap transitions against that opaque token. The
+page does not hold the worker's Web Lock, so this is what protects a row
+discarded and replaced while a network write is in flight. Because the whole
+canonical value feeds the fingerprint, a future business field requires no
+new CAS predicate.
+
+The immediately preceding single-store worker wrote the same rows without an
+entry generation or fingerprint. Every outbox open—and the selection before
+each flush—runs a standing guarded backfill: missing generations become 1,
+and missing fingerprints hash the whole entry. The local schema permits these
+fields to be temporarily absent solely so a preceding page that remains open
+during activation can finish its write; current writers always supply both.
+Conditional updates plus bounded conflict retry let concurrent page and worker
+contexts agree without replacing metadata another writer supplied. The dashed
+queued styling and "will sync" label appear only when a report says the queue
+is actually blocked; "failed" only when the server rejected the entry.
 
 `outbox::flush` takes the transport as a generic closure with deliberately
 NO `Send` bounds: browser futures are `!Send`, native test futures don't
@@ -87,21 +172,25 @@ the wasm build; this is the one signature where the isomorphism is fragile.
 
 ## Legacy migration
 
-The pre-wasm queue (IndexedDB `diary-queue`/`entries`) is drained by the
-worker on each flush, under the flush Web Lock: read all → `diary_import`
-(idempotent by `(written_at, body)`, state/reason preserved, bodies kept
-byte-for-byte) → delete legacy rows only after import returns. A crash
-anywhere re-runs safely. The emptied database is left behind for any
-straggler old worker. Page kicks are deliberately unconditional (the old
-"any pending?" check is gone) because only the worker can see both stores
-while the migration exists.
+The pre-wasm queue (IndexedDB `diary-queue`/`entries`) is drained by the worker
+on each flush, under the flush Web Lock: read all → `diary_import` (idempotent
+by its composition second plus legacy body, state/reason preserved, bodies
+kept byte-for-byte) → delete legacy rows only after import returns. Its source
+shape is frozen at `qid`, `written_at`, `body`, `state`, `reason`, and
+`enqueued_at`; future Entry Content fields were never present there and must
+default absent during import. A crash anywhere re-runs safely. The emptied
+database is left behind for any straggler old worker. Page kicks are
+deliberately unconditional (the old "any pending?" check is gone) because only
+the worker can see both stores while the migration exists.
 
-The v1 wasm queue (`diary_outbox`, the separate outbox table before the
-single store) drains the same way, inside `outbox::open` itself: rows port
-into `diary_entries` under predicted keys (unprojectable timestamps land
-under synthetic `failed-*` keys as failed rows — never dropped), then the
-old rows delete one by one. It is a STANDING step, not one-shot: during
-deploy skew an old worker happily re-creates the table.
+The v1 wasm queue (`diary_outbox`, the separate outbox table before the single
+store) drains the same way, inside `outbox::open` itself. Its SurrealDB source
+schema is likewise frozen at `written_at`, `body`, `state`, `reason`, and
+`enqueued_at`; do not add later Entry Content fields to that legacy table.
+Rows port into `diary_entries` under predicted keys (unprojectable timestamps
+land under synthetic `failed-*` Recovery Keys as failed rows — never dropped),
+then the old rows delete one by one. It is a STANDING step, not one-shot:
+during deploy skew an old worker happily re-creates the table.
 
 ## Serving and cache pairing
 
