@@ -5,8 +5,8 @@
 //! handle alone; the server now calls these with `data.db().await?`.
 //!
 //! The query shapes follow docs/surrealdb-notes.md: explicit projections
-//! (`SELECT *` omits `option` fields holding `NONE` — none here yet, but the
-//! local store grows them), string keys via `record::id(id)`, keys returned
+//! (`SELECT *` omits `option` fields holding `NONE` — `reply_to` is one),
+//! string keys via `record::id(id)`, keys returned
 //! from creates via `RETURN VALUE record::id(id)`, one `=` per delete.
 
 use std::ops::Deref;
@@ -36,7 +36,8 @@ pub(crate) const TEST_SCHEMA: &str = "\
     DEFINE TABLE diary_entries SCHEMAFULL PERMISSIONS NONE;
     DEFINE FIELD id ON diary_entries TYPE string;
     DEFINE FIELD written_at ON diary_entries TYPE int;
-    DEFINE FIELD body ON diary_entries TYPE string;";
+    DEFINE FIELD body ON diary_entries TYPE string;
+    DEFINE FIELD reply_to ON diary_entries TYPE option<string>;";
 
 /// The saved-or-deduped outcome [`save_entry`] reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +254,20 @@ mod tests {
         save_entry(db, ComposedEntry::new(written_at, body), written_at).await
     }
 
+    async fn save_reply_at(
+        db: &Db,
+        written_at: i64,
+        body: &str,
+        reply_to: &str,
+    ) -> Result<SavedWrite, SaveError> {
+        save_entry(
+            db,
+            ComposedEntry::new(written_at, body).with_reply_to(Some(reply_to.to_string())),
+            written_at,
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn save_rejects_before_touching_the_store() {
         use crate::entry::{EntryRejection, MAX_ENTRY_CHARS};
@@ -267,6 +282,23 @@ mod tests {
         assert!(matches!(
             result,
             Err(SaveError::Rejected(EntryRejection::BodyTooLong))
+        ));
+        assert!(all_entries(&db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn save_rejects_a_malformed_reply_target_before_touching_the_store() {
+        let db = store().await;
+        let result = save_entry(
+            &db,
+            ComposedEntry::new(100, "reply")
+                .with_reply_to(Some("/diary/not-a-permalink".to_string())),
+            100,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SaveError::Rejected(EntryRejection::InvalidReplyTarget))
         ));
         assert!(all_entries(&db).await.unwrap().is_empty());
     }
@@ -316,7 +348,11 @@ mod tests {
     #[tokio::test]
     async fn typed_entry_content_round_trips_through_content_write() {
         let db = store().await;
-        let entry = DiaryEntry::from_parts(entry_key(100).unwrap(), 100, "typed row");
+        let parent = "2026-07-27T14-30-45-04-00";
+        let entry = DiaryEntry::new(
+            entry_key(100).unwrap(),
+            ComposedEntry::new(100, "typed row").with_reply_to(Some(parent.to_string())),
+        );
         insert_entry(&db, &entry).await.unwrap();
         assert_eq!(entry_by_id(&db, &entry.id).await.unwrap(), Some(entry));
     }
@@ -343,6 +379,21 @@ mod tests {
         assert_ne!(second.id, first.id);
         // The stored written_at is always the epoch the id projects from.
         assert_eq!(entry_key(101).as_deref(), Some(second.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn same_body_with_a_different_parent_is_not_a_replay() {
+        let db = store().await;
+        let parent = "2026-07-27T14-30-45-04-00";
+        let top_level = saved(save_at(&db, 100, "same words").await);
+        let reply = saved(save_reply_at(&db, 100, "same words", parent).await);
+        assert_eq!(reply.written_at, 101);
+        assert_ne!(reply.id, top_level.id);
+        assert_eq!(reply.reply_to.as_deref(), Some(parent));
+
+        let replay = saved(save_reply_at(&db, 100, "same words", parent).await);
+        assert!(replay.deduped);
+        assert_eq!(replay.id, reply.id);
     }
 
     #[tokio::test]

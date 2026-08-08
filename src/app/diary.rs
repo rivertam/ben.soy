@@ -228,11 +228,11 @@ async fn write_entry(cx: &Cx, body: Body) -> Result<Response> {
         Ok(bytes) => bytes,
         Err(response) => return Ok(response),
     };
-    let Some(raw) = parse_single_field(&bytes, "body") else {
+    let Some((raw, reply_to)) = parse_write_form(&bytes) else {
         return Ok(back("invalid"));
     };
     let validation_now = Timestamp::now().as_second();
-    let entry = ComposedEntry::new(validation_now, raw);
+    let entry = ComposedEntry::new(validation_now, raw).with_reply_to(reply_to);
     match save_queued_entry(app_context::<Data>(cx), entry, validation_now).await {
         Ok(_) => Ok(back("saved")),
         Err(SaveError::Rejected(_)) => Ok(back("invalid")),
@@ -591,6 +591,30 @@ fn parse_single_field(body: &[u8], name: &str) -> Option<String> {
     value
 }
 
+/// The compose form's canonical content inputs: one body and, when JS has
+/// selected a synced parent, one optional permalink. Unknown or duplicate
+/// fields fail closed just like [`parse_single_field`]; the shared entry
+/// acceptance boundary trims and validates both values.
+fn parse_write_form(body: &[u8]) -> Option<(String, Option<String>)> {
+    let mut entry_body = None;
+    let mut reply_to = None;
+    let mut saw_reply_to = false;
+    for (key, field) in form_urlencoded::parse(body) {
+        match key.as_ref() {
+            "body" if entry_body.is_none() => entry_body = Some(field.into_owned()),
+            "reply_to" if !saw_reply_to => {
+                saw_reply_to = true;
+                let value = field.into_owned();
+                if !value.is_empty() {
+                    reply_to = Some(value);
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some((entry_body?, reply_to))
+}
+
 fn requested_page(raw: Option<&str>) -> Option<usize> {
     match raw {
         None => Some(1),
@@ -699,6 +723,26 @@ mod tests {
         assert_eq!(parse_single_field(b"body=a&body=b", "body"), None);
         assert_eq!(parse_single_field(b"body=a&submit=Save", "body"), None);
         assert_eq!(parse_single_field(b"path=x", "body"), None);
+    }
+
+    #[test]
+    fn write_forms_accept_one_optional_reply_target() {
+        assert_eq!(parse_write_form(b"body=hi"), Some(("hi".to_string(), None)));
+        assert_eq!(
+            parse_write_form(b"body=hi&reply_to="),
+            Some(("hi".to_string(), None))
+        );
+        assert_eq!(
+            parse_write_form(b"body=hi&reply_to=2026-07-27T14-30-45-04-00"),
+            Some((
+                "hi".to_string(),
+                Some("2026-07-27T14-30-45-04-00".to_string())
+            ))
+        );
+        assert_eq!(parse_write_form(b"body=a&body=b"), None);
+        assert_eq!(parse_write_form(b"body=a&extra=1"), None);
+        assert_eq!(parse_write_form(b"reply_to=x"), None);
+        assert_eq!(parse_write_form(b"body=a&reply_to=x&reply_to=y"), None);
     }
 
     #[test]
@@ -847,6 +891,11 @@ mod tests {
             "dataset.state",
             ".diary-note",
             ".diary-discard",
+            ".diary-reply",
+            ".diary-reply-to",
+            ".diary-permalink",
+            "diary-replying",
+            "setReplyTarget",
             // current identity-only acknowledgements plus the rolling-deploy
             // name understood by a predecessor worker
             "saved_refs",
@@ -858,6 +907,9 @@ mod tests {
             // Enter-to-send stays desktop-only and IME-safe
             "(hover: hover) and (pointer: fine)",
             "isComposing",
+            // Optional content must be absent for a top-level wire value,
+            // never serialized as a null field.
+            "content.reply_to = parent",
         ] {
             assert!(DIARY_JS_SRC.contains(needle), "diary.js lost {needle:?}");
         }
@@ -873,6 +925,10 @@ mod tests {
         assert!(
             !DIARY_JS_SRC.contains("createElement(\"article\""),
             "diary.js rebuilt bubble markup outside the template"
+        );
+        assert!(
+            !DIARY_JS_SRC.contains("reply_to: null"),
+            "diary.js must omit absent optional content from exact wire JSON"
         );
     }
 }

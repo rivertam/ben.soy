@@ -32,6 +32,7 @@ pub enum EntryRejection {
     TimestampOutOfRange,
     InvalidBody,
     BodyTooLong,
+    InvalidReplyTarget,
 }
 
 impl EntryRejection {
@@ -42,7 +43,9 @@ impl EntryRejection {
     pub const fn message(self) -> &'static str {
         match self {
             Self::TimestampOutOfRange => "timestamp out of range",
-            Self::InvalidBody | Self::BodyTooLong => "that didn't validate",
+            Self::InvalidBody | Self::BodyTooLong | Self::InvalidReplyTarget => {
+                "that didn't validate"
+            }
         }
     }
 }
@@ -55,11 +58,18 @@ impl EntryRejection {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, SurrealValue)]
 pub struct EntryContent {
     pub body: String,
+    /// The parent entry's permalink id. Top-level entries omit the field on
+    /// JSON wires and store it as `NONE` in SurrealDB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 impl EntryContent {
     pub fn new(body: impl Into<String>) -> Self {
-        Self { body: body.into() }
+        Self {
+            body: body.into(),
+            reply_to: None,
+        }
     }
 }
 
@@ -84,6 +94,13 @@ impl ComposedEntry {
             written_at,
             content,
         }
+    }
+
+    /// Attach an optional parent while keeping composition as one canonical
+    /// value. Queue preparation trims and validates the target.
+    pub fn with_reply_to(mut self, reply_to: Option<String>) -> Self {
+        self.reply_to = reply_to;
+        self
     }
 
     /// Keep the thought but assign the actual second selected by collision
@@ -179,7 +196,7 @@ impl From<&DiaryEntry> for SavedRef {
 /// The explicit projection every flat diary-entry row read shares. Optional
 /// business fields added later are added here once, then inherited by both
 /// server and device-store reads.
-pub const PROJECTION: &str = "record::id(id) AS id, written_at, body";
+pub const PROJECTION: &str = "record::id(id) AS id, written_at, body, reply_to";
 
 pub fn written_at_in_window(written_at: i64, now: i64) -> bool {
     written_at > now - MAX_PAST_SECONDS && written_at <= now + MAX_FUTURE_SECONDS
@@ -192,11 +209,24 @@ pub fn normalize_lines(raw: &str) -> String {
     body.trim().to_string()
 }
 
+/// Normalize an optional reply target and require the exact public diary-id
+/// shape. Empty form values mean a top-level entry; a non-empty malformed
+/// value is rejected rather than stored as a dangling, unrenderable link.
+pub fn normalize_reply_to(raw: Option<&str>) -> Result<Option<String>, EntryRejection> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(id) if crate::eastern::parse_public_path(id).is_some() => Ok(Some(id.to_string())),
+        Some(_) => Err(EntryRejection::InvalidReplyTarget),
+    }
+}
+
 /// Intrinsic preparation shared by every device-store enqueue path. It
-/// normalizes content and rejects only an empty entry; remote-only policy
-/// (age and size) must not prevent text from entering the durable queue.
+/// normalizes content and rejects empty text or a malformed relationship;
+/// remote-only policy (age and size) must not prevent text from entering the
+/// durable queue.
 pub fn prepare_for_queue(mut entry: ComposedEntry) -> Result<ComposedEntry, EntryRejection> {
     entry.body = normalize_lines(&entry.body);
+    entry.reply_to = normalize_reply_to(entry.reply_to.as_deref())?;
     if entry.body.is_empty() {
         Err(EntryRejection::InvalidBody)
     } else {
@@ -235,6 +265,14 @@ mod tests {
             r#"{"id":"entry-id","written_at":1753640000,"body":"Dear diary,"}"#
         );
         assert_eq!(entry.body, "Dear diary,");
+        assert_eq!(entry.reply_to, None);
+
+        let reply = ComposedEntry::new(1_753_640_000, "and also")
+            .with_reply_to(Some("2026-07-27T14-30-45-04-00".to_string()));
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            r#"{"written_at":1753640000,"body":"and also","reply_to":"2026-07-27T14-30-45-04-00"}"#
+        );
     }
 
     #[test]
@@ -257,6 +295,16 @@ mod tests {
         let placed = DiaryEntry::new("bumped", requested.placed_at(101));
         assert!(placed.has_content(&requested.content));
         assert_ne!(placed.composed, requested);
+    }
+
+    #[test]
+    fn reply_target_is_part_of_content_equality() {
+        let parent = "2026-07-27T14-30-45-04-00";
+        let top_level = ComposedEntry::new(100, "same thought");
+        let reply = ComposedEntry::new(100, "same thought").with_reply_to(Some(parent.to_string()));
+        let placed = DiaryEntry::new("reply", reply.clone());
+        assert!(!placed.has_content(&top_level.content));
+        assert!(placed.has_content(&reply.content));
     }
 
     #[test]
@@ -291,6 +339,37 @@ mod tests {
             prepare_for_queue(ComposedEntry::new(100, " \r\n\t ")),
             Err(EntryRejection::InvalidBody)
         );
+    }
+
+    #[test]
+    fn reply_targets_trim_blank_to_none_and_reject_non_permalinks() {
+        let parent = "2026-07-27T14-30-45-04-00";
+        let reply = prepare_for_queue(
+            ComposedEntry::new(100, "reply").with_reply_to(Some(format!("  {parent}\n"))),
+        )
+        .unwrap();
+        assert_eq!(reply.reply_to.as_deref(), Some(parent));
+
+        let top_level = prepare_for_queue(
+            ComposedEntry::new(100, "plain").with_reply_to(Some(" \t ".to_string())),
+        )
+        .unwrap();
+        assert_eq!(top_level.reply_to, None);
+
+        for invalid in [
+            "garbage",
+            "failed-99-1",
+            "/diary/2026-07-27T14-30-45-04-00",
+            "2026-07-27T14-30-45-07-00",
+        ] {
+            assert_eq!(
+                prepare_for_queue(
+                    ComposedEntry::new(100, "reply").with_reply_to(Some(invalid.to_string()))
+                ),
+                Err(EntryRejection::InvalidReplyTarget),
+                "accepted {invalid}"
+            );
+        }
     }
 
     #[test]

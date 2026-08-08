@@ -17,19 +17,35 @@ struct Migration {
     expected_schema: SchemaExpectation,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    epoch: 1,
-    sql: include_str!("diary_migrations/0001_current_entry_store.surql"),
-    expected_schema: SchemaExpectation {
-        table: "DEFINE TABLE diary_entries TYPE NORMAL SCHEMAFULL PERMISSIONS FOR select, create WHERE $access = 'diary_sync' AND ($token.diary_schema_epoch = 1 OR $token.diary_schema_epoch = NONE), FOR update, delete NONE",
-        fields: &[
-            "DEFINE FIELD body ON diary_entries TYPE string ASSERT string::len($value) >= 1 AND string::len($value) <= 65536 PERMISSIONS FULL",
-            "DEFINE FIELD id ON diary_entries TYPE string ASSERT string::matches(record::id($value), '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
-            "DEFINE FIELD written_at ON diary_entries TYPE int ASSERT $value >= 0 AND $value <= 253402300799 PERMISSIONS FULL",
-        ],
-        indexes: &["DEFINE INDEX diary_entries_written_at ON diary_entries FIELDS written_at"],
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        epoch: 1,
+        sql: include_str!("diary_migrations/0001_current_entry_store.surql"),
+        expected_schema: SchemaExpectation {
+            table: "DEFINE TABLE diary_entries TYPE NORMAL SCHEMAFULL PERMISSIONS FOR select, create WHERE $access = 'diary_sync' AND ($token.diary_schema_epoch = 1 OR $token.diary_schema_epoch = NONE), FOR update, delete NONE",
+            fields: &[
+                "DEFINE FIELD body ON diary_entries TYPE string ASSERT string::len($value) >= 1 AND string::len($value) <= 65536 PERMISSIONS FULL",
+                "DEFINE FIELD id ON diary_entries TYPE string ASSERT string::matches(record::id($value), '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
+                "DEFINE FIELD written_at ON diary_entries TYPE int ASSERT $value >= 0 AND $value <= 253402300799 PERMISSIONS FULL",
+            ],
+            indexes: &["DEFINE INDEX diary_entries_written_at ON diary_entries FIELDS written_at"],
+        },
     },
-}];
+    Migration {
+        epoch: 2,
+        sql: include_str!("diary_migrations/0002_replies.surql"),
+        expected_schema: SchemaExpectation {
+            table: "DEFINE TABLE diary_entries TYPE NORMAL SCHEMAFULL PERMISSIONS FOR select, create WHERE $access = 'diary_sync' AND ($token.diary_schema_epoch = 2 OR $token.diary_schema_epoch = NONE AND reply_to = NONE), FOR update, delete NONE",
+            fields: &[
+                "DEFINE FIELD body ON diary_entries TYPE string ASSERT string::len($value) >= 1 AND string::len($value) <= 65536 PERMISSIONS FULL",
+                "DEFINE FIELD id ON diary_entries TYPE string ASSERT string::matches(record::id($value), '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
+                "DEFINE FIELD reply_to ON diary_entries TYPE none | string ASSERT $value = NONE OR string::matches($value, '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
+                "DEFINE FIELD written_at ON diary_entries TYPE int ASSERT $value >= 0 AND $value <= 253402300799 PERMISSIONS FULL",
+            ],
+            indexes: &["DEFINE INDEX diary_entries_written_at ON diary_entries FIELDS written_at"],
+        },
+    },
+];
 
 struct SchemaExpectation {
     /// SurrealDB 3.2.3's canonical `INFO FOR DATABASE` definition.
@@ -367,16 +383,26 @@ mod tests {
     }
 
     async fn create_as(db: &Db, epoch: Option<u16>, id: &str) -> Option<String> {
+        create_as_with_reply(db, epoch, id, None).await
+    }
+
+    async fn create_as_with_reply(
+        db: &Db,
+        epoch: Option<u16>,
+        id: &str,
+        reply_to: Option<&str>,
+    ) -> Option<String> {
         let session = direct_session(db, epoch).await;
         let mut response = session
             .query(
                 "CREATE ONLY type::record('diary_entries', $id)
-                 SET written_at = $written_at, body = $body
+                 SET written_at = $written_at, body = $body, reply_to = $reply_to
                  RETURN VALUE record::id(id)",
             )
             .bind(("id", id.to_string()))
             .bind(("written_at", 1_i64))
             .bind(("body", id.to_string()))
+            .bind(("reply_to", reply_to.map(str::to_string)))
             .await
             .unwrap()
             .check()
@@ -387,7 +413,10 @@ mod tests {
     async fn ids_as(db: &Db, epoch: Option<u16>) -> Vec<String> {
         let session = direct_session(db, epoch).await;
         let mut response = session
-            .query("SELECT VALUE record::id(id) FROM diary_entries ORDER BY written_at ASC")
+            .query(
+                "SELECT VALUE record::id(id) FROM diary_entries
+                 ORDER BY written_at ASC, id ASC",
+            )
             .await
             .unwrap()
             .check()
@@ -401,6 +430,12 @@ mod tests {
 
     #[tokio::test]
     async fn migration_preserves_existing_entries_and_is_idempotent() {
+        #[derive(Deserialize, SurrealValue)]
+        struct PreservedRow {
+            body: String,
+            reply_to: Option<String>,
+        }
+
         let db = db().await;
         db.query(
             "DEFINE TABLE diary_entries SCHEMAFULL PERMISSIONS NONE;
@@ -419,13 +454,15 @@ mod tests {
         assert_eq!(applied_epochs(&db).await.unwrap(), registry_epochs());
 
         let mut response = db
-            .query("SELECT VALUE body FROM diary_entries:legacy")
+            .query("SELECT body, reply_to FROM diary_entries:legacy")
             .await
             .unwrap()
             .check()
             .unwrap();
-        let bodies: Vec<String> = response.take(0).unwrap();
-        assert_eq!(bodies, ["preserved"]);
+        let rows: Vec<PreservedRow> = response.take(0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "preserved");
+        assert_eq!(rows[0].reply_to, None);
     }
 
     #[tokio::test]
@@ -440,18 +477,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_permissions_accept_current_and_claimless_but_filter_future_sessions() {
+    async fn direct_permissions_fence_epochs_and_limit_the_claimless_bridge() {
         let db = db().await;
         apply(&db).await.unwrap();
         define_test_access(&db).await;
 
         let current_id = "2026-08-08T10-00-00-04-00";
-        let future_id = "2026-08-08T10-00-01-04-00";
-        let claimless_id = "2026-08-08T10-00-02-04-00";
+        let reply_id = "2026-08-08T10-00-01-04-00";
+        let absent_parent = "2026-08-08T09-59-59-04-00";
+        let stale_id = "2026-08-08T10-00-02-04-00";
+        let future_id = "2026-08-08T10-00-03-04-00";
+        let claimless_id = "2026-08-08T10-00-04-04-00";
+        let claimless_reply_id = "2026-08-08T10-00-05-04-00";
         assert!(
             create_as(&db, Some(CURRENT_SCHEMA_EPOCH), current_id)
                 .await
                 .is_some()
+        );
+        assert!(
+            create_as_with_reply(
+                &db,
+                Some(CURRENT_SCHEMA_EPOCH),
+                reply_id,
+                Some(absent_parent),
+            )
+            .await
+            .is_some(),
+            "Reply Targets are soft references, not existence constraints"
+        );
+        assert!(
+            create_as(&db, Some(CURRENT_SCHEMA_EPOCH - 1), stale_id)
+                .await
+                .is_none()
         );
         assert!(
             create_as(&db, Some(CURRENT_SCHEMA_EPOCH + 1), future_id)
@@ -459,11 +516,17 @@ mod tests {
                 .is_none()
         );
         assert!(create_as(&db, None, claimless_id).await.is_some());
+        assert!(
+            create_as_with_reply(&db, None, claimless_reply_id, Some(current_id))
+                .await
+                .is_none()
+        );
 
         assert_eq!(
             ids_as(&db, Some(CURRENT_SCHEMA_EPOCH)).await,
-            [current_id, claimless_id]
+            [current_id, reply_id, claimless_id]
         );
+        assert!(ids_as(&db, Some(CURRENT_SCHEMA_EPOCH - 1)).await.is_empty());
         assert!(ids_as(&db, Some(CURRENT_SCHEMA_EPOCH + 1)).await.is_empty());
         assert_eq!(ids_as(&db, None).await, [current_id, claimless_id]);
     }

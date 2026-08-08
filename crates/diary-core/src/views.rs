@@ -38,6 +38,7 @@ const TEXTAREA: &str = "w-full min-w-0 min-h-[3rem] px-3 py-[0.65rem] text-ink b
 pub struct Bubble {
     pub id: String,
     pub body: String,
+    pub reply_to: Option<String>,
     pub state: BubbleState,
 }
 
@@ -59,6 +60,7 @@ impl Bubble {
         Bubble {
             id: entry.id.clone(),
             body: entry.body.clone(),
+            reply_to: entry.reply_to.clone(),
             state: BubbleState::Synced,
         }
     }
@@ -79,6 +81,7 @@ impl Bubble {
         Bubble {
             id: entry.id.clone(),
             body: entry.body.clone(),
+            reply_to: entry.reply_to.clone(),
             state,
         }
     }
@@ -153,6 +156,27 @@ impl Bubble {
     fn discard_hidden(&self) -> bool {
         !matches!(self.state, BubbleState::Failed { .. })
     }
+
+    /// Replying is a relationship to a durable permalink, so a local
+    /// draft, pending row, or failed row must never offer the control.
+    fn reply_hidden(&self) -> bool {
+        !matches!(self.state, BubbleState::Synced) || self.id.is_empty()
+    }
+
+    fn reply_to_hidden(&self) -> bool {
+        self.reply_to.is_none()
+    }
+
+    fn reply_to_href(&self) -> Option<String> {
+        self.reply_to.as_deref().map(entry_url)
+    }
+
+    fn reply_to_text(&self) -> String {
+        self.reply_to
+            .as_deref()
+            .map(|id| format!("↳ {}", entry_stamp(id)))
+            .unwrap_or_default()
+    }
 }
 
 /// One bubble — the SAME markup whether it is a server-rendered synced
@@ -166,17 +190,31 @@ pub async fn bubble(item: Bubble) -> Result {
             class=(item.article_class())
             data-id=(item.id.as_str())
             data-state=(item.state_attr())
+            data-reply-to=(item.reply_to.as_deref().unwrap_or(""))
         >
+            <p
+                class="diary-reply-to mb-1.5 font-meta text-[0.6875rem] text-muted"
+                hidden=(item.reply_to_hidden())
+            >
+                <a class="quiet-link" href=(item.reply_to_href())>
+                    (item.reply_to_text())
+                </a>
+            </p>
             <p class="diary-body leading-relaxed whitespace-pre-wrap text-ink2">(item.body.as_str())</p>
             <p class="mt-2 text-right font-meta text-[0.6875rem] text-muted">
                 <span class="diary-note text-ink2" hidden=(item.note_hidden())>
                     (item.note_text())
                 </span>
                 <a
-                    class="quiet-link"
+                    class="diary-permalink quiet-link"
                     hidden=(item.anchor_hidden())
                     href=(item.synced_href())
                 >(item.anchor_text())</a>
+                <button
+                    type="button"
+                    class="diary-reply quiet-link ml-3 cursor-pointer font-meta text-xs"
+                    hidden=(item.reply_hidden())
+                >"reply"</button>
                 <button
                     type="button"
                     class="diary-discard quiet-link ml-3 cursor-pointer font-meta text-xs"
@@ -204,6 +242,7 @@ pub async fn diary_room(
     let template_seed = Bubble {
         id: String::new(),
         body: String::new(),
+        reply_to: None,
         state: BubbleState::Draft,
     };
     view! {
@@ -267,6 +306,18 @@ pub async fn diary_room(
                 id="diary-compose"
                 class="diary-compose"
             >
+                <div id="diary-replying" class="diary-replying" hidden="">
+                    <span class=(META_LABEL)>
+                        "Replying to "
+                        <span id="diary-replying-stamp"></span>
+                    </span>
+                    <button
+                        type="button"
+                        id="diary-reply-cancel"
+                        class="quiet-link cursor-pointer font-meta text-xs"
+                    >"cancel"</button>
+                </div>
+                <input type="hidden" id="diary-reply-to" name="reply_to" value="">
                 <div class="diary-compose-row">
                     <label class="min-w-0 flex-1" for="diary-body">
                         <span class="sr-only">"New diary message"</span>
@@ -294,13 +345,21 @@ pub async fn diary_room(
     }
 }
 
-/// One entry's detail core — stamp, body, and the delete form. Hosts pass
-/// the canonical entry and add their own chrome and heading around it.
+/// One entry's detail core — stamp, body, optional reply parent, and the
+/// delete form. Hosts pass the canonical entry and add their own chrome and
+/// heading around it.
 #[component]
 pub async fn entry_detail(entry: DiaryEntry) -> Result {
     view! {
         <section class="mt-8 max-w-prose">
             <p class="font-meta text-xs text-muted">(entry_stamp(&entry.id))</p>
+            if let Some(parent) = entry.reply_to.as_ref() {
+                <p class="mt-2 font-meta text-[0.6875rem] text-muted">
+                    <a class="quiet-link" href=(entry_url(parent))>
+                        (format!("↳ {}", entry_stamp(parent)))
+                    </a>
+                </p>
+            }
             <p class="mt-3 leading-relaxed whitespace-pre-wrap text-ink2">(entry.body.as_str())</p>
             <form
                 method="post"
@@ -444,11 +503,9 @@ mod tests {
 
     #[test]
     fn bubbles_shape_their_states() {
-        let synced = Bubble::synced(&DiaryEntry::from_parts(
-            "2026-07-27T14-30-45-04-00",
-            1_753_640_000,
-            "hello",
-        ));
+        let synced_entry =
+            DiaryEntry::from_parts("2026-07-27T14-30-45-04-00", 1_753_640_000, "hello");
+        let synced = Bubble::synced(&synced_entry);
         assert_eq!(synced.state_attr(), "synced");
         assert!(!synced.queued_look());
         assert_eq!(
@@ -456,10 +513,15 @@ mod tests {
             Some("/diary/2026-07-27T14-30-45-04-00")
         );
         assert!(synced.note_hidden());
+        assert!(synced.reply_to_hidden());
+        assert!(!synced.reply_hidden());
 
+        let mut pending_entry =
+            DiaryEntry::from_parts("2026-07-27T14-30-46-04-00", 1_753_640_001, "queued");
+        pending_entry.reply_to = Some("2026-07-27T14-30-45-04-00".to_string());
         let pending_quiet = Bubble::from_local(
             &LocalEntry {
-                entry: DiaryEntry::from_parts("2026-07-27T14-30-46-04-00", 1_753_640_001, "queued"),
+                entry: pending_entry,
                 state: "pending".to_string(),
                 reason: None,
                 enqueued_at: 5,
@@ -472,6 +534,9 @@ mod tests {
             "quiet pending has no dashed look"
         );
         assert_eq!(pending_quiet.note_text(), "Jul 27, 2026 · 2:30 PM");
+        assert!(!pending_quiet.reply_to_hidden());
+        assert_eq!(pending_quiet.reply_to_text(), "↳ Jul 27, 2026 · 2:30 PM");
+        assert!(pending_quiet.reply_hidden());
 
         let pending_blocked = Bubble {
             state: BubbleState::Pending { blocked: true },
@@ -495,6 +560,7 @@ mod tests {
         );
         assert!(failed.queued_look());
         assert!(!failed.discard_hidden());
+        assert!(failed.reply_hidden());
         assert_eq!(
             failed.note_text(),
             "failed-99-1 · failed — rejected (HTTP 422)"

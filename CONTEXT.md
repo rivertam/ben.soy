@@ -12,6 +12,12 @@ the server, browser, and stores.
 The business fields that determine replay equality for a Diary Entry.
 _Avoid_: Payload, wire fields
 
+**Reply Target**:
+An optional, permalink-shaped Entry Reference carried by Entry Content. It is
+a soft reference: its shape is validated, but persistence does not require a
+matching Diary Entry to exist.
+_Avoid_: Parent record, foreign key
+
 **Composed Entry**:
 A piece of Entry Content paired with the UTC second proposed to placement;
 a device collision may re-anchor it to a later probed second.
@@ -45,7 +51,7 @@ _Avoid_: Entry Key, permalink
 The exact compatibility epoch shared by one diary build and its completed
 server/device migrations. Mismatched clients pause sync until updated; Diary
 Entries themselves carry no version.
-_Avoid_: Wire version, Entry Generation
+_Avoid_: Per-entry schema marker
 
 **Device Entry**:
 A Diary Entry paired with device-local synchronization state, failure reason,
@@ -59,12 +65,15 @@ _Avoid_: Delivery flag
 ## Relationships
 
 - A **Composed Entry** contains exactly one **Entry Content**
+- **Entry Content** may carry one **Reply Target**
 - Placement may re-anchor a **Composed Entry** before producing one **Diary Entry**
 - A successfully placed **Diary Entry** has exactly one **Entry Key**
 - Successfully saving a **Composed Entry** yields exactly one **Saved Reference**
 - A **Device Entry** wraps exactly one **Diary Entry** and one **Sync State**
 - A pending **Device Entry** has a predicted **Entry Key**
 - A synced **Device Entry** exposes its key as an **Entry Reference**
+- Only a synced **Device Entry** exposes its **Entry Reference** for selection
+  as a **Reply Target**
 - Sync proceeds only when the client and server agree on one **Diary Schema
   Epoch**; migrations put both stores in that epoch's canonical shape first
 - A direct-sync token carries the exact **Diary Schema Epoch** admitted by the
@@ -91,3 +100,6 @@ _Avoid_: Delivery flag
 - "written at" previously meant both the client-proposed second and the
   collision-selected second — resolved: a **Composed Entry** proposes the
   starting second and a **Diary Entry** records the selected second
+- "reply parent" implied a database relationship — resolved: a **Reply
+  Target** is an optional soft reference to an Entry Reference, not a foreign
+  key or existence constraint
