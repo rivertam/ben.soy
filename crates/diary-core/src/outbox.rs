@@ -40,9 +40,10 @@ use surrealdb::{
     types::{SurrealValue, Value},
 };
 
-use crate::contract::{CURRENT_WIRE_VERSION, SendOutcome};
+use crate::contract::SendOutcome;
 use crate::entry::{ComposedEntry, DiaryEntry, PROJECTION, SavedRef, prepare_for_queue};
-use crate::placement::{self, Occupant, Placement as EntryPlacement};
+use crate::outbox_migrations;
+use crate::placement::{self, Placement as EntryPlacement};
 use crate::store::entry_key;
 
 pub use crate::Db;
@@ -50,40 +51,16 @@ pub use crate::Db;
 /// Local namespace/database names. Nothing else ever lives in this store.
 const NAMESPACE: &str = "diary";
 const DATABASE: &str = "diary";
-/// Rows created before entry generations were persisted are generation 1.
-/// This must stay frozen when newer business fields bump the current wire.
-const LEGACY_ENTRY_VERSION: i64 = 1;
-
 pub const STATE_SYNCED: &str = "synced";
 pub const STATE_PENDING: &str = "pending";
 pub const STATE_FAILED: &str = "failed";
 
-/// The local schema, reconciled by [`open`] the way `src/data.rs` reconciles
-/// the committed server schema. Two deliberate absences: no length ASSERT on
-/// `body` (the queue must hold whatever text is already on the device — the
-/// server is the judge, and its rejection marks the entry failed instead of
-/// stranding it), and no id-shape ASSERT (a row whose `written_at` cannot
-/// project to a real key is still never dropped — it ports under a synthetic
-/// key as failed).
-const SCHEMA: &str = "\
-    DEFINE TABLE OVERWRITE diary_entries SCHEMAFULL PERMISSIONS NONE;\n\
-    DEFINE FIELD OVERWRITE written_at ON diary_entries TYPE int;\n\
-    DEFINE FIELD OVERWRITE body ON diary_entries TYPE string;\n\
-    DEFINE FIELD OVERWRITE entry_version ON diary_entries TYPE option<int> \
-        ASSERT $value = NONE OR $value >= 1;\n\
-    DEFINE FIELD OVERWRITE state ON diary_entries TYPE string \
-        ASSERT $value IN ['synced', 'pending', 'failed'];\n\
-    DEFINE FIELD OVERWRITE reason ON diary_entries TYPE option<string>;\n\
-    DEFINE FIELD OVERWRITE enqueued_at ON diary_entries TYPE int;\n\
-    DEFINE FIELD OVERWRITE write_fingerprint ON diary_entries TYPE option<string> \
-        ASSERT $value = NONE OR string::matches($value, '^[0-9a-f]{64}$');\n";
-
-/// The pre-single-store queue table (v1). Still DEFINEd on every open so the
+/// The retired separate outbox table. Still DEFINEd on every open so the
 /// standing drain below can always SELECT it: during a deploy's version skew
 /// an old page or worker happily re-creates and writes `diary_outbox` after
 /// the new code emptied it, so the drain is a permanent cheap step (exactly
 /// like the pre-wasm IndexedDB migration before it), never a one-shot.
-const V1_SCHEMA: &str = "\
+const LEGACY_OUTBOX_SCHEMA: &str = "\
     DEFINE TABLE OVERWRITE diary_outbox SCHEMAFULL PERMISSIONS NONE;\n\
     DEFINE FIELD OVERWRITE written_at ON diary_outbox TYPE int;\n\
     DEFINE FIELD OVERWRITE body ON diary_outbox TYPE string;\n\
@@ -128,16 +105,25 @@ pub struct LocalEntry {
 }
 
 /// The store-only shape used by a flush. `LocalEntry` deliberately does not
-/// expose this implementation token in its Rust or JSON interface, while the
-/// flusher must carry the exact fingerprint written by the worker generation
-/// that enqueued the row. Recomputing it after a canonical field is added
-/// would strand older pending writes whose serialized shape lacked that field.
-#[derive(Clone, Debug, Deserialize, SurrealValue)]
+/// expose this implementation token in its Rust or JSON Interface. It is an
+/// opaque compare-and-swap identity for the exact write selected before an
+/// asynchronous send.
+#[derive(Clone, Debug)]
 struct QueuedWrite {
+    entry: LocalEntry,
+    write_fingerprint: String,
+}
+
+/// Selection shape while a preceding page may still be writing rows without
+/// the current CAS token. SurrealDB omits `NONE` option fields from `SELECT *`,
+/// so the explicit projection below turns absence into `None` and lets the
+/// bounded standing migration retry instead of aborting the whole flush.
+#[derive(Clone, Debug, Deserialize, SurrealValue)]
+struct MaybeQueuedWrite {
     #[serde(flatten)]
     #[surreal(flatten)]
     entry: LocalEntry,
-    write_fingerprint: String,
+    write_fingerprint: Option<String>,
 }
 
 impl Deref for LocalEntry {
@@ -163,7 +149,6 @@ impl DerefMut for LocalEntry {
 struct LocalRow {
     #[surreal(flatten)]
     composed: ComposedEntry,
-    entry_version: i64,
     state: String,
     reason: Option<String>,
     enqueued_at: i64,
@@ -177,11 +162,9 @@ impl LocalRow {
         reason: Option<String>,
         enqueued_at: i64,
     ) -> Self {
-        let entry_version = i64::from(CURRENT_WIRE_VERSION);
-        let write_fingerprint = write_fingerprint(&composed, enqueued_at, entry_version);
+        let write_fingerprint = write_fingerprint(&composed, enqueued_at);
         Self {
             composed,
-            entry_version,
             state: state.into(),
             reason,
             enqueued_at,
@@ -205,13 +188,13 @@ impl LocalEntry {
     }
 }
 
-/// An immutable token for one queued write. Its semantic generation and
-/// canonical entry are serialized as a whole, so future business fields
+/// An immutable token for one queued write. Its canonical entry is serialized
+/// as a whole, so future business fields
 /// automatically become part of the compare-and-swap identity without
 /// changing any SurrealQL predicate. Enqueue order distinguishes a discarded
 /// write from a later, otherwise identical replacement.
-fn write_fingerprint(composed: &ComposedEntry, enqueued_at: i64, entry_version: i64) -> String {
-    let bytes = serde_json::to_vec(&(entry_version, composed, enqueued_at))
+fn write_fingerprint(composed: &ComposedEntry, enqueued_at: i64) -> String {
+    let bytes = serde_json::to_vec(&(composed, enqueued_at))
         .expect("canonical diary entries always serialize");
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = Sha256::digest(bytes);
@@ -275,8 +258,8 @@ pub enum Blocked {
 }
 
 /// Connect to an endpoint (`indxdb://diary` on the device, `mem://` in
-/// tests), select the fixed namespace, reconcile both schemas, and drain any
-/// v1 queue rows into the single store. Local engines need no signin.
+/// tests), select the fixed namespace, migrate the current schema, and drain
+/// any retired outbox rows into the single store. Local engines need no signin.
 /// Concurrent opens (the page and the worker both call this) are safe: the
 /// drain's placement loop is check-CREATE-recheck, so a lost race reads as
 /// the twin it is.
@@ -290,14 +273,13 @@ pub async fn open(endpoint: &str) -> Result<Db, OutboxError> {
     Ok(db)
 }
 
-/// Reconcile one already-selected local database. Kept separate from
-/// [`open`] so the upgrade path can be exercised against a store populated
-/// by the preceding single-table worker generation.
+/// Migrate one already-selected local database. Kept separate from [`open`]
+/// so installed-store upgrades can be exercised against `mem://`.
 async fn initialize(db: &Db) -> Result<(), OutboxError> {
     let mut last_error = None;
     for _ in 0..3 {
         match initialize_once(db).await {
-            Err(OutboxError::Db(message)) if message.contains("Resource busy") => {
+            Err(OutboxError::Db(message)) if retryable_conflict(&message) => {
                 last_error = Some(OutboxError::Db(message));
             }
             other => return other,
@@ -306,132 +288,60 @@ async fn initialize(db: &Db) -> Result<(), OutboxError> {
     Err(last_error.expect("loop only exits early or stores an error"))
 }
 
-/// Every initialization step is idempotent. Retrying the whole sequence is
-/// therefore the safest response when the page and service worker race on a
-/// schema or fingerprint write: the winner's standing migration is observed
-/// on the next SELECT, and no special partially-initialized state exists.
+/// Every initialization step is idempotent. Each schema change and its ledger
+/// row commit in one datastore transaction; the remaining schema reconcile
+/// and standing imports can safely replay after a concurrent open or crash.
 async fn initialize_once(db: &Db) -> Result<(), OutboxError> {
-    db.query(SCHEMA)
+    outbox_migrations::apply(db).await?;
+    db.query(LEGACY_OUTBOX_SCHEMA)
         .await
         .map_err(db_error)?
         .check()
         .map_err(db_error)?;
-    backfill_row_metadata_once(db).await?;
-    db.query(V1_SCHEMA)
-        .await
-        .map_err(db_error)?
-        .check()
-        .map_err(db_error)?;
-    drain_v1(db).await?;
+    drain_legacy_outbox(db).await?;
+    backfill_write_fingerprints(db).await?;
     Ok(())
 }
 
-/// A cached current DB handle can outlive an older page context that writes
-/// the preceding row shape. Re-run the cheap guarded migrations immediately
-/// before every flush selection, with the same bounded conflict handling as
-/// initialization, so such a row never waits for a worker restart.
-async fn backfill_row_metadata(db: &Db) -> Result<(), OutboxError> {
-    let mut last_error = None;
-    for _ in 0..3 {
-        match backfill_row_metadata_once(db).await {
-            Err(OutboxError::Db(message)) if message.contains("Resource busy") => {
-                last_error = Some(OutboxError::Db(message));
-            }
-            other => return other,
-        }
-    }
-    Err(last_error.expect("loop only exits early or stores an error"))
+/// Check a cached device handle before an exported wasm operation uses it.
+/// Page, worker sync, and offline render all hold the same Web Lock across
+/// this check and the operation, so an epoch migration cannot land between
+/// them. An older context observes the newer immutable ledger and pauses.
+pub async fn require_current(db: &Db) -> Result<(), OutboxError> {
+    outbox_migrations::require_current(db).await
 }
 
-async fn backfill_row_metadata_once(db: &Db) -> Result<(), OutboxError> {
-    backfill_entry_versions(db).await?;
+/// A cached current handle can outlive an older page context. Re-run only the
+/// standing imports immediately before a flush selection so late legacy rows
+/// and missing CAS tokens never await a restart.
+async fn prepare_flush_once(db: &Db) -> Result<(), OutboxError> {
+    drain_legacy_outbox(db).await?;
     backfill_write_fingerprints(db).await
 }
 
-/// The single-table generation immediately before this infrastructure had
-/// no semantic-generation column. Its body-only values are generation 1.
-/// Keep this standing and conditional so an older active page cannot make a
-/// permanently invisible row during rollout.
-async fn backfill_entry_versions(db: &Db) -> Result<(), OutboxError> {
-    db.query(
-        "UPDATE diary_entries SET entry_version = $version \
-         WHERE entry_version = NONE",
-    )
-    .bind(("version", LEGACY_ENTRY_VERSION))
-    .await
-    .map_err(db_error)?
-    .check()
-    .map_err(db_error)?;
-    Ok(())
+async fn prepare_flush(db: &Db) -> Result<(), OutboxError> {
+    let mut last_error = None;
+    for _ in 0..3 {
+        match prepare_flush_once(db).await {
+            Err(OutboxError::Db(message)) if retryable_conflict(&message) => {
+                last_error = Some(OutboxError::Db(message));
+            }
+            other => return other,
+        }
+    }
+    Err(last_error.expect("loop only exits early or stores an error"))
 }
 
-/// The immediately preceding single-store generation has every canonical
-/// entry field and enqueue order, but no CAS token. Hash those whole values
-/// before flushing. The guarded update is a standing migration: concurrent
-/// current workers calculate the same token, and one can never overwrite a
-/// fingerprint already supplied by another current writer.
+/// The immediately preceding single-store layout has no CAS token. Install a
+/// fresh opaque token without projecting its business fields. This makes the
+/// standing migration insensitive to future Entry Content, and the guarded
+/// update can never overwrite a token supplied by another current writer.
 async fn backfill_write_fingerprints(db: &Db) -> Result<(), OutboxError> {
-    #[derive(Deserialize, SurrealValue)]
-    struct UnfingerprintedRow {
-        #[serde(flatten)]
-        #[surreal(flatten)]
-        entry: DiaryEntry,
-        enqueued_at: i64,
-        entry_version: i64,
-    }
-
-    let mut response = db
-        .query(format!(
-            "SELECT {PROJECTION}, enqueued_at, entry_version FROM diary_entries \
-             WHERE write_fingerprint = NONE \
-                 AND entry_version = {LEGACY_ENTRY_VERSION} \
-             ORDER BY written_at ASC, id ASC"
-        ))
-        .await
-        .map_err(db_error)?
-        .check()
-        .map_err(db_error)?;
-    let rows: Vec<UnfingerprintedRow> = response.take(0).map_err(db_error)?;
-    for row in rows {
-        let fingerprint =
-            write_fingerprint(&row.entry.composed, row.enqueued_at, row.entry_version);
-        install_legacy_fingerprint(
-            db,
-            &row.entry,
-            row.enqueued_at,
-            row.entry_version,
-            fingerprint,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Install the token only if the frozen generation-1 value selected for the
-/// hash still occupies this id. A discard/recreate between SELECT and UPDATE
-/// stays tokenless and is picked up from fresh content on the next pass.
-async fn install_legacy_fingerprint(
-    db: &Db,
-    entry: &DiaryEntry,
-    enqueued_at: i64,
-    entry_version: i64,
-    fingerprint: String,
-) -> Result<(), OutboxError> {
     db.query(
-        "UPDATE type::record('diary_entries', $id) \
-         SET write_fingerprint = $fingerprint \
-         WHERE write_fingerprint = NONE \
-             AND entry_version = $entry_version \
-             AND written_at = $written_at \
-             AND body = $body \
-             AND enqueued_at = $enqueued_at",
+        "UPDATE diary_entries \
+         SET write_fingerprint = crypto::sha256(rand::string(64)) \
+         WHERE write_fingerprint = NONE",
     )
-    .bind(("id", entry.id.clone()))
-    .bind(("fingerprint", fingerprint))
-    .bind(("entry_version", entry_version))
-    .bind(("written_at", entry.written_at))
-    .bind(("body", entry.body.clone()))
-    .bind(("enqueued_at", enqueued_at))
     .await
     .map_err(db_error)?
     .check()
@@ -462,17 +372,14 @@ pub async fn enqueue(
     place_local(db, &entry, STATE_PENDING, None, enqueued_at_ms).await
 }
 
-/// Every understood not-yet-synced row, oldest enqueue first — flush order
-/// and the page's bubble order. Newer generations remain opaque; synced rows
-/// are absent because the server (or offline render) already shows them.
+/// Every not-yet-synced row, oldest enqueue first — flush order and the page's
+/// bubble order. Synced rows are absent because the transcript shows them.
 pub async fn queued(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
     let mut response = db
         .query(format!(
             "SELECT {PROJECTION}, state, reason, enqueued_at \
              FROM diary_entries \
              WHERE state != 'synced' \
-                 AND (entry_version = NONE \
-                     OR entry_version <= {CURRENT_WIRE_VERSION}) \
              ORDER BY enqueued_at ASC, id ASC"
         ))
         .await
@@ -483,12 +390,35 @@ pub async fn queued(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
 }
 
 async fn queued_writes(db: &Db) -> Result<Vec<QueuedWrite>, OutboxError> {
-    backfill_row_metadata(db).await?;
+    for _ in 0..3 {
+        prepare_flush(db).await?;
+        let rows = maybe_queued_writes(db).await?;
+        if rows.iter().all(|row| row.write_fingerprint.is_some()) {
+            return Ok(rows
+                .into_iter()
+                .map(|row| QueuedWrite {
+                    entry: row.entry,
+                    write_fingerprint: row
+                        .write_fingerprint
+                        .expect("all selected writes have fingerprints"),
+                })
+                .collect());
+        }
+        // A predecessor context wrote after the backfill SELECT. Retry the
+        // standing migration rather than filtering that older row out and
+        // letting later writes overtake it.
+    }
+    Err(OutboxError::Db(
+        "a preceding diary page kept writing rows without current fingerprints".to_string(),
+    ))
+}
+
+async fn maybe_queued_writes(db: &Db) -> Result<Vec<MaybeQueuedWrite>, OutboxError> {
     let mut response = db
         .query(format!(
             "SELECT {PROJECTION}, state, reason, enqueued_at, write_fingerprint \
              FROM diary_entries \
-             WHERE state != 'synced' AND entry_version <= {CURRENT_WIRE_VERSION} \
+             WHERE state != 'synced' \
              ORDER BY enqueued_at ASC, id ASC"
         ))
         .await
@@ -498,15 +428,13 @@ async fn queued_writes(db: &Db) -> Result<Vec<QueuedWrite>, OutboxError> {
     response.take(0).map_err(db_error)
 }
 
-/// Every understood local row in every state, oldest write first — the
-/// worker's offline SSR read and the content-bearing side of [`reconcile`].
+/// Every local row in every state, oldest write first — the worker's offline
+/// SSR read and the content-bearing side of [`reconcile`].
 pub async fn all_local(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
     let mut response = db
         .query(format!(
             "SELECT {PROJECTION}, state, reason, enqueued_at \
              FROM diary_entries \
-             WHERE entry_version = NONE \
-                 OR entry_version <= {CURRENT_WIRE_VERSION} \
              ORDER BY written_at ASC, id ASC"
         ))
         .await
@@ -516,9 +444,7 @@ pub async fn all_local(db: &Db) -> Result<Vec<LocalEntry>, OutboxError> {
     response.take(0).map_err(db_error)
 }
 
-/// One understood local row by id, any state — the worker's offline
-/// permalink read. A newer generation is intentionally indistinguishable
-/// from an absent page value here, while mutation paths track it as opaque.
+/// One local row by id, any state — the worker's offline permalink read.
 pub async fn entry(db: &Db, id: &str) -> Result<Option<LocalEntry>, OutboxError> {
     local_by_id(db, id).await
 }
@@ -538,7 +464,7 @@ pub async fn reconcile(db: &Db, incoming: &[DiaryEntry]) -> Result<u32, OutboxEr
     let mut last_error = None;
     for _ in 0..3 {
         match reconcile_once(db, incoming).await {
-            Err(OutboxError::Db(message)) if message.contains("Resource busy") => {
+            Err(OutboxError::Db(message)) if retryable_conflict(&message) => {
                 last_error = Some(OutboxError::Db(message));
             }
             other => return other,
@@ -549,11 +475,10 @@ pub async fn reconcile(db: &Db, incoming: &[DiaryEntry]) -> Result<u32, OutboxEr
 
 async fn reconcile_once(db: &Db, incoming: &[DiaryEntry]) -> Result<u32, OutboxError> {
     let local = all_local(db).await?;
-    let opaque_ids = opaque_local_ids(db).await?;
     if incoming.is_empty() && local.iter().any(|row| row.state == STATE_SYNCED) {
         return Ok(0);
     }
-    let plan = pull_plan(&local, &opaque_ids, incoming);
+    let plan = pull_plan(&local, incoming);
     let changes = (plan.creates.len() + plan.updates.len() + plan.deletes.len()) as u32;
     if changes == 0 {
         return Ok(0);
@@ -580,9 +505,7 @@ async fn reconcile_once(db: &Db, incoming: &[DiaryEntry]) -> Result<u32, OutboxE
         statements.push_str(&format!(
             "UPDATE type::record('diary_entries', $u{index}_id) \
              CONTENT $u{index}_row \
-             WHERE state = 'synced' \
-                 AND (entry_version = NONE \
-                     OR entry_version <= {CURRENT_WIRE_VERSION});\n"
+             WHERE state = 'synced';\n"
         ));
         id_binds.push((format!("u{index}_id"), update.incoming.id.clone()));
         row_binds.push((
@@ -598,9 +521,7 @@ async fn reconcile_once(db: &Db, incoming: &[DiaryEntry]) -> Result<u32, OutboxE
     for (index, id) in plan.deletes.iter().enumerate() {
         statements.push_str(&format!(
             "DELETE type::record('diary_entries', $d{index}_id) \
-             WHERE state = 'synced' \
-                 AND (entry_version = NONE \
-                     OR entry_version <= {CURRENT_WIRE_VERSION});\n"
+             WHERE state = 'synced';\n"
         ));
         id_binds.push((format!("d{index}_id"), id.clone()));
     }
@@ -617,28 +538,6 @@ async fn reconcile_once(db: &Db, incoming: &[DiaryEntry]) -> Result<u32, OutboxE
     Ok(changes)
 }
 
-/// Record identities owned by a newer semantic generation. Older code must
-/// not deserialize their business fields, but reconciliation still needs to
-/// know the keys are occupied so it cannot create over them.
-async fn opaque_local_ids(db: &Db) -> Result<HashSet<String>, OutboxError> {
-    #[derive(Deserialize, SurrealValue)]
-    struct IdRow {
-        id: String,
-    }
-
-    let mut response = db
-        .query(format!(
-            "SELECT record::id(id) AS id FROM diary_entries \
-             WHERE entry_version > {CURRENT_WIRE_VERSION}"
-        ))
-        .await
-        .map_err(db_error)?
-        .check()
-        .map_err(db_error)?;
-    let rows: Vec<IdRow> = response.take(0).map_err(db_error)?;
-    Ok(rows.into_iter().map(|row| row.id).collect())
-}
-
 struct PullUpdate<'a> {
     incoming: &'a DiaryEntry,
     enqueued_at: i64,
@@ -650,11 +549,7 @@ struct PullPlan<'a> {
     deletes: Vec<String>,
 }
 
-fn pull_plan<'a>(
-    local: &[LocalEntry],
-    opaque_ids: &HashSet<String>,
-    incoming: &'a [DiaryEntry],
-) -> PullPlan<'a> {
+fn pull_plan<'a>(local: &[LocalEntry], incoming: &'a [DiaryEntry]) -> PullPlan<'a> {
     let by_id: HashMap<&str, &LocalEntry> =
         local.iter().map(|row| (row.id.as_str(), row)).collect();
     let mut incoming_ids = HashSet::new();
@@ -662,9 +557,6 @@ fn pull_plan<'a>(
     let mut updates = Vec::new();
     for entry in incoming {
         incoming_ids.insert(entry.id.as_str());
-        if opaque_ids.contains(&entry.id) {
-            continue;
-        }
         match by_id.get(entry.id.as_str()) {
             None => creates.push(entry),
             Some(row) if row.state == STATE_SYNCED => {
@@ -680,11 +572,7 @@ fn pull_plan<'a>(
     }
     let deletes = local
         .iter()
-        .filter(|row| {
-            row.state == STATE_SYNCED
-                && !opaque_ids.contains(&row.id)
-                && !incoming_ids.contains(row.id.as_str())
-        })
+        .filter(|row| row.state == STATE_SYNCED && !incoming_ids.contains(row.id.as_str()))
         .map(|row| row.id.clone())
         .collect();
     PullPlan {
@@ -694,18 +582,14 @@ fn pull_plan<'a>(
     }
 }
 
-/// Drop an understood queued or failed row — the page's discard button.
-/// Synced and newer-generation rows are out of reach on purpose: this worker
-/// cannot safely mutate either. Idempotent.
+/// Drop a queued or failed row — the page's discard button. Synced rows remain
+/// out of reach. Idempotent.
 pub async fn discard(db: &Db, id: &str) -> Result<(), OutboxError> {
     db.query(
         "DELETE type::record('diary_entries', $id) \
-         WHERE state != 'synced' \
-             AND (entry_version = NONE \
-                 OR entry_version <= $current_version)",
+         WHERE state != 'synced'",
     )
     .bind(("id", id.to_string()))
-    .bind(("current_version", i64::from(CURRENT_WIRE_VERSION)))
     .await
     .map_err(db_error)?
     .check()
@@ -1011,7 +895,11 @@ async fn place_entry(
             entry_key(written_at)
                 .ok_or_else(|| OutboxError::Db(format!("unprojectable epoch {written_at}")))
         },
-        |id| async move { local_occupant(db, &id).await },
+        |id| async move {
+            local_by_id(db, &id)
+                .await
+                .map(|row| row.map(|row| row.entry))
+        },
         |entry| {
             let id = entry.id.clone();
             let row = LocalRow::new(entry.composed, state.clone(), reason.clone(), enqueued_at);
@@ -1054,9 +942,7 @@ async fn local_by_id(db: &Db, id: &str) -> Result<Option<LocalEntry>, OutboxErro
     let mut response = db
         .query(format!(
             "SELECT {PROJECTION}, state, reason, enqueued_at \
-             FROM type::record('diary_entries', $id) \
-             WHERE entry_version = NONE \
-                 OR entry_version <= {CURRENT_WIRE_VERSION}"
+             FROM type::record('diary_entries', $id)"
         ))
         .bind(("id", id.to_string()))
         .await
@@ -1067,41 +953,16 @@ async fn local_by_id(db: &Db, id: &str) -> Result<Option<LocalEntry>, OutboxErro
     Ok(rows.into_iter().next())
 }
 
-/// Read only the local metadata needed to decide whether a key is absent,
-/// understood, or owned by a newer generation. The nested option preserves
-/// the distinction between no row and a legacy row whose version is `NONE`.
-async fn local_entry_version(db: &Db, id: &str) -> Result<Option<Option<i64>>, OutboxError> {
-    #[derive(Deserialize, SurrealValue)]
-    struct VersionRow {
-        #[serde(default)]
-        entry_version: Option<i64>,
-    }
-
+async fn local_record_exists(db: &Db, id: &str) -> Result<bool, OutboxError> {
     let mut response = db
-        .query("SELECT entry_version FROM type::record('diary_entries', $id)")
+        .query("RETURN record::exists(type::record('diary_entries', $id))")
         .bind(("id", id.to_string()))
         .await
         .map_err(db_error)?
         .check()
         .map_err(db_error)?;
-    let rows: Vec<VersionRow> = response.take(0).map_err(db_error)?;
-    Ok(rows.into_iter().next().map(|row| row.entry_version))
-}
-
-async fn local_record_exists(db: &Db, id: &str) -> Result<bool, OutboxError> {
-    Ok(local_entry_version(db, id).await?.is_some())
-}
-
-async fn local_occupant(db: &Db, id: &str) -> Result<Option<Occupant>, OutboxError> {
-    match local_entry_version(db, id).await? {
-        None => Ok(None),
-        Some(Some(version)) if version > i64::from(CURRENT_WIRE_VERSION) => {
-            Ok(Some(Occupant::Opaque))
-        }
-        Some(_) => Ok(local_by_id(db, id)
-            .await?
-            .map(|local| Occupant::Known(local.entry))),
-    }
+    let exists: Option<bool> = response.take(0).map_err(db_error)?;
+    Ok(exists.unwrap_or(false))
 }
 
 async fn create_row(db: &Db, id: &str, row: LocalRow) -> Result<(), OutboxError> {
@@ -1115,13 +976,13 @@ async fn create_row(db: &Db, id: &str, row: LocalRow) -> Result<(), OutboxError>
     Ok(())
 }
 
-/// The standing v1 drain: port every `diary_outbox` row into the single
+/// The standing legacy drain: port every `diary_outbox` row into the single
 /// store (same placement rules as [`import`]), then delete the ported rows
 /// one by one. Delete-after-write plus the placement dedupe makes a crash
 /// anywhere re-runnable.
-async fn drain_v1(db: &Db) -> Result<(), OutboxError> {
+async fn drain_legacy_outbox(db: &Db) -> Result<(), OutboxError> {
     #[derive(Deserialize, SurrealValue)]
-    struct V1Row {
+    struct LegacyOutboxRow {
         qid: String,
         written_at: i64,
         body: String,
@@ -1139,7 +1000,7 @@ async fn drain_v1(db: &Db) -> Result<(), OutboxError> {
         .map_err(db_error)?
         .check()
         .map_err(db_error)?;
-    let rows: Vec<V1Row> = response.take(0).map_err(db_error)?;
+    let rows: Vec<LegacyOutboxRow> = response.take(0).map_err(db_error)?;
     for row in rows {
         if !row.body.is_empty() {
             let state = if row.state == STATE_FAILED {
@@ -1168,6 +1029,10 @@ async fn drain_v1(db: &Db) -> Result<(), OutboxError> {
 
 fn db_error(error: surrealdb::Error) -> OutboxError {
     OutboxError::Db(error.to_string())
+}
+
+fn retryable_conflict(message: &str) -> bool {
+    message.contains("Resource busy") || message.contains("can be retried")
 }
 
 #[cfg(test)]
@@ -1212,6 +1077,10 @@ mod tests {
         entry_key(epoch).expect("test epoch projects")
     }
 
+    fn valid_fingerprint(value: &str) -> bool {
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+
     /// Directly read one row in ANY state (queued() hides synced ones).
     async fn row(db: &Db, id: &str) -> Option<LocalEntry> {
         local_by_id(db, id).await.expect("read succeeds")
@@ -1220,10 +1089,37 @@ mod tests {
     #[tokio::test]
     async fn open_is_idempotent_and_drain_reruns_quietly() {
         let db = store().await;
-        db.query(SCHEMA).await.unwrap().check().unwrap();
-        db.query(V1_SCHEMA).await.unwrap().check().unwrap();
-        drain_v1(&db).await.unwrap();
+        initialize(&db).await.unwrap();
+        drain_legacy_outbox(&db).await.unwrap();
         assert!(queued(&db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tokenless_selection_is_repairable_instead_of_aborting_the_flush() {
+        let db = store().await;
+        let written_at = 1_753_640_000;
+        let id = key(written_at);
+        db.query(
+            "CREATE ONLY type::record('diary_entries', $id) \
+             SET written_at = $written_at, body = $body, state = 'pending', \
+                 enqueued_at = $enqueued_at",
+        )
+        .bind(("id", id.clone()))
+        .bind(("written_at", written_at))
+        .bind(("body", "late predecessor write".to_string()))
+        .bind(("enqueued_at", 7_i64))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let selected = maybe_queued_writes(&db).await.unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].write_fingerprint, None);
+
+        let ready = queued_writes(&db).await.unwrap();
+        assert_eq!(ready.len(), 1);
+        assert!(valid_fingerprint(&ready[0].write_fingerprint));
     }
 
     /// PR10's preceding single-table worker persisted this exact row without
@@ -1268,23 +1164,7 @@ mod tests {
         worker.unwrap();
         let queued = queued_writes(&db).await.unwrap();
         assert_eq!(queued.len(), 1);
-        assert_eq!(
-            queued[0].write_fingerprint,
-            write_fingerprint(&queued[0].entry.composed, 7, LEGACY_ENTRY_VERSION)
-        );
-        #[derive(Deserialize, SurrealValue)]
-        struct VersionRow {
-            entry_version: i64,
-        }
-        let mut response = db
-            .query("SELECT entry_version FROM type::record('diary_entries', $id)")
-            .bind(("id", id.clone()))
-            .await
-            .unwrap()
-            .check()
-            .unwrap();
-        let versions: Vec<VersionRow> = response.take(0).unwrap();
-        assert_eq!(versions[0].entry_version, LEGACY_ENTRY_VERSION);
+        assert!(valid_fingerprint(&queued[0].write_fingerprint));
 
         let report = flush(&db, |_| ready(saved(&id, written_at))).await.unwrap();
         assert_eq!((report.saved, report.pending, report.failed), (1, 0, 0));
@@ -1292,148 +1172,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fingerprint_backfill_never_stamps_a_same_id_replacement() {
+    async fn fingerprint_backfill_never_overwrites_a_replacements_token() {
         let db = store().await;
         let written_at = 1_753_640_000;
         let id = key(written_at);
-        let selected = DiaryEntry::from_parts(id.clone(), written_at, "selected old value");
         let enqueued_at = 7;
-        let stale_fingerprint =
-            write_fingerprint(&selected.composed, enqueued_at, LEGACY_ENTRY_VERSION);
+        let replacement_fingerprint = "f".repeat(64);
 
-        // This is the value the migration selected. Replace it before its
-        // conditional UPDATE lands, exactly like an active old page can.
         db.query(
             "CREATE ONLY type::record('diary_entries', $id) \
-             SET written_at = $written_at, body = $body, entry_version = 1, \
-                 state = 'pending', enqueued_at = $enqueued_at;
-             DELETE type::record('diary_entries', $id);
-             CREATE ONLY type::record('diary_entries', $id) \
-             SET written_at = $written_at, body = $replacement, entry_version = 1, \
-                 state = 'pending', enqueued_at = $enqueued_at;",
+             SET written_at = $written_at, body = $body, \
+                 state = 'pending', enqueued_at = $enqueued_at, \
+                 write_fingerprint = $replacement_fingerprint;",
         )
         .bind(("id", id.clone()))
         .bind(("written_at", written_at))
-        .bind(("body", selected.body.clone()))
-        .bind(("replacement", "replacement value".to_string()))
+        .bind(("body", "replacement value".to_string()))
+        .bind(("replacement_fingerprint", replacement_fingerprint.clone()))
         .bind(("enqueued_at", enqueued_at))
         .await
         .unwrap()
         .check()
         .unwrap();
 
-        install_legacy_fingerprint(
-            &db,
-            &selected,
-            enqueued_at,
-            LEGACY_ENTRY_VERSION,
-            stale_fingerprint,
-        )
-        .await
-        .unwrap();
-        backfill_row_metadata(&db).await.unwrap();
+        backfill_write_fingerprints(&db).await.unwrap();
         let queued = queued_writes(&db).await.unwrap();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].entry.body, "replacement value");
-        assert_eq!(
-            queued[0].write_fingerprint,
-            write_fingerprint(&queued[0].entry.composed, enqueued_at, LEGACY_ENTRY_VERSION,)
-        );
-    }
-
-    /// During a semantic rollout the old worker and new page share this
-    /// table. A generation-1 worker must never flush a generation-2 row via
-    /// its body-only projection and then acknowledge away the missing field.
-    #[tokio::test]
-    async fn flush_ignores_rows_from_a_newer_entry_generation() {
-        let db = store().await;
-        let written_at = 1_753_640_000;
-        let id = key(written_at);
-        create_row(
-            &db,
-            &id,
-            LocalRow::new(
-                ComposedEntry::new(written_at, "future semantics"),
-                STATE_PENDING,
-                None,
-                7,
-            ),
-        )
-        .await
-        .unwrap();
-        db.query(
-            "UPDATE type::record('diary_entries', $id) \
-             SET entry_version = $version, write_fingerprint = NONE",
-        )
-        .bind(("id", id.clone()))
-        .bind(("version", i64::from(CURRENT_WIRE_VERSION) + 1))
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
-
-        let sends = RefCell::new(0_u32);
-        let report = flush(&db, |_| {
-            *sends.borrow_mut() += 1;
-            ready(SendOutcome::Retry)
-        })
-        .await
-        .unwrap();
-        assert_eq!(*sends.borrow(), 0);
-        assert_eq!((report.saved, report.pending, report.failed), (0, 0, 0));
-        assert_eq!(report.blocked, None);
-        #[derive(Deserialize, SurrealValue)]
-        struct FingerprintRow {
-            body: String,
-            state: String,
-            #[serde(default)]
-            write_fingerprint: Option<String>,
-        }
-        let mut response = db
-            .query(
-                "SELECT body, state, write_fingerprint \
-                 FROM type::record('diary_entries', $id)",
-            )
-            .bind(("id", id.clone()))
-            .await
-            .unwrap()
-            .check()
-            .unwrap();
-        let metadata: Vec<FingerprintRow> = response.take(0).unwrap();
-        assert_eq!(metadata[0].body, "future semantics");
-        assert_eq!(metadata[0].state, STATE_PENDING);
-        assert_eq!(metadata[0].write_fingerprint, None);
-        assert!(entry(&db, &id).await.unwrap().is_none());
-        assert!(queued(&db).await.unwrap().is_empty());
-
-        // Reconciliation treats the unknown row as occupied, and discard is
-        // not authorized to mutate a generation this worker cannot render.
-        assert_eq!(
-            reconcile(
-                &db,
-                &[DiaryEntry::from_parts(
-                    id.clone(),
-                    written_at,
-                    "truncated old projection",
-                )],
-            )
-            .await
-            .unwrap(),
-            0
-        );
-        discard(&db, &id).await.unwrap();
-        assert!(local_record_exists(&db, &id).await.unwrap());
-
-        // Placement sees an opaque occupant, never a body-only replay twin.
-        let placed = enqueue(&db, written_at, "future semantics", 8)
-            .await
-            .unwrap();
-        assert_eq!(placed.id, key(written_at + 1));
+        assert_eq!(queued[0].write_fingerprint, replacement_fingerprint);
     }
 
     /// A preceding page can remain open after the current worker initialized
-    /// the shared table. Its row lacks both new metadata fields; the next
-    /// flush backfills them in place before deserializing or sending it.
+    /// the shared table. Its row lacks the CAS token; the next flush backfills
+    /// it in place before deserializing or sending it.
     #[tokio::test]
     async fn flush_backfills_a_stale_writer_after_current_open() {
         let db = store().await;
@@ -1643,9 +1414,8 @@ mod tests {
         }
     }
 
-    /// A queued row may have been written by an older worker whose canonical
-    /// entry shape serialized differently. Flush must compare against that
-    /// row's persisted generation token, not recompute one with today's type.
+    /// The stored fingerprint is an opaque CAS token. Flush must carry it
+    /// through rather than recomputing it after selecting the row.
     #[tokio::test]
     async fn flush_uses_the_fingerprint_stored_with_the_queued_write() {
         let db = store().await;
@@ -1656,11 +1426,7 @@ mod tests {
         let stored_fingerprint = "f".repeat(64);
         assert_ne!(
             stored_fingerprint,
-            write_fingerprint(
-                &entry.composed,
-                entry.enqueued_at,
-                i64::from(CURRENT_WIRE_VERSION),
-            ),
+            write_fingerprint(&entry.composed, entry.enqueued_at),
             "the fixture must not accidentally be today's recomputed token"
         );
         db.query(
@@ -1753,7 +1519,7 @@ mod tests {
     /// `flush` reads its work before awaiting the transport. If the page
     /// discards that write and places different text under the same predicted
     /// key while the request is in flight, the acceptance belongs to the old
-    /// generation, never to its replacement.
+    /// write, never to its replacement.
     #[tokio::test]
     async fn a_saved_stale_send_never_marks_its_same_id_replacement_synced() {
         let db = store().await;
@@ -1956,7 +1722,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_v1_drain_ports_and_empties_the_old_queue() {
+    async fn the_legacy_drain_ports_and_empties_the_old_queue() {
         let db = store().await;
         for (written_at, body, state, reason, enqueued_at) in [
             (1_753_640_000_i64, "old pending", "pending", None, 1_i64),
@@ -1989,9 +1755,9 @@ mod tests {
             }
             query.await.unwrap().check().unwrap();
         }
-        drain_v1(&db).await.unwrap();
+        drain_legacy_outbox(&db).await.unwrap();
         // Re-running the drain (a crash replay) changes nothing.
-        drain_v1(&db).await.unwrap();
+        drain_legacy_outbox(&db).await.unwrap();
         let listed = queued(&db).await.unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].body, "old pending");
@@ -2016,7 +1782,7 @@ mod tests {
         let counts: Vec<CountRow> = response.take(0).unwrap();
         assert!(
             counts.is_empty() || counts[0].count == 0,
-            "v1 queue emptied"
+            "legacy queue emptied"
         );
     }
 
@@ -2035,8 +1801,8 @@ mod tests {
         .unwrap()
         .check()
         .unwrap();
-        drain_v1(&db).await.unwrap();
-        drain_v1(&db).await.unwrap();
+        drain_legacy_outbox(&db).await.unwrap();
+        drain_legacy_outbox(&db).await.unwrap();
         let listed = queued(&db).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].state, STATE_FAILED);

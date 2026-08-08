@@ -8,7 +8,7 @@
 //! client→SurrealDB transport takes later.
 //!
 //! [`run`] must execute as ONE critical section per device (the service
-//! worker holds the `diary-flush` Web Lock across it): the pull's snapshot
+//! worker holds the `diary-store` Web Lock across it): the pull's snapshot
 //! is then always newer than the last push, so a stale dump can never
 //! delete a freshly delivered row. The device store owns the local
 //! reconciliation details; this module only sequences its [`Remote`].
@@ -106,7 +106,7 @@ fn is_auth_error(error: &str) -> bool {
 mod tests {
     use std::cell::RefCell;
 
-    use crate::contract::classify_pull;
+    use crate::contract::{SnapshotWire, classify_pull};
     use crate::entry::{DiaryEntry, SavedRef};
     use crate::outbox::{LocalEntry, STATE_SYNCED};
     use crate::store;
@@ -196,14 +196,13 @@ mod tests {
 
     #[test]
     fn pulls_classify_like_pushes() {
+        let populated = serde_json::to_string(&SnapshotWire::new(vec![snap("x", 1, "b")])).unwrap();
         assert_eq!(
-            classify_pull(200, r#"{"entries":[{"id":"x","written_at":1,"body":"b"}]}"#),
+            classify_pull(200, &populated),
             PullOutcome::Data(vec![snap("x", 1, "b")])
         );
-        assert_eq!(
-            classify_pull(200, r#"{"entries":[]}"#),
-            PullOutcome::Data(Vec::new())
-        );
+        let empty = serde_json::to_string(&SnapshotWire::new(Vec::new())).unwrap();
+        assert_eq!(classify_pull(200, &empty), PullOutcome::Data(Vec::new()));
         // A 200 that is not our exact JSON is a captive portal, never an
         // empty diary.
         assert_eq!(
@@ -223,7 +222,7 @@ mod tests {
             PullOutcome::Retry
         );
         assert_eq!(
-            classify_pull(200, r#"{"version":2,"entries":[]}"#),
+            classify_pull(200, r#"{"schema_epoch":99,"entries":[]}"#),
             PullOutcome::Retry
         );
         assert_eq!(classify_pull(401, ""), PullOutcome::Auth);

@@ -13,15 +13,6 @@ use crate::entry::{ComposedEntry, DiaryEntry};
 /// Same-second key collisions probe forward at most this many seconds.
 pub const COLLISION_PROBES: i64 = 5;
 
-/// What an adapter knows about one occupied candidate key. Newer local row
-/// generations are deliberately opaque to an older worker: they block the
-/// key but can never compare equal through a truncated content projection.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Occupant {
-    Known(DiaryEntry),
-    Opaque,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Placement {
     Placed(DiaryEntry),
@@ -57,7 +48,7 @@ pub async fn place<E, Key, Read, ReadFuture, Create, CreateFuture>(
 where
     Key: FnMut(i64) -> Result<String, E>,
     Read: FnMut(String) -> ReadFuture,
-    ReadFuture: Future<Output = Result<Option<Occupant>, E>>,
+    ReadFuture: Future<Output = Result<Option<DiaryEntry>, E>>,
     Create: FnMut(DiaryEntry) -> CreateFuture,
     CreateFuture: Future<Output = Result<(), E>>,
 {
@@ -65,7 +56,7 @@ where
         let written_at = requested.written_at + offset;
         let id = key_for(written_at)?;
         match read(id.clone()).await? {
-            Some(Occupant::Known(existing)) if existing.has_content(&requested.content) => {
+            Some(existing) if existing.has_content(&requested.content) => {
                 return Ok(Placement::Deduped(existing));
             }
             Some(_) => continue,
@@ -76,7 +67,7 @@ where
         match create(candidate.clone()).await {
             Ok(()) => return Ok(Placement::Placed(candidate)),
             Err(create_error) => match read(id).await? {
-                Some(Occupant::Known(existing)) if existing.has_content(&requested.content) => {
+                Some(existing) if existing.has_content(&requested.content) => {
                     return Ok(Placement::Deduped(existing));
                 }
                 Some(_) => continue,
@@ -108,7 +99,7 @@ mod tests {
         let placement = place(
             &ComposedEntry::new(100, "mine"),
             |epoch| Ok::<_, ()>(epoch.to_string()),
-            |id| std::future::ready(Ok(rows.borrow().get(&id).cloned().map(Occupant::Known))),
+            |id| std::future::ready(Ok(rows.borrow().get(&id).cloned())),
             |_| std::future::ready(Ok(())),
         )
         .await
@@ -129,7 +120,7 @@ mod tests {
                 std::future::ready(Ok(if *count == 1 {
                     None
                 } else {
-                    Some(Occupant::Known(candidate.clone()))
+                    Some(candidate.clone())
                 }))
             },
             |_| std::future::ready(Err("collision")),

@@ -17,6 +17,7 @@ pub mod contract;
 pub mod eastern;
 pub mod entry;
 pub mod outbox;
+mod outbox_migrations;
 pub mod placement;
 pub mod store;
 pub mod sync;

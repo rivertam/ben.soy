@@ -14,6 +14,8 @@ use surrealdb::{
 };
 use tokio::sync::OnceCell;
 
+mod diary_migrations;
+
 #[path = "app/analytics/models.rs"]
 pub mod analytics_models;
 #[path = "app/interests/lifting/models.rs"]
@@ -32,11 +34,11 @@ pub const USERNAME_VAR: &str = "SURREALDB_USERNAME";
 pub const PASSWORD_VAR: &str = "SURREALDB_PASSWORD";
 
 /// The diary direct-sync verification key (PEM, public half). When set, the
-/// schema bootstrap defines the `diary_sync` access method with it; unset,
-/// the access method is REMOVED and no token can open a session — the whole
-/// direct-sync surface rides this one variable (docs/diary-sync.md). It is
-/// config rather than committed schema so dev and prod hold different
-/// keypairs and so flag-off means surface-off.
+/// bootstrap defines the diary's record access method with it; unset, the
+/// method is REMOVED and no token can open a session. Its table permission is
+/// owned by the current diary migration (docs/diary-sync.md). The key is
+/// config rather than committed schema so dev and prod differ and flag-off
+/// means surface-off.
 pub const DIRECT_SYNC_PUBLIC_KEY_VAR: &str = "DIARY_SYNC_JWT_PUBLIC_KEY";
 
 const SCHEMA: &str = include_str!("schema.surql");
@@ -107,6 +109,18 @@ impl Data {
             .await?;
         Ok(db.clone())
     }
+
+    /// The diary's stricter Interface: migrations run at initialization, then
+    /// every use rechecks the shared epoch ledger. A cached predecessor thus
+    /// refuses work after activation; deployments drain its in-flight work
+    /// before advancing the epoch (docs/diary-sync.md).
+    pub async fn diary_db(&self) -> Result<Db, DataError> {
+        let db = self.db().await?;
+        diary_migrations::require_current(&db)
+            .await
+            .map_err(|error| DataError::Connect(format!("diary schema check failed: {error}")))?;
+        Ok(db)
+    }
 }
 
 impl DataConfig {
@@ -147,6 +161,9 @@ pub async fn connect(config: &DataConfig) -> Result<Db, DataError> {
         .map_err(connect_error)?
         .check()
         .map_err(connect_error)?;
+    diary_migrations::apply(&db)
+        .await
+        .map_err(|error| DataError::Connect(format!("diary migration failed: {error}")))?;
     define_direct_sync_access(&db).await?;
     db.health().await.map_err(connect_error)?;
     Ok(db)
@@ -165,11 +182,12 @@ async fn define_direct_sync_access(db: &Db) -> Result<(), DataError> {
         .filter(|value| !value.trim().is_empty())
     {
         Some(public_key) => db
-            .query(
-                "DEFINE ACCESS OVERWRITE diary_sync ON DATABASE TYPE RECORD \
+            .query(format!(
+                "DEFINE ACCESS OVERWRITE {} ON DATABASE TYPE RECORD \
                  WITH JWT ALGORITHM ES256 KEY $public_key \
                  DURATION FOR SESSION 15m",
-            )
+                diary_core::contract::DIRECT_ACCESS
+            ))
             .bind(("public_key", public_key))
             .await
             .map_err(connect_error)?
@@ -177,7 +195,10 @@ async fn define_direct_sync_access(db: &Db) -> Result<(), DataError> {
             .map_err(connect_error)
             .map(|_| ()),
         None => db
-            .query("REMOVE ACCESS IF EXISTS diary_sync ON DATABASE")
+            .query(format!(
+                "REMOVE ACCESS IF EXISTS {} ON DATABASE",
+                diary_core::contract::DIRECT_ACCESS
+            ))
             .await
             .map_err(connect_error)?
             .check()

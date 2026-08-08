@@ -283,6 +283,9 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
     if !is_same_origin(headers(cx)) {
         return Ok(api_error(StatusCode::FORBIDDEN, "forbidden"));
     }
+    if !has_current_schema_epoch(headers(cx)) {
+        return Ok(schema_epoch_mismatch());
+    }
     if !is_json_content_type(headers(cx)) {
         return Ok(api_error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -298,17 +301,9 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
             ));
         }
     };
-    // Probe the version before decoding the canonical value. A newer
-    // worker must leave its row pending during deploy skew, not turn a
-    // temporarily unreadable semantic field into a permanent rejection.
     let entry = match decode_push(&bytes) {
         Ok(entry) => entry,
-        Err(WireError::UnsupportedVersion(_)) => {
-            return Ok(api_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "diary wire version is newer than this server",
-            ));
-        }
+        Err(WireError::SchemaEpochMismatch(_)) => return Ok(schema_epoch_mismatch()),
         Err(WireError::Malformed) => {
             return Ok(api_error(StatusCode::BAD_REQUEST, "malformed entry"));
         }
@@ -343,13 +338,26 @@ async fn api_write_entry(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
-fn requested_wire_version(headers: &HeaderMap) -> Option<u16> {
+fn requested_schema_epoch(headers: &HeaderMap) -> Option<u16> {
     headers
-        .get(diary_core::contract::WIRE_VERSION_HEADER)?
+        .get(diary_core::contract::SCHEMA_EPOCH_HEADER)?
         .to_str()
         .ok()?
         .parse()
         .ok()
+}
+
+fn has_current_schema_epoch(headers: &HeaderMap) -> bool {
+    requested_schema_epoch(headers) == Some(diary_core::contract::CURRENT_SCHEMA_EPOCH)
+}
+
+fn schema_epoch_mismatch() -> Response {
+    // Retryable by every worker. A mismatch is deployment skew, never a
+    // permanent rejection of the queued entry itself.
+    api_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "diary schema epoch mismatch",
+    )
 }
 
 /// `GET /api/diary/snapshot` — the pull half of sync: every entry, in the
@@ -365,6 +373,9 @@ async fn api_snapshot(cx: &Cx) -> Result<Response> {
     };
     if !is_admin(&current.email) {
         return Ok(api_error(StatusCode::NOT_FOUND, "not found"));
+    }
+    if !has_current_schema_epoch(headers(cx)) {
+        return Ok(schema_epoch_mismatch());
     }
     let entries = match snapshot_entries(app_context::<Data>(cx)).await {
         Ok(entries) => entries,
@@ -411,11 +422,8 @@ async fn api_token(cx: &Cx, body: Body) -> Result<Response> {
     if !is_same_origin(headers(cx)) {
         return Ok(api_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    if requested_wire_version(headers(cx)) != Some(diary_core::contract::CURRENT_WIRE_VERSION) {
-        return Ok(api_error(
-            StatusCode::CONFLICT,
-            "diary wire version mismatch",
-        ));
+    if !has_current_schema_epoch(headers(cx)) {
+        return Ok(schema_epoch_mismatch());
     }
     // No meaningful body; drain within the same bound as the other POSTs.
     if to_bytes(body, BODY_LIMIT_BYTES).await.is_err() {
@@ -428,6 +436,15 @@ async fn api_token(cx: &Cx, body: Body) -> Result<Response> {
     ) else {
         return Ok(api_error(StatusCode::NOT_FOUND, "not found"));
     };
+    // A current direct token must never get ahead of its table migration.
+    // Opening the shared handle applies and verifies the diary ledger first.
+    if let Err(error) = open_db(app_context::<Data>(cx)).await {
+        log_failure("token-migration", &error);
+        return Ok(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store unreachable",
+        ));
+    }
     match mint_direct_token(&private_key, &namespace, &database) {
         Ok(token) => Ok(api_json(
             StatusCode::OK,
@@ -471,9 +488,9 @@ fn direct_token_claims(namespace: &str, database: &str, now: i64) -> serde_json:
     serde_json::json!({
         "ns": namespace,
         "db": database,
-        "ac": "diary_sync",
+        "ac": diary_core::contract::DIRECT_ACCESS,
         "id": "diary_device:admin",
-        "diary_wire_version": diary_core::contract::CURRENT_WIRE_VERSION,
+        "diary_schema_epoch": diary_core::contract::CURRENT_SCHEMA_EPOCH,
         "iat": now,
         "exp": now + DIRECT_SYNC_TOKEN_TTL_SECONDS,
     })
@@ -519,7 +536,7 @@ fn api_error(status: StatusCode, message: &'static str) -> Response {
 /// every call site's old shape, including the all-errors-are-Strings rule
 /// the outage branches match on.
 async fn open_db(data: &Data) -> std::result::Result<diary_core::Db, String> {
-    data.db().await.map_err(|error| error.to_string())
+    data.diary_db().await.map_err(|error| error.to_string())
 }
 
 async fn entry_page(
@@ -637,8 +654,6 @@ fn log_failure(step: &str, error: &str) {
 
 #[cfg(test)]
 mod tests {
-    use diary_core::entry::MAX_ENTRY_CHARS;
-
     use super::*;
 
     /// The whole point of the page: unlisted everywhere, untrackable, and —
@@ -687,64 +702,48 @@ mod tests {
     }
 
     #[test]
-    fn direct_token_requests_require_the_exact_worker_generation() {
+    fn sync_requests_require_the_exact_schema_epoch() {
         let mut request_headers = HeaderMap::new();
-        assert_eq!(requested_wire_version(&request_headers), None);
+        assert_eq!(requested_schema_epoch(&request_headers), None);
         request_headers.insert(
-            diary_core::contract::WIRE_VERSION_HEADER,
-            HeaderValue::from_str(&diary_core::contract::CURRENT_WIRE_VERSION.to_string()).unwrap(),
+            diary_core::contract::SCHEMA_EPOCH_HEADER,
+            HeaderValue::from_str(&diary_core::contract::CURRENT_SCHEMA_EPOCH.to_string()).unwrap(),
         );
         assert_eq!(
-            requested_wire_version(&request_headers),
-            Some(diary_core::contract::CURRENT_WIRE_VERSION)
+            requested_schema_epoch(&request_headers),
+            Some(diary_core::contract::CURRENT_SCHEMA_EPOCH)
         );
+        assert!(has_current_schema_epoch(&request_headers));
         request_headers.insert(
-            diary_core::contract::WIRE_VERSION_HEADER,
-            HeaderValue::from_static("not-a-version"),
+            diary_core::contract::SCHEMA_EPOCH_HEADER,
+            HeaderValue::from_static("not-an-epoch"),
         );
-        assert_eq!(requested_wire_version(&request_headers), None);
+        assert_eq!(requested_schema_epoch(&request_headers), None);
+        assert!(!has_current_schema_epoch(&request_headers));
     }
 
     #[test]
-    fn direct_tokens_and_table_permissions_share_the_wire_generation() {
+    fn direct_tokens_use_the_current_schema_epoch() {
         let claims = direct_token_claims("site", "prod", 100);
         assert_eq!(claims["ns"], "site");
         assert_eq!(claims["db"], "prod");
         assert_eq!(claims["iat"], 100);
         assert_eq!(claims["exp"], 100 + DIRECT_SYNC_TOKEN_TTL_SECONDS);
+        assert_eq!(claims["ac"], diary_core::contract::DIRECT_ACCESS);
         assert_eq!(
-            claims["diary_wire_version"],
-            diary_core::contract::CURRENT_WIRE_VERSION
-        );
-
-        let schema = include_str!("../schema.surql");
-        assert!(
-            schema.contains(diary_core::store::DIRECT_SYNC_ROW_PERMISSIONS),
-            "direct table permissions drifted from the shared row-generation fence"
-        );
-        assert!(
-            !schema.contains(&format!(
-                "$token.diary_wire_version = {}",
-                diary_core::contract::CURRENT_WIRE_VERSION
-            )),
-            "a hard-coded table generation can be downgraded by an older bootstrap"
+            claims["diary_schema_epoch"],
+            diary_core::contract::CURRENT_SCHEMA_EPOCH
         );
     }
 
     /// The protocol items now live in `diary-core` (where the wasm worker
     /// compiles them too); what stays here is the glue that must keep
-    /// matching them: the route literal in the `#[route]` attribute, and the
-    /// schema ASSERT that `MAX_ENTRY_CHARS` mirrors.
+    /// matching them: the route literals in the `#[route]` attributes.
     #[test]
     fn shared_contract_matches_the_server_glue() {
         assert_eq!(diary_core::contract::API_PATH, "/api/diary/entries");
         assert_eq!(diary_core::contract::SNAPSHOT_PATH, "/api/diary/snapshot");
         assert_eq!(diary_core::contract::TOKEN_PATH, "/api/diary/token");
-        assert!(
-            include_str!("../schema.surql")
-                .contains(&format!("string::len($value) <= {MAX_ENTRY_CHARS}")),
-            "schema ASSERT no longer mirrors diary-core's MAX_ENTRY_CHARS"
-        );
     }
 
     #[test]
@@ -831,10 +830,12 @@ mod tests {
             // the Rust queue module: loader → pinned glue → instantiation,
             // with the form POST as the fallback when any of it refuses
             "const SYNC_LOADER = \"/diary-sync.js\";",
+            "const STORE_LOCK = \"diary-store\";",
+            "navigator.locks.request(STORE_LOCK",
             "DIARY_SYNC.glue",
             "module_or_path: self.DIARY_SYNC.wasm",
             "diary_enqueue",
-            "diary_wire_version",
+            "diary_schema_epoch",
             "diary_snapshot",
             "diary_discard",
             // the reconciliation contract: bubbles clone the server-shipped

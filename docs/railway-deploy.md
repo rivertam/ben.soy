@@ -87,9 +87,20 @@ removes the access method again at the next boot.
 
 ## Clean database bootstrap
 
-There is no migration command or migration history. The application applies
-the complete `src/schema.surql` definition on its first data-backed database
-connection and checks every statement result.
+The application applies the additive site definitions in `src/schema.surql`
+and the ordered diary migrations in `src/data/diary_migrations/` on its first
+data-backed database connection, checking every statement result. Applied
+diary epochs are recorded in `diary_schema_migrations`; a binary older than
+that ledger refuses the diary store, including through an already-cached
+connection.
+
+A Diary Schema Epoch change requires a drained handoff: keep the web service
+at one replica, let Railway switch traffic off the preceding deployment, and
+only then trigger the new deployment's first data-backed request. Do not scale
+two web epochs against the diary store. Each migration and ledger row commit
+atomically, but the ledger cannot cancel an old request that already passed
+its epoch check. Ordinary deploys with no diary migration do not need this
+extra constraint.
 
 For a new production database:
 
@@ -101,9 +112,8 @@ For a new production database:
 4. Run `just sync-spire`, then `just sync-fitness <csv>` from the machines
    holding the source files.
 
-This project deliberately starts clean; there is no legacy import or
-compatibility step. Upgrade the pinned database image deliberately and take a
-volume backup first.
+The same migrations preserve an existing diary in place. Upgrade the pinned
+database image deliberately and take a volume backup first.
 
 `just sync-spire` discovers both games on Linux: Slay the Spire 1 below the
 Steam install's `SlayTheSpire/runs` character directories, and Slay the Spire

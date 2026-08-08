@@ -16,6 +16,7 @@ const SW_URL = "/sw.js";
 const SCOPE = "/diary";
 const ASSET_CACHE = "diary-assets-v1";
 const SYNC_TAG = "diary-flush";
+const STORE_LOCK = "diary-store";
 const SYNC_LOADER = "/diary-sync.js";
 
 // Memoized wasm instantiation; nulled on rejection so the next call retries.
@@ -88,6 +89,18 @@ function loadScript(src) {
   });
 }
 
+/* The page and service worker share this lock across an epoch check and its
+ * local-store operation. Therefore a newly installed worker cannot migrate
+ * between an old page checking the ledger and interpreting a row. Browsers
+ * without Web Locks retain the plain-form online fallback instead of opening
+ * an unfenced local store. */
+function withStoreLock(operation) {
+  if (!navigator.locks) {
+    return Promise.reject(new Error("Web Locks unavailable"));
+  }
+  return navigator.locks.request(STORE_LOCK, operation);
+}
+
 /* ---------------------------------------------------------- compose ---- */
 
 function hookForm() {
@@ -142,13 +155,13 @@ async function persist(form, box, raw, draft, bubble) {
   try {
     const wasm = await ensureWasm();
     const entry = JSON.parse(
-      await wasm.diary_enqueue(
+      await withStoreLock(() => wasm.diary_enqueue(
         JSON.stringify({
-          version: wasm.diary_wire_version(),
+          schema_epoch: wasm.diary_schema_epoch(),
           entry: { written_at: draft.written_at, body: raw },
           enqueued_at_ms: Date.now(),
         }),
-      ),
+      )),
     );
     const existing = byId(entry.id);
     if (existing && existing !== bubble) {
@@ -314,7 +327,7 @@ async function renderFromStore() {
   let entries;
   try {
     const wasm = await ensureWasm();
-    entries = JSON.parse(await wasm.diary_snapshot());
+    entries = JSON.parse(await withStoreLock(() => wasm.diary_snapshot()));
   } catch (error) {
     return; // no store, no bubbles — the no-JS diary
   }
@@ -422,7 +435,7 @@ function hookDiscards() {
     }
     try {
       const wasm = await ensureWasm();
-      await wasm.diary_discard(id);
+      await withStoreLock(() => wasm.diary_discard(id));
       bubble.remove();
       hideQueueIfEmpty();
     } catch (error) {

@@ -5,7 +5,8 @@
 //! the only code here that is not plumbing is [`send`] — the browser `fetch`
 //! implementation of the flush transport. Both the /diary page and the
 //! service worker load this module; IndexedDB serializes their transactions,
-//! and the worker's Web Lock keeps flushes single-file.
+//! and their shared Web Lock keeps each epoch check and store operation in one
+//! critical section.
 //!
 //! This crate lives in its own excluded workspace (see Cargo.toml), so
 //! `just check` never builds it — breakage here surfaces at `just wasm` or
@@ -31,10 +32,10 @@ use web_sys::{Request, RequestCache, RequestCredentials, RequestInit, Response};
 const LOCAL_ENDPOINT: &str = "indxdb://diary";
 
 /// Let the paired page asset stamp compose commands with this wasm build's
-/// contract generation instead of duplicating a version literal in JS.
+/// schema epoch instead of duplicating a literal in JavaScript.
 #[wasm_bindgen]
-pub fn diary_wire_version() -> u16 {
-    diary_core::contract::CURRENT_WIRE_VERSION
+pub fn diary_schema_epoch() -> u16 {
+    diary_core::contract::CURRENT_SCHEMA_EPOCH
 }
 
 thread_local! {
@@ -45,6 +46,7 @@ thread_local! {
 
 async fn db() -> Result<outbox::Db, JsError> {
     if let Some(db) = DB.with(|cell| cell.borrow().clone()) {
+        outbox::require_current(&db).await.map_err(outbox_error)?;
         return Ok(db);
     }
     let db = outbox::open(LOCAL_ENDPOINT).await.map_err(outbox_error)?;
@@ -52,7 +54,7 @@ async fn db() -> Result<outbox::Db, JsError> {
     Ok(db)
 }
 
-/// Queue one entry from the single versioned compose command serialized by
+/// Queue one entry from the single current compose command serialized by
 /// the page. The wasm Interface stays fixed when business fields grow: they
 /// live inside the canonical `ComposedEntry`. Returns the placed row as
 /// JSON; its `id` is the predicted Entry Key.
@@ -140,9 +142,9 @@ async fn direct_remote(endpoint: &str) -> Result<sync::DirectRemote, String> {
     let grant = fetch_token().await?;
     if !grant.supports_current() {
         return Err(format!(
-            "direct sync generation {} does not match {}",
-            grant.version,
-            diary_core::contract::CURRENT_WIRE_VERSION
+            "direct sync schema epoch {} does not match {}",
+            grant.schema_epoch,
+            diary_core::contract::CURRENT_SCHEMA_EPOCH
         ));
     }
     let remote = surrealdb::engine::any::connect(endpoint)
@@ -164,8 +166,11 @@ async fn direct_remote(endpoint: &str) -> Result<sync::DirectRemote, String> {
         .check()
         .map_err(|error| error.to_string())?;
     let access: Option<String> = canary.take(0).map_err(|error| error.to_string())?;
-    if access.as_deref() != Some("diary_sync") {
-        return Err(format!("session carries access {access:?}, not diary_sync"));
+    if access.as_deref() != Some(diary_core::contract::DIRECT_ACCESS) {
+        return Err(format!(
+            "session carries access {access:?}, not {}",
+            diary_core::contract::DIRECT_ACCESS
+        ));
     }
     let validation_now: Option<i64> = canary.take(1).map_err(|error| error.to_string())?;
     let validation_now = validation_now.ok_or_else(|| "server clock is missing".to_string())?;
@@ -182,13 +187,8 @@ async fn fetch_token() -> Result<DirectTokenGrant, String> {
     init.set_cache(RequestCache::NoStore);
     let request = Request::new_with_str_and_init(diary_core::contract::TOKEN_PATH, &init)
         .map_err(|_| "token request build failed".to_string())?;
-    request
-        .headers()
-        .set(
-            diary_core::contract::WIRE_VERSION_HEADER,
-            &diary_core::contract::CURRENT_WIRE_VERSION.to_string(),
-        )
-        .map_err(|_| "token request version header failed".to_string())?;
+    stamp_schema_epoch(&request)
+        .map_err(|_| "token request schema epoch header failed".to_string())?;
     let (status, text) = perform(&request)
         .await
         .map_err(|_| "token fetch failed".to_string())?;
@@ -234,6 +234,7 @@ async fn try_send(api_url: &str, entry: &ComposedEntry) -> Result<SendOutcome, J
     init.set_body(&JsValue::from_str(&body));
     let request = Request::new_with_str_and_init(api_url, &init)?;
     request.headers().set("Content-Type", "application/json")?;
+    stamp_schema_epoch(&request)?;
     let (status, text) = perform(&request).await?;
     Ok(classify_response(status, &text))
 }
@@ -244,8 +245,16 @@ async fn try_pull(api_url: &str) -> Result<PullOutcome, JsValue> {
     init.set_credentials(RequestCredentials::SameOrigin);
     init.set_cache(RequestCache::NoStore);
     let request = Request::new_with_str_and_init(api_url, &init)?;
+    stamp_schema_epoch(&request)?;
     let (status, text) = perform(&request).await?;
     Ok(classify_pull(status, &text))
+}
+
+fn stamp_schema_epoch(request: &Request) -> Result<(), JsValue> {
+    request.headers().set(
+        diary_core::contract::SCHEMA_EPOCH_HEADER,
+        &diary_core::contract::CURRENT_SCHEMA_EPOCH.to_string(),
+    )
 }
 
 async fn perform(request: &Request) -> Result<(u16, String), JsValue> {
@@ -347,6 +356,10 @@ mod ssr {
     /// unmatched path or a render failure) — the caller serves its stub.
     #[wasm_bindgen]
     pub async fn diary_render(url: String, assets_json: String) -> Result<Option<String>, JsError> {
+        // `router` deliberately caches its store handle. Re-enter the shared
+        // epoch guard for every render so an older installed worker pauses
+        // after a newer context migrates the device store.
+        db().await?;
         let router = router(&assets_json).await?;
         let request = Request::builder()
             .method("GET")

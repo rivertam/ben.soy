@@ -30,6 +30,5 @@ view = ["dep:topcoat"]
 [dev-dependencies]
 # The isomorphism proof: the same outbox code the service worker runs against
 # `indxdb://` is tested natively against `mem://`.
-jsonwebtoken = "9"
 surrealdb = { workspace = true, features = ["kv-mem"] }
 tokio = { version = "1.53.0", features = ["macros", "rt"] }

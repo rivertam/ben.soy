@@ -9,12 +9,12 @@
  * 2. The write queue: one sync pass (flush then pull) against the JSON
  *    endpoints. The policy is Rust — crates/diary-core over a local
  *    SurrealDB (docs/diary-sync.md) — and this file is only the browser
- *    glue: import the module, hold the Web Lock, migrate the pre-wasm
+ *    glue: import the module, hold the shared device-store Web Lock, migrate the pre-wasm
  *    IndexedDB queue, broadcast the report, and throw on retryable trouble
  *    so Background Sync retries with backoff. Syncing lives HERE and only
  *    here — pages enqueue and kick. The server dedupes replays through the
- *    same bounded probe walk and whole Entry Content; that is the real
- *    idempotency guarantee, the lock only trims wasted duplicate work.
+ *    same bounded probe walk and whole Entry Content; that is the replay
+ *    idempotency guarantee, while the lock also fences local schema epochs.
  */
 
 "use strict";
@@ -27,7 +27,7 @@ const DIARY_PATH = "/diary";
 const API_PATH = "/api/diary/entries";
 const SNAPSHOT_PATH = "/api/diary/snapshot";
 const SYNC_TAG = "diary-flush";
-const FLUSH_LOCK = "diary-flush";
+const STORE_LOCK = "diary-store";
 const SYNC_LOADER = "/diary-sync.js";
 const SYNC_PREFIX = "/diary-sync";
 
@@ -178,9 +178,11 @@ async function navigationResponse(request, url) {
     }
     try {
       await ensureWasm();
-      const html = await wasm_bindgen.diary_render(
-        url.pathname + url.search,
-        JSON.stringify((self.DIARY_SYNC && self.DIARY_SYNC.assets) || {})
+      const html = await navigator.locks.request(STORE_LOCK, () =>
+        wasm_bindgen.diary_render(
+          url.pathname + url.search,
+          JSON.stringify((self.DIARY_SYNC && self.DIARY_SYNC.assets) || {})
+        )
       );
       if (html) {
         return new Response(html, {
@@ -290,7 +292,7 @@ async function drainFlushRequests() {
   try {
     while (flushRequested) {
       flushRequested = false;
-      await navigator.locks.request(FLUSH_LOCK, () => flush());
+      await navigator.locks.request(STORE_LOCK, () => flush());
     }
   } finally {
     flushFlight = null;

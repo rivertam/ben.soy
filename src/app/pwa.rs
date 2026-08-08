@@ -125,6 +125,7 @@ mod tests {
             "\"/api/diary/entries\"",
             "\"/api/diary/snapshot\"",
             "\"diary-flush\"",
+            "\"diary-store\"",
             "self.skipWaiting()",
             "clients.claim()",
             "\"navigate\"",
@@ -170,7 +171,7 @@ mod tests {
             "return flushFlight;",
             "while (flushRequested)",
             "flushRequested = false;",
-            "await navigator.locks.request(FLUSH_LOCK, () => flush());",
+            "await navigator.locks.request(STORE_LOCK, () => flush());",
             "flushFlight = null;",
         ] {
             assert!(SW_JS.contains(needle), "sw.js lost {needle:?}");
@@ -189,6 +190,7 @@ mod tests {
     fn page_and_worker_agree_on_shared_names() {
         for shared in [
             "\"diary-flush\"",
+            "\"diary-store\"",
             "\"diary-assets-v1\"",
             "\"/diary-sync.js\"",
             "DIARY_SYNC.glue",
@@ -206,6 +208,38 @@ mod tests {
         // content-bearing report field during activation.
         assert!(SW_JS.contains("saved_entries"));
         assert!(DIARY_JS.contains("saved_entries"));
+    }
+
+    /// The local epoch check lives inside each wasm export, so the browser
+    /// must keep that check and the subsequent store use in one shared lock
+    /// hold. Otherwise a stale page could project a newer business field
+    /// between those two operations.
+    #[test]
+    fn page_and_worker_fence_every_device_store_entry_with_one_lock() {
+        for (call, guarded) in [
+            (
+                "wasm.diary_enqueue",
+                "withStoreLock(() => wasm.diary_enqueue",
+            ),
+            (
+                "wasm.diary_snapshot",
+                "withStoreLock(() => wasm.diary_snapshot",
+            ),
+            (
+                "wasm.diary_discard",
+                "withStoreLock(() => wasm.diary_discard",
+            ),
+        ] {
+            assert_eq!(DIARY_JS.matches(call).count(), 1, "unexpected {call} call");
+            assert!(
+                DIARY_JS.contains(guarded),
+                "{call} escaped the diary-store lock"
+            );
+        }
+        assert!(SW_JS.contains(
+            "navigator.locks.request(STORE_LOCK, () =>\n        wasm_bindgen.diary_render"
+        ));
+        assert!(SW_JS.contains("navigator.locks.request(STORE_LOCK, () => flush())"));
     }
 
     /// Same rule as favicon.rs and /diary itself: reachable, never listed.

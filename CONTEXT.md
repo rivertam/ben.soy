@@ -41,15 +41,15 @@ A device-only synthetic record key that preserves an unprojectable legacy
 entry as failed text.
 _Avoid_: Entry Key, permalink
 
-**Entry Generation**:
-The semantic version stamped beside a persisted Diary Entry and carried by a
-direct-sync token. A reader may interpret only rows from its generation or an
-older one.
-_Avoid_: Schema version, deployment version
+**Diary Schema Epoch**:
+The exact compatibility epoch shared by one diary build and its completed
+server/device migrations. Mismatched clients pause sync until updated; Diary
+Entries themselves carry no version.
+_Avoid_: Wire version, Entry Generation
 
 **Device Entry**:
-A Diary Entry paired with its Entry Generation and device-local
-synchronization state, failure reason, and enqueue order.
+A Diary Entry paired with device-local synchronization state, failure reason,
+and enqueue order.
 _Avoid_: Outbox row, queue item
 
 **Sync State**:
@@ -65,11 +65,10 @@ _Avoid_: Delivery flag
 - A **Device Entry** wraps exactly one **Diary Entry** and one **Sync State**
 - A pending **Device Entry** has a predicted **Entry Key**
 - A synced **Device Entry** exposes its key as an **Entry Reference**
-- Every current writer stamps a newly persisted **Diary Entry** with one
-  **Entry Generation**; a still-live predecessor token may create only a
-  legacy unversioned row during the first rollout
-- A direct-sync token may read or create only rows whose **Entry Generation**
-  it understands
+- Sync proceeds only when the client and server agree on one **Diary Schema
+  Epoch**; migrations put both stores in that epoch's canonical shape first
+- A direct-sync token carries the exact **Diary Schema Epoch** admitted by the
+  migration-owned table permission
 - An unprojectable legacy entry is failed under a **Recovery Key**, which can
   never become an **Entry Reference**
 
