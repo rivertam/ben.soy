@@ -107,8 +107,9 @@ Invariants:
 - A flush stops and keeps the queue on 401/404 (sign in again) and on
   400/403/5xx/network trouble (retry later); a 400 can be an older server
   rejecting a newer strict wire envelope during rollout. Direct JWT claims
-  and diary table permissions carry the current semantic generation so an
-  already-open older database session is denied after a schema bump. Only
+  and every persisted server row carry a semantic generation; the stable
+  table permission hides newer rows from older sessions even if an older
+  instance reapplies its schema after the new deployment starts. Only
   409/413/415/422 mark an entry failed, and failed text stays on the page
   with a discard button — queued diary text is never silently dropped.
 - `/sw.js` and the manifest keep stable un-hashed URLs (a worker's URL is

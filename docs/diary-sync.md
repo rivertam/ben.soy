@@ -106,11 +106,14 @@ token request and returned grant both carry the current generation; the server
 refuses a pre-fence request, and the worker arms direct mode only on an exact
 grant match. During server/worker skew it falls back to the versioned HTTP
 transport instead of projecting newer server rows through an older field list.
-The signed JWT repeats that generation, and the table permission requires the
-exact current claim. Changing the schema fence therefore revokes an older
-session even if it authenticated just before a deploy. Because SurrealDB turns
-permission-denied creates into empty successful results, the store Adapter also
-requires CREATE to return the expected Entry Key before reporting success.
+The signed JWT repeats that generation, and every persisted server row is
+stamped with the generation that wrote it. Store reads and the table permission
+admit legacy rows plus rows no newer than the reader/token. The permission
+expression itself is generation-agnostic and identical across releases, so an
+older instance bootstrapping after a newer one cannot downgrade it. Because
+SurrealDB turns permission-denied creates into empty successful results, the
+store Adapter also requires CREATE to return the expected Entry Key before
+reporting success.
 
 Remote acceptance is one store Interface shared by the HTTP and direct
 Adapters: it normalizes content, enforces the timestamp window and body bound,
@@ -301,10 +304,11 @@ Load-bearing findings (probed on 3.2.3, tests + canaries pin them):
 - SurrealDB filters permission-denied reads to EMPTY results instead of
   erroring, and permission-denied creates can likewise return an empty
   successful result. Four layers keep either from becoming data loss: the
-  setup canary (`RETURN $access`), the JWT/table semantic-generation fence,
+  setup canary (`RETURN $access`), the JWT/per-row semantic-generation fence,
   the wipe guard (an empty snapshot never deletes a populated mirror), and a
-  verified CREATE result before any save acknowledgement. Passes also use
-  fresh tokens with a 15-minute TTL.
+  verified CREATE result before any save acknowledgement. The per-row rule is
+  stable across releases, so reversed schema-bootstrap order cannot downgrade
+  it. Passes also use fresh tokens with a 15-minute TTL.
 - `jsonwebtoken` requires the private key as PKCS#8 PEM (`openssl pkcs8
   -topk8`), not SEC1 "EC PRIVATE KEY".
 

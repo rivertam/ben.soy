@@ -717,13 +717,17 @@ mod tests {
             diary_core::contract::CURRENT_WIRE_VERSION
         );
 
-        let permission_fence = format!(
-            "$token.diary_wire_version = {}",
-            diary_core::contract::CURRENT_WIRE_VERSION
+        let schema = include_str!("../schema.surql");
+        assert!(
+            schema.contains(diary_core::store::DIRECT_SYNC_ROW_PERMISSIONS),
+            "direct table permissions drifted from the shared row-generation fence"
         );
         assert!(
-            include_str!("../schema.surql").contains(&permission_fence),
-            "direct table permissions drifted from the current wire generation"
+            !schema.contains(&format!(
+                "$token.diary_wire_version = {}",
+                diary_core::contract::CURRENT_WIRE_VERSION
+            )),
+            "a hard-coded table generation can be downgraded by an older bootstrap"
         );
     }
 

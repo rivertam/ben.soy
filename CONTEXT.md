@@ -41,8 +41,14 @@ A device-only synthetic record key that preserves an unprojectable legacy
 entry as failed text.
 _Avoid_: Entry Key, permalink
 
+**Entry Generation**:
+The semantic version stamped beside a persisted Diary Entry and carried by a
+direct-sync token. A reader may interpret only rows from its generation or an
+older one.
+_Avoid_: Schema version, deployment version
+
 **Device Entry**:
-A Diary Entry paired with its semantic generation and device-local
+A Diary Entry paired with its Entry Generation and device-local
 synchronization state, failure reason, and enqueue order.
 _Avoid_: Outbox row, queue item
 
@@ -59,6 +65,9 @@ _Avoid_: Delivery flag
 - A **Device Entry** wraps exactly one **Diary Entry** and one **Sync State**
 - A pending **Device Entry** has a predicted **Entry Key**
 - A synced **Device Entry** exposes its key as an **Entry Reference**
+- Every newly persisted **Diary Entry** is stamped with one **Entry Generation**
+- A direct-sync token may read or create only rows whose **Entry Generation**
+  it understands
 - An unprojectable legacy entry is failed under a **Recovery Key**, which can
   never become an **Entry Reference**
 

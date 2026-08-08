@@ -177,10 +177,11 @@ DEFINE INDEX OVERWRITE hidden_page_grants_identity
 --
 -- The PERMISSIONS clause is the direct-sync grant (docs/diary-sync.md): a
 -- record-access session minted by POST /api/diary/token may select and
--- create — never update or delete — only for this exact semantic wire
--- generation. Updating the schema fence revokes even an already-open older
--- session before it can project new entry content through old code. The
--- permission is INERT until the access method itself exists, which only
+-- create — never update or delete — only rows whose semantic generation its
+-- JWT understands. This row-aware expression is identical in every release:
+-- an older instance may reapply its schema after a newer one, but it cannot
+-- downgrade the fence or expose a newer row through old code. The permission
+-- is INERT until the access method itself exists, which only
 -- happens when the DIARY_SYNC_JWT_* environment is set (src/data.rs defines
 -- it at bootstrap; the public key is config, not schema, so dev and prod can
 -- hold different keypairs).
@@ -188,8 +189,13 @@ DEFINE INDEX OVERWRITE hidden_page_grants_identity
 -- WITH JWT: plain TYPE JWT sessions carry a database-level Viewer role
 -- floor that reads EVERY table regardless of PERMISSIONS (probed on 3.2.3).
 DEFINE TABLE OVERWRITE diary_entries SCHEMAFULL
-    PERMISSIONS FOR select, create WHERE $access = 'diary_sync'
-        AND $token.diary_wire_version = 1;
+    PERMISSIONS
+    FOR select WHERE $access = 'diary_sync'
+        AND (entry_version = NONE
+            OR $token.diary_wire_version >= entry_version)
+    FOR create WHERE $access = 'diary_sync'
+        AND entry_version IS NOT NONE
+        AND $token.diary_wire_version >= entry_version;
 DEFINE FIELD OVERWRITE id ON diary_entries TYPE string
     ASSERT string::matches(record::id($value),
         '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$');
@@ -197,6 +203,10 @@ DEFINE FIELD OVERWRITE written_at ON diary_entries TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799;
 DEFINE FIELD OVERWRITE body ON diary_entries TYPE string
     ASSERT string::len($value) >= 1 AND string::len($value) <= 65536;
+-- Persistence metadata, deliberately outside Entry Content. NONE admits rows
+-- written before generations existed; every current write stamps its version.
+DEFINE FIELD OVERWRITE entry_version ON diary_entries TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 1 AND $value <= 65535);
 DEFINE INDEX OVERWRITE diary_entries_written_at ON diary_entries FIELDS written_at;
 
 DEFINE TABLE OVERWRITE analytics_events SCHEMAFULL PERMISSIONS NONE;

@@ -11,10 +11,11 @@
 
 use std::ops::Deref;
 
-use serde::Deserialize;
-use surrealdb::types::SurrealValue;
+use serde::{Deserialize, Serialize};
+use surrealdb::types::{SurrealValue, Value};
 
 use crate::Db;
+use crate::contract::CURRENT_WIRE_VERSION;
 use crate::eastern;
 use crate::entry::{ComposedEntry, EntryRejection, PROJECTION, accept_for_save};
 use crate::placement::{self, Occupant, Placement};
@@ -29,6 +30,20 @@ pub const PAGE_SIZE: usize = 20;
 /// surfacing a SurrealDB parse error as a fake outage.
 pub const MAX_PAGE: usize = 1_000_000;
 
+/// The generation-agnostic permission installed by every server release.
+/// Keeping the expression stable is what makes schema bootstrap monotonic:
+/// an older instance may reapply it, but each row still fences itself from a
+/// token whose entry model is too old to interpret it.
+pub const DIRECT_SYNC_ROW_PERMISSIONS: &str = concat!(
+    "PERMISSIONS\n",
+    "    FOR select WHERE $access = 'diary_sync'\n",
+    "        AND (entry_version = NONE\n",
+    "            OR $token.diary_wire_version >= entry_version)\n",
+    "    FOR create WHERE $access = 'diary_sync'\n",
+    "        AND entry_version IS NOT NONE\n",
+    "        AND $token.diary_wire_version >= entry_version",
+);
+
 /// Test stores share one server-row fixture so a new business field has one
 /// test-schema seam rather than separate store and sync copies.
 #[cfg(test)]
@@ -36,7 +51,28 @@ pub(crate) const TEST_SCHEMA: &str = "\
     DEFINE TABLE diary_entries SCHEMAFULL PERMISSIONS NONE;
     DEFINE FIELD id ON diary_entries TYPE string;
     DEFINE FIELD written_at ON diary_entries TYPE int;
-    DEFINE FIELD body ON diary_entries TYPE string;";
+    DEFINE FIELD body ON diary_entries TYPE string;
+    DEFINE FIELD entry_version ON diary_entries TYPE option<int>;";
+
+/// Store metadata around the canonical value, not another business-field
+/// representation. A future `EntryContent` field remains flattened into this
+/// wrapper automatically.
+#[derive(Clone, Debug, Serialize, SurrealValue)]
+struct PersistedEntry {
+    #[serde(flatten)]
+    #[surreal(flatten)]
+    composed: ComposedEntry,
+    entry_version: i64,
+}
+
+impl PersistedEntry {
+    fn current(composed: ComposedEntry) -> Self {
+        Self {
+            composed,
+            entry_version: i64::from(CURRENT_WIRE_VERSION),
+        }
+    }
+}
 
 /// The saved-or-deduped outcome [`save_entry`] reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +119,14 @@ pub fn entry_key(epoch: i64) -> Option<String> {
 
 /// One page of entries, newest first, plus the total count — one round trip.
 pub async fn entry_page(db: &Db, page_number: usize) -> Result<(Vec<DiaryEntry>, usize), String> {
+    entry_page_for_version(db, page_number, CURRENT_WIRE_VERSION).await
+}
+
+async fn entry_page_for_version(
+    db: &Db,
+    page_number: usize,
+    max_entry_version: u16,
+) -> Result<(Vec<DiaryEntry>, usize), String> {
     #[derive(Deserialize, SurrealValue)]
     struct CountRow {
         count: i64,
@@ -96,9 +140,13 @@ pub async fn entry_page(db: &Db, page_number: usize) -> Result<(Vec<DiaryEntry>,
     let mut response = db
         .query(format!(
             "SELECT {PROJECTION} FROM diary_entries \
+                 WHERE entry_version = NONE OR entry_version <= $max_entry_version \
                  ORDER BY written_at DESC, id DESC LIMIT {PAGE_SIZE} START {start};
-             SELECT count() FROM diary_entries GROUP ALL;"
+             SELECT count() FROM diary_entries \
+                 WHERE entry_version = NONE OR entry_version <= $max_entry_version \
+                 GROUP ALL;"
         ))
+        .bind(("max_entry_version", i64::from(max_entry_version)))
         .await
         .map_err(|error| error.to_string())?
         .check()
@@ -116,11 +164,20 @@ pub async fn entry_page(db: &Db, page_number: usize) -> Result<(Vec<DiaryEntry>,
 /// Every entry, oldest first — the pull snapshot's source. (On a local
 /// store the extra state columns are simply not projected.)
 pub async fn all_entries(db: &Db) -> Result<Vec<DiaryEntry>, String> {
+    all_entries_for_version(db, CURRENT_WIRE_VERSION).await
+}
+
+async fn all_entries_for_version(
+    db: &Db,
+    max_entry_version: u16,
+) -> Result<Vec<DiaryEntry>, String> {
     let mut response = db
         .query(format!(
             "SELECT {PROJECTION} FROM diary_entries \
+             WHERE entry_version = NONE OR entry_version <= $max_entry_version \
              ORDER BY written_at ASC, id ASC"
         ))
+        .bind(("max_entry_version", i64::from(max_entry_version)))
         .await
         .map_err(|error| error.to_string())?
         .check()
@@ -129,11 +186,21 @@ pub async fn all_entries(db: &Db) -> Result<Vec<DiaryEntry>, String> {
 }
 
 pub async fn entry_by_id(db: &Db, id: &str) -> Result<Option<DiaryEntry>, String> {
+    entry_by_id_for_version(db, id, CURRENT_WIRE_VERSION).await
+}
+
+async fn entry_by_id_for_version(
+    db: &Db,
+    id: &str,
+    max_entry_version: u16,
+) -> Result<Option<DiaryEntry>, String> {
     let mut response = db
         .query(format!(
-            "SELECT {PROJECTION} FROM type::record('diary_entries', $id)"
+            "SELECT {PROJECTION} FROM type::record('diary_entries', $id) \
+             WHERE entry_version = NONE OR entry_version <= $max_entry_version"
         ))
         .bind(("id", id.to_string()))
+        .bind(("max_entry_version", i64::from(max_entry_version)))
         .await
         .map_err(|error| error.to_string())?
         .check()
@@ -147,13 +214,14 @@ pub async fn entry_by_id(db: &Db, id: &str) -> Result<Option<DiaryEntry>, String
 /// canonical composed value is the whole row content; future optional fields
 /// do not create another SET/bind branch here.
 pub async fn insert_entry(db: &Db, entry: &DiaryEntry) -> Result<(), String> {
+    let persisted = PersistedEntry::current(entry.composed.clone());
     let mut response = db
         .query(
             "CREATE ONLY type::record('diary_entries', $id) CONTENT $entry \
              RETURN VALUE record::id(id)",
         )
         .bind(("id", entry.id.clone()))
-        .bind(("entry", entry.composed.clone()))
+        .bind(("entry", persisted))
         .await
         .map_err(|error| error.to_string())?
         .check()
@@ -258,6 +326,28 @@ mod tests {
         save_entry(db, ComposedEntry::new(written_at, body), written_at).await
     }
 
+    async fn apply_generation_bootstrap(db: &Db, include_future_field: bool) {
+        let future_field = if include_future_field {
+            "DEFINE FIELD OVERWRITE future_field ON diary_entries TYPE option<string>;"
+        } else {
+            ""
+        };
+        db.query(format!(
+            "DEFINE TABLE OVERWRITE diary_entries SCHEMAFULL \
+                 {DIRECT_SYNC_ROW_PERMISSIONS};
+             DEFINE FIELD OVERWRITE id ON diary_entries TYPE string;
+             DEFINE FIELD OVERWRITE written_at ON diary_entries TYPE int;
+             DEFINE FIELD OVERWRITE body ON diary_entries TYPE string;
+             DEFINE FIELD OVERWRITE entry_version ON diary_entries TYPE option<int>
+                 ASSERT $value IS NONE OR ($value >= 1 AND $value <= 65535);
+             {future_field}"
+        ))
+        .await
+        .expect("generation bootstrap applies")
+        .check()
+        .expect("generation bootstrap statements succeed");
+    }
+
     #[tokio::test]
     async fn save_rejects_before_touching_the_store() {
         use crate::entry::{EntryRejection, MAX_ENTRY_CHARS};
@@ -320,10 +410,87 @@ mod tests {
 
     #[tokio::test]
     async fn typed_entry_content_round_trips_through_content_write() {
+        #[derive(Deserialize, SurrealValue)]
+        struct GenerationRow {
+            entry_version: i64,
+        }
+
         let db = store().await;
         let entry = DiaryEntry::from_parts(entry_key(100).unwrap(), 100, "typed row");
         insert_entry(&db, &entry).await.unwrap();
         assert_eq!(entry_by_id(&db, &entry.id).await.unwrap(), Some(entry));
+        let mut response = db
+            .query("SELECT entry_version FROM type::record('diary_entries', $id)")
+            .bind(("id", entry_key(100).unwrap()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let rows: Vec<GenerationRow> = response.take(0).unwrap();
+        assert_eq!(rows[0].entry_version, i64::from(CURRENT_WIRE_VERSION));
+    }
+
+    #[tokio::test]
+    async fn row_generation_survives_v1_v2_v1_bootstrap_order() {
+        let db = store().await;
+        apply_generation_bootstrap(&db, false).await;
+        db.query(
+            "CREATE ONLY diary_entries:v1 \
+                 SET written_at = 1, body = 'old', entry_version = 1;",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        apply_generation_bootstrap(&db, true).await;
+        db.query(
+            "CREATE ONLY diary_entries:v2 \
+                 SET written_at = 2, body = 'new', entry_version = 2, \
+                     future_field = 'preserved';",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        // A late older instance overwrites the table definition and its known
+        // fields. The common permission does not downgrade, the newer field
+        // remains defined, and application reads still hide the opaque row.
+        apply_generation_bootstrap(&db, false).await;
+
+        let old = all_entries_for_version(&db, 1).await.unwrap();
+        assert_eq!(
+            old.iter()
+                .map(|entry| entry.body.as_str())
+                .collect::<Vec<_>>(),
+            ["old"]
+        );
+        assert!(
+            entry_by_id_for_version(&db, "v2", 1)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(entry_page_for_version(&db, 1, 1).await.unwrap().1, 1);
+
+        let current = all_entries_for_version(&db, 2).await.unwrap();
+        assert_eq!(
+            current
+                .iter()
+                .map(|entry| entry.body.as_str())
+                .collect::<Vec<_>>(),
+            ["old", "new"]
+        );
+        assert_eq!(entry_page_for_version(&db, 1, 2).await.unwrap().1, 2);
+        let mut response = db
+            .query("SELECT VALUE future_field FROM diary_entries:v2")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let future_fields: Vec<String> = response.take(0).unwrap();
+        assert_eq!(future_fields, ["preserved"]);
     }
 
     #[tokio::test]
