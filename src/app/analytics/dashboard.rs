@@ -159,6 +159,11 @@ struct SnapshotRows {
 }
 
 pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
+    // `prior_sessions` only needs the idle window before `$cutoff`. A session
+    // id that survives across the boundary must have had activity inside that
+    // window (see `SESSION_IDLE_SECONDS`); scanning unbounded history made the
+    // nested IN pathologically slow on short ranges once older traffic existed
+    // alongside a busy in-window set (the 7d standby card).
     const SNAPSHOT: &str = "
         RETURN {
             events: (
@@ -171,6 +176,7 @@ pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
                 FROM analytics_events
                 WHERE kind = 'pageview'
                     AND occurred_at < $cutoff
+                    AND occurred_at >= $prior_floor
                     AND session_id IN (
                         SELECT VALUE session_id
                         FROM analytics_events
@@ -181,10 +187,12 @@ pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
             )
         }";
 
+    let prior_floor = cutoff.saturating_sub(super::db::SESSION_IDLE_SECONDS);
     let snapshot = timeout(Duration::from_secs(3), async {
         let mut response = db
             .query(SNAPSHOT)
             .bind(("cutoff", cutoff))
+            .bind(("prior_floor", prior_floor))
             .await
             .context("analytics snapshot query failed")?
             .check()

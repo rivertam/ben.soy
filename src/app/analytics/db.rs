@@ -247,7 +247,11 @@ async fn event_exists(db: &Db, id: &str) -> surrealdb::Result<bool> {
     Ok(!ids.is_empty())
 }
 
-const SESSION_IDLE_SECONDS: i64 = 30 * 60;
+/// Idle gap that rotates a visitor onto a new session id. Dashboard
+/// prior-session detection uses the same bound: a session that still has the
+/// same id after `$cutoff` must have had activity inside the idle window
+/// immediately before it, or the cursor would already have rotated.
+pub(crate) const SESSION_IDLE_SECONDS: i64 = 30 * 60;
 
 async fn server_session(db: &Db, visitor_hash: &str, occurred_at: i64) -> anyhow::Result<String> {
     // Minted once rather than per attempt: a retry should install the same

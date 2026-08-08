@@ -87,9 +87,11 @@ database statement with a three-second application-side timeout. It returns
 the bounded event rows plus scalar markers for matching sessions whose first
 pageview predates the window, then aggregates every panel in Rust. The markers
 keep acquisition cohorts from counting a session again when it straddles a
-window boundary. An unhealthy database falls back to the standby card. Only
-canonical range URLs execute the query, preventing arbitrary query strings
-from bypassing shared caching.
+window boundary; the prior-session probe only looks back one idle window
+(30 minutes), which is enough because a surviving session id must have had
+activity inside that gap or it would already have rotated. An unhealthy
+database falls back to the standby card. Only canonical range URLs execute
+the query, preventing arbitrary query strings from bypassing shared caching.
 
 Raw anonymous events, current session cursors, cookie aliases, and voluntary
 identities are retained until deliberately removed. Public reads are bounded to
