@@ -147,14 +147,26 @@ pub async fn entry_by_id(db: &Db, id: &str) -> Result<Option<DiaryEntry>, String
 /// canonical composed value is the whole row content; future optional fields
 /// do not create another SET/bind branch here.
 pub async fn insert_entry(db: &Db, entry: &DiaryEntry) -> Result<(), String> {
-    db.query("CREATE ONLY type::record('diary_entries', $id) CONTENT $entry")
+    let mut response = db
+        .query(
+            "CREATE ONLY type::record('diary_entries', $id) CONTENT $entry \
+             RETURN VALUE record::id(id)",
+        )
         .bind(("id", entry.id.clone()))
         .bind(("entry", entry.composed.clone()))
         .await
         .map_err(|error| error.to_string())?
         .check()
         .map_err(|error| error.to_string())?;
-    Ok(())
+    let created: Option<String> = response.take(0).map_err(|error| error.to_string())?;
+    if created.as_deref() == Some(entry.id.as_str()) {
+        Ok(())
+    } else {
+        // Record permissions filter denied CREATEs to an empty successful
+        // result. Treat that as a failed write: direct sync must never
+        // acknowledge content the database did not actually persist.
+        Err("diary entry create returned no matching id".to_string())
+    }
 }
 
 /// Idempotent: deleting an already-deleted entry succeeds quietly.

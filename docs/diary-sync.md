@@ -106,6 +106,11 @@ token request and returned grant both carry the current generation; the server
 refuses a pre-fence request, and the worker arms direct mode only on an exact
 grant match. During server/worker skew it falls back to the versioned HTTP
 transport instead of projecting newer server rows through an older field list.
+The signed JWT repeats that generation, and the table permission requires the
+exact current claim. Changing the schema fence therefore revokes an older
+session even if it authenticated just before a deploy. Because SurrealDB turns
+permission-denied creates into empty successful results, the store Adapter also
+requires CREATE to return the expected Entry Key before reporting success.
 
 Remote acceptance is one store Interface shared by the HTTP and direct
 Adapters: it normalizes content, enforces the timestamp window and body bound,
@@ -294,10 +299,12 @@ Load-bearing findings (probed on 3.2.3, tests + canaries pin them):
   `authenticate()` does not stick on server 3.2.3 — every later request
   arrives anonymous.
 - SurrealDB filters permission-denied reads to EMPTY results instead of
-  erroring, so a silently-deauthed session pulls "an empty diary". Three
-  layers keep that from touching the mirror: the setup canary
-  (`RETURN $access`), the wipe guard (an empty snapshot never deletes a
-  populated mirror), and per-pass fresh tokens (15-minute TTL).
+  erroring, and permission-denied creates can likewise return an empty
+  successful result. Four layers keep either from becoming data loss: the
+  setup canary (`RETURN $access`), the JWT/table semantic-generation fence,
+  the wipe guard (an empty snapshot never deletes a populated mirror), and a
+  verified CREATE result before any save acknowledgement. Passes also use
+  fresh tokens with a 15-minute TTL.
 - `jsonwebtoken` requires the private key as PKCS#8 PEM (`openssl pkcs8
   -topk8`), not SEC1 "EC PRIVATE KEY".
 

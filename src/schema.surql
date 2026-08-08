@@ -177,15 +177,19 @@ DEFINE INDEX OVERWRITE hidden_page_grants_identity
 --
 -- The PERMISSIONS clause is the direct-sync grant (docs/diary-sync.md): a
 -- record-access session minted by POST /api/diary/token may select and
--- create — never update or delete — and it is INERT until the access
--- method itself exists, which only happens when the DIARY_SYNC_JWT_*
--- environment is set (src/data.rs defines it at bootstrap; the public key
--- is config, not schema, so dev and prod can hold different keypairs).
+-- create — never update or delete — only for this exact semantic wire
+-- generation. Updating the schema fence revokes even an already-open older
+-- session before it can project new entry content through old code. The
+-- permission is INERT until the access method itself exists, which only
+-- happens when the DIARY_SYNC_JWT_* environment is set (src/data.rs defines
+-- it at bootstrap; the public key is config, not schema, so dev and prod can
+-- hold different keypairs).
 -- Every other table stays PERMISSIONS NONE. The access MUST be TYPE RECORD
 -- WITH JWT: plain TYPE JWT sessions carry a database-level Viewer role
 -- floor that reads EVERY table regardless of PERMISSIONS (probed on 3.2.3).
 DEFINE TABLE OVERWRITE diary_entries SCHEMAFULL
-    PERMISSIONS FOR select, create WHERE $access = 'diary_sync';
+    PERMISSIONS FOR select, create WHERE $access = 'diary_sync'
+        AND $token.diary_wire_version = 1;
 DEFINE FIELD OVERWRITE id ON diary_entries TYPE string
     ASSERT string::matches(record::id($value),
         '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$');

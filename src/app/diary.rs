@@ -458,20 +458,25 @@ fn mint_direct_token(
     let key = jsonwebtoken::EncodingKey::from_ec_pem(private_key_pem.as_bytes())
         .map_err(|error| format!("private key rejected (must be PKCS#8 PEM): {error}"))?;
     let now = Timestamp::now().as_second();
-    let claims = serde_json::json!({
-        "ns": namespace,
-        "db": database,
-        "ac": "diary_sync",
-        "id": "diary_device:admin",
-        "iat": now,
-        "exp": now + DIRECT_SYNC_TOKEN_TTL_SECONDS,
-    });
+    let claims = direct_token_claims(namespace, database, now);
     jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256),
         &claims,
         &key,
     )
     .map_err(|error| format!("token encoding failed: {error}"))
+}
+
+fn direct_token_claims(namespace: &str, database: &str, now: i64) -> serde_json::Value {
+    serde_json::json!({
+        "ns": namespace,
+        "db": database,
+        "ac": "diary_sync",
+        "id": "diary_device:admin",
+        "diary_wire_version": diary_core::contract::CURRENT_WIRE_VERSION,
+        "iat": now,
+        "exp": now + DIRECT_SYNC_TOKEN_TTL_SECONDS,
+    })
 }
 
 /// The probe-and-dedupe algorithm itself lives in `diary_core::store` now —
@@ -698,6 +703,28 @@ mod tests {
             HeaderValue::from_static("not-a-version"),
         );
         assert_eq!(requested_wire_version(&request_headers), None);
+    }
+
+    #[test]
+    fn direct_tokens_and_table_permissions_share_the_wire_generation() {
+        let claims = direct_token_claims("site", "prod", 100);
+        assert_eq!(claims["ns"], "site");
+        assert_eq!(claims["db"], "prod");
+        assert_eq!(claims["iat"], 100);
+        assert_eq!(claims["exp"], 100 + DIRECT_SYNC_TOKEN_TTL_SECONDS);
+        assert_eq!(
+            claims["diary_wire_version"],
+            diary_core::contract::CURRENT_WIRE_VERSION
+        );
+
+        let permission_fence = format!(
+            "$token.diary_wire_version = {}",
+            diary_core::contract::CURRENT_WIRE_VERSION
+        );
+        assert!(
+            include_str!("../schema.surql").contains(&permission_fence),
+            "direct table permissions drifted from the current wire generation"
+        );
     }
 
     /// The protocol items now live in `diary-core` (where the wasm worker
