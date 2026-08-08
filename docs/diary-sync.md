@@ -308,7 +308,11 @@ Load-bearing findings (probed on 3.2.3, tests + canaries pin them):
   the wipe guard (an empty snapshot never deletes a populated mirror), and a
   verified CREATE result before any save acknowledgement. The per-row rule is
   stable across releases, so reversed schema-bootstrap order cannot downgrade
-  it. Passes also use fresh tokens with a 15-minute TTL.
+  it. During the first generation-aware rollout, an already-minted claimless
+  predecessor token may create only a legacy row with no `entry_version`;
+  versioned tokens must stamp exactly their own generation. The new token
+  endpoint will not mint another predecessor token, and passes use fresh
+  tokens with a 15-minute TTL.
 - `jsonwebtoken` requires the private key as PKCS#8 PEM (`openssl pkcs8
   -topk8`), not SEC1 "EC PRIVATE KEY".
 

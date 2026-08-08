@@ -65,7 +65,9 @@ _Avoid_: Delivery flag
 - A **Device Entry** wraps exactly one **Diary Entry** and one **Sync State**
 - A pending **Device Entry** has a predicted **Entry Key**
 - A synced **Device Entry** exposes its key as an **Entry Reference**
-- Every newly persisted **Diary Entry** is stamped with one **Entry Generation**
+- Every current writer stamps a newly persisted **Diary Entry** with one
+  **Entry Generation**; a still-live predecessor token may create only a
+  legacy unversioned row during the first rollout
 - A direct-sync token may read or create only rows whose **Entry Generation**
   it understands
 - An unprojectable legacy entry is failed under a **Recovery Key**, which can

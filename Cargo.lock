@@ -1094,6 +1094,7 @@ name = "diary-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "jsonwebtoken 9.3.1",
  "serde",
  "serde_json",
  "sha2 0.11.0",

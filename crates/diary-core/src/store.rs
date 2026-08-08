@@ -33,15 +33,20 @@ pub const MAX_PAGE: usize = 1_000_000;
 /// The generation-agnostic permission installed by every server release.
 /// Keeping the expression stable is what makes schema bootstrap monotonic:
 /// an older instance may reapply it, but each row still fences itself from a
-/// token whose entry model is too old to interpret it.
+/// token whose entry model is too old to interpret it. The claimless branch
+/// is only for an already-minted predecessor token during the first rollout:
+/// it may create legacy rows, but it cannot forge a versioned row.
 pub const DIRECT_SYNC_ROW_PERMISSIONS: &str = concat!(
     "PERMISSIONS\n",
     "    FOR select WHERE $access = 'diary_sync'\n",
     "        AND (entry_version = NONE\n",
     "            OR $token.diary_wire_version >= entry_version)\n",
     "    FOR create WHERE $access = 'diary_sync'\n",
-    "        AND entry_version IS NOT NONE\n",
-    "        AND $token.diary_wire_version >= entry_version",
+    "        AND (($token.diary_wire_version = NONE\n",
+    "                AND entry_version = NONE)\n",
+    "            OR ($token.diary_wire_version IS NOT NONE\n",
+    "                AND entry_version IS NOT NONE\n",
+    "                AND $token.diary_wire_version = entry_version))",
 );
 
 /// Test stores share one server-row fixture so a new business field has one
@@ -293,6 +298,16 @@ mod tests {
     use super::*;
     use crate::placement::COLLISION_PROBES;
 
+    const TEST_ACCESS_KEY: &str =
+        "diary-rollout-test-key-that-is-deliberately-long-enough-for-hs512";
+
+    #[derive(Clone, Copy)]
+    enum TestTokenGeneration {
+        Omitted,
+        Null,
+        Version(u16),
+    }
+
     /// Same `mem://` isomorphism proof the outbox tests run: these functions
     /// execute against the identical handle type the server and the device
     /// use, so passing here certifies the shared behavior, not a test double.
@@ -346,6 +361,90 @@ mod tests {
         .expect("generation bootstrap applies")
         .check()
         .expect("generation bootstrap statements succeed");
+    }
+
+    fn direct_test_token(generation: TestTokenGeneration) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock is after the epoch")
+            .as_secs();
+        let mut claims = serde_json::json!({
+            "ns": "diary",
+            "db": "diary",
+            "ac": "diary_sync",
+            "id": "diary_device:admin",
+            "iat": now,
+            "exp": now + 300,
+        });
+        match generation {
+            TestTokenGeneration::Omitted => {}
+            TestTokenGeneration::Null => {
+                claims["diary_wire_version"] = serde_json::Value::Null;
+            }
+            TestTokenGeneration::Version(version) => {
+                claims["diary_wire_version"] = serde_json::json!(version);
+            }
+        }
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS512),
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(TEST_ACCESS_KEY.as_bytes()),
+        )
+        .expect("test token encodes")
+    }
+
+    async fn authenticate_as(db: &Db, generation: TestTokenGeneration) {
+        db.authenticate(direct_test_token(generation))
+            .await
+            .expect("test access token authenticates");
+    }
+
+    async fn permission_create(
+        db: &Db,
+        epoch: i64,
+        body: &str,
+        entry_version: Option<u16>,
+    ) -> Option<String> {
+        let id = entry_key(epoch).unwrap();
+        let query = match entry_version {
+            Some(entry_version) => db
+                .query(
+                    "CREATE ONLY type::record('diary_entries', $id)
+                     SET written_at = $written_at,
+                         body = $body,
+                         entry_version = $entry_version
+                     RETURN VALUE record::id(id)",
+                )
+                .bind(("entry_version", i64::from(entry_version))),
+            None => db.query(
+                "CREATE ONLY type::record('diary_entries', $id)
+                     SET written_at = $written_at,
+                         body = $body
+                     RETURN VALUE record::id(id)",
+            ),
+        };
+        let mut response = query
+            .bind(("id", id))
+            .bind(("written_at", epoch))
+            .bind(("body", body.to_string()))
+            .await
+            .expect("permission test query runs")
+            .check()
+            .expect("permission filtering is a successful empty result");
+        response.take(0).expect("create result decodes")
+    }
+
+    async fn permission_visible_ids(db: &Db) -> Vec<String> {
+        let mut response = db
+            .query(
+                "SELECT VALUE record::id(id) FROM diary_entries
+                     ORDER BY written_at ASC, id ASC",
+            )
+            .await
+            .expect("permission test select runs")
+            .check()
+            .expect("permission test select succeeds");
+        response.take(0).expect("visible ids decode")
     }
 
     #[tokio::test]
@@ -491,6 +590,94 @@ mod tests {
             .unwrap();
         let future_fields: Vec<String> = response.take(0).unwrap();
         assert_eq!(future_fields, ["preserved"]);
+    }
+
+    #[tokio::test]
+    async fn direct_row_permissions_bridge_only_the_claimless_predecessor_shape() {
+        let db = store().await;
+        apply_generation_bootstrap(&db, false).await;
+        db.query(
+            "DEFINE ACCESS OVERWRITE diary_sync ON DATABASE TYPE RECORD
+                 WITH JWT ALGORITHM HS512 KEY $access_key
+                 DURATION FOR SESSION 15m;",
+        )
+        .bind(("access_key", TEST_ACCESS_KEY.to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        // The predecessor worker omitted the claim and emitted no row
+        // generation. Its in-flight token must still persist that exact old
+        // shape after the generation-aware schema lands.
+        authenticate_as(&db, TestTokenGeneration::Omitted).await;
+        let legacy_id = permission_create(&db, 100, "legacy", None)
+            .await
+            .expect("claimless predecessor create persists");
+        assert_eq!(permission_visible_ids(&db).await, vec![legacy_id.clone()]);
+        assert_eq!(
+            permission_create(&db, 101, "claimless cannot forge v1", Some(1)).await,
+            None
+        );
+
+        // Current tokens cannot down-label a row as legacy, and a v1 token
+        // cannot write a v2 row.
+        authenticate_as(&db, TestTokenGeneration::Version(1)).await;
+        assert_eq!(
+            permission_create(&db, 102, "v1 cannot omit", None).await,
+            None
+        );
+        let v1_id = permission_create(&db, 103, "v1", Some(1))
+            .await
+            .expect("v1 creates exactly v1");
+        assert_eq!(
+            permission_create(&db, 104, "v1 cannot forge v2", Some(2)).await,
+            None
+        );
+        assert_eq!(
+            permission_visible_ids(&db).await,
+            [legacy_id.clone(), v1_id.clone()]
+        );
+
+        // A newer token may read older rows, but equality on CREATE prevents
+        // it from forging historical-generation content.
+        authenticate_as(&db, TestTokenGeneration::Version(2)).await;
+        let v2_id = permission_create(&db, 105, "v2", Some(2))
+            .await
+            .expect("v2 creates exactly v2");
+        assert_eq!(
+            permission_create(&db, 106, "v2 cannot forge v1", Some(1)).await,
+            None
+        );
+        assert_eq!(
+            permission_visible_ids(&db).await,
+            [legacy_id.clone(), v1_id.clone(), v2_id]
+        );
+
+        authenticate_as(&db, TestTokenGeneration::Omitted).await;
+        assert_eq!(permission_visible_ids(&db).await, vec![legacy_id.clone()]);
+        authenticate_as(&db, TestTokenGeneration::Version(1)).await;
+        assert_eq!(permission_visible_ids(&db).await, [legacy_id, v1_id]);
+
+        // Permission-denied CREATEs return an empty success in SurrealDB.
+        // The current insert adapter must turn that into an error rather than
+        // acknowledging text that was not stored.
+        authenticate_as(&db, TestTokenGeneration::Version(2)).await;
+        let mismatched = DiaryEntry::from_parts(entry_key(107).unwrap(), 107, "not acknowledged");
+        assert!(
+            insert_entry(&db, &mismatched)
+                .await
+                .unwrap_err()
+                .contains("no matching id")
+        );
+
+        // Only an omitted predecessor claim gets the legacy CREATE bridge;
+        // explicit JSON null is a distinct value and remains denied.
+        authenticate_as(&db, TestTokenGeneration::Null).await;
+        assert_eq!(
+            permission_create(&db, 108, "null is not omitted", None).await,
+            None
+        );
     }
 
     #[tokio::test]

@@ -180,8 +180,11 @@ DEFINE INDEX OVERWRITE hidden_page_grants_identity
 -- create — never update or delete — only rows whose semantic generation its
 -- JWT understands. This row-aware expression is identical in every release:
 -- an older instance may reapply its schema after a newer one, but it cannot
--- downgrade the fence or expose a newer row through old code. The permission
--- is INERT until the access method itself exists, which only
+-- downgrade the fence or expose a newer row through old code. The claimless
+-- CREATE branch is a narrow rollout bridge: a still-live token minted before
+-- entry generations existed may write only an unversioned legacy row. Current
+-- tokens must stamp exactly their own generation. The permission is INERT
+-- until the access method itself exists, which only
 -- happens when the DIARY_SYNC_JWT_* environment is set (src/data.rs defines
 -- it at bootstrap; the public key is config, not schema, so dev and prod can
 -- hold different keypairs).
@@ -194,8 +197,11 @@ DEFINE TABLE OVERWRITE diary_entries SCHEMAFULL
         AND (entry_version = NONE
             OR $token.diary_wire_version >= entry_version)
     FOR create WHERE $access = 'diary_sync'
-        AND entry_version IS NOT NONE
-        AND $token.diary_wire_version >= entry_version;
+        AND (($token.diary_wire_version = NONE
+                AND entry_version = NONE)
+            OR ($token.diary_wire_version IS NOT NONE
+                AND entry_version IS NOT NONE
+                AND $token.diary_wire_version = entry_version));
 DEFINE FIELD OVERWRITE id ON diary_entries TYPE string
     ASSERT string::matches(record::id($value),
         '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$');
