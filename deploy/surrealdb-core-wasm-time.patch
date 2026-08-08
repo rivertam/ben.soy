@@ -1,0 +1,68 @@
+diff -ruN a/src/exec/operators/timeout.rs b/src/exec/operators/timeout.rs
+--- a/src/exec/operators/timeout.rs	2006-07-23 21:21:28.000000000 -0400
++++ b/src/exec/operators/timeout.rs	2026-08-01 21:25:53.913635895 -0400
+@@ -7,6 +7,10 @@
+ use std::sync::Arc;
+ 
+ use futures::StreamExt;
++#[cfg(not(target_family = "wasm"))]
++use tokio::time::{Instant, timeout};
++#[cfg(target_family = "wasm")]
++use wasmtimer::{std::Instant, tokio::timeout};
+ 
+ use crate::err::Error;
+ use crate::exec::{
+@@ -122,19 +126,19 @@
+ 			let std_duration: std::time::Duration = duration.0;
+ 
+ 			// Create a timeout future
+-			let timeout_instant = tokio::time::Instant::now() + std_duration;
++			let timeout_instant = Instant::now() + std_duration;
+ 
+ 			futures::pin_mut!(input_stream);
+ 
+ 			loop {
+ 				// Check if we've exceeded the timeout
+-				let remaining = timeout_instant.saturating_duration_since(tokio::time::Instant::now());
++				let remaining = timeout_instant.saturating_duration_since(Instant::now());
+ 				if remaining.is_zero() {
+ 					Err(ControlFlow::Err(anyhow::anyhow!(Error::QueryTimedout(duration))))?;
+ 				}
+ 
+ 				// Wait for next batch with timeout
+-				let batch_result = tokio::time::timeout(
++				let batch_result = timeout(
+ 					remaining,
+ 					input_stream.next()
+ 				).await;
+diff -ruN a/src/kvs/ds.rs b/src/kvs/ds.rs
+--- a/src/kvs/ds.rs	2006-07-23 21:21:28.000000000 -0400
++++ b/src/kvs/ds.rs	2026-08-01 21:25:42.012783740 -0400
+@@ -25,7 +25,13 @@
+ #[cfg(not(target_family = "wasm"))]
+ use tokio::spawn;
+ use tokio::sync::Notify;
++#[cfg(not(target_family = "wasm"))]
+ use tokio::time::{Instant, sleep, timeout, timeout_at};
++#[cfg(target_family = "wasm")]
++use wasmtimer::{
++	std::Instant,
++	tokio::{sleep, timeout, timeout_at},
++};
+ use tokio_util::sync::CancellationToken;
+ use tracing::{debug, instrument, trace, warn};
+ use uuid::Uuid;
+diff -ruN a/src/kvs/tasklease.rs b/src/kvs/tasklease.rs
+--- a/src/kvs/tasklease.rs	2006-07-23 21:21:28.000000000 -0400
++++ b/src/kvs/tasklease.rs	2026-08-02 14:45:00.000000000 -0400
+@@ -6,7 +6,10 @@
+ use rand::Rng;
+ use revision::revisioned;
+ use serde::{Deserialize, Serialize};
++#[cfg(not(target_family = "wasm"))]
+ use tokio::time::sleep;
++#[cfg(target_family = "wasm")]
++use wasmtimer::tokio::sleep;
+ use tokio_util::sync::CancellationToken;
+ use tracing::trace;
+ use uuid::Uuid;

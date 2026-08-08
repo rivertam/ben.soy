@@ -7,7 +7,8 @@ docs before changing query or schema APIs.
 ## Project layout
 
 - `src/data.rs` owns the shared connection and schema bootstrap.
-- `src/schema.surql` is the complete committed schema.
+- `src/schema.surql` holds additive site definitions; the diary's forward-only
+  schema lives in `src/data/diary_migrations/`.
 - Domain models live beside their query code under `src/app`.
 - `scripts/dev.sh` starts the pinned local server; production uses
   `deploy/surrealdb.Dockerfile`.
@@ -24,8 +25,8 @@ SURREALDB_PASSWORD
 
 `Data::db()` initializes lazily, uses an eight-second connection timeout,
 selects the configured namespace and database, applies `src/schema.surql`,
-and verifies health. A failed initialization is not cached, so a later request
-can retry after the database becomes available.
+applies/verifies diary migrations, and verifies health. A failed
+initialization is not cached, so a later request can retry.
 
 ## Schema bootstrap
 
@@ -33,10 +34,17 @@ The app executes the committed `DEFINE ... OVERWRITE` statements on its first
 data-backed connection. Every response is checked for statement-level errors.
 Definitions are idempotent and do not erase records.
 
-There is no migration runner, migration history, or schema CLI workflow.
-Production starts from a clean database, then the application installs the
-current schema before the sync CLIs load data. Change `src/schema.surql` and
-the corresponding Rust models and queries together.
+The diary is the exception to pure reconciliation because offline clients need
+an exact activation boundary. `src/data/diary_migrations.rs` applies its
+numbered SurrealQL files in order and records immutable ledger rows in the same
+transaction as each migration. Add a migration and bump
+`CURRENT_SCHEMA_EPOCH` together; never edit an applied migration. A binary
+behind the ledger fails initialization, so rollback across an epoch needs an
+explicit reverse migration. Diary adapters also recheck the ledger through
+`Data::diary_db()` on cached connections. Epoch deploys must drain the old web
+process before the new one applies a migration: the check fences later uses,
+not an already-running request. Other domains still change `src/schema.surql`
+and their Rust models/queries together.
 
 ## Query rules
 

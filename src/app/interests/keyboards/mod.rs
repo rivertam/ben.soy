@@ -1,7 +1,7 @@
 use topcoat::{
     Result,
     asset::{Asset, asset},
-    router::{page, redirect_permanent, route},
+    router::{error::redirect_permanent, page, route},
     view::view,
 };
 

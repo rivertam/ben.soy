@@ -2,7 +2,9 @@
 
 Production runs on Railway: the Topcoat web container, one SurrealDB service,
 and a `cloudflared` Tunnel connector. Cloudflare keeps DNS and CDN duties only.
-The database is private Railway infrastructure and is never a Tunnel ingress.
+The database is private Railway infrastructure and is not a Tunnel ingress —
+with one deliberate, flag-gated exception: the diary direct-sync `db.`
+hostname while `DIARY_SYNC_*` is set (see below and cloudflare-deploy.md).
 
 ## Services
 
@@ -64,14 +66,41 @@ and, for sign-in ([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
 and `GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows
 managed at `/admin/permissions`, not environment variables.
 
+Diary direct sync ([diary-sync.md](diary-sync.md)) is OFF until all three of
+its variables are set on the web service — set none of them until flipping
+the flag deliberately:
+
+```text
+DIARY_SYNC_JWT_PUBLIC_KEY   # ES256 public PEM; bootstrap DEFINEs the access method
+DIARY_SYNC_JWT_PRIVATE_KEY  # matching PKCS#8 private PEM; mints /api/diary/token
+DIARY_DIRECT_SYNC_ENDPOINT  # wss://db.benjisponge.com — MUST be a ws scheme
+```
+
+Generate the pair with `openssl ecparam -genkey -name prime256v1 -noout |
+openssl pkcs8 -topk8 -nocrypt` (private) and `openssl ec -pubout` (public).
+Flag-on also needs the `db.` Tunnel hostname
+([cloudflare-deploy.md](cloudflare-deploy.md)); unsetting the variables
+removes the access method again at the next boot.
+
 `HOST=0.0.0.0` is baked into the web image; Railway injects `PORT`. Pin it to
 `8080` so the Tunnel origin stays stable.
 
 ## Clean database bootstrap
 
-There is no migration command or migration history. The application applies
-the complete `src/schema.surql` definition on its first data-backed database
-connection and checks every statement result.
+The application applies the additive site definitions in `src/schema.surql`
+and the ordered diary migrations in `src/data/diary_migrations/` on its first
+data-backed database connection, checking every statement result. Applied
+diary epochs are recorded in `diary_schema_migrations`; a binary older than
+that ledger refuses the diary store, including through an already-cached
+connection.
+
+A Diary Schema Epoch change requires a drained handoff: keep the web service
+at one replica, let Railway switch traffic off the preceding deployment, and
+only then trigger the new deployment's first data-backed request. Do not scale
+two web epochs against the diary store. Each migration and ledger row commit
+atomically, but the ledger cannot cancel an old request that already passed
+its epoch check. Ordinary deploys with no diary migration do not need this
+extra constraint.
 
 For a new production database:
 
@@ -83,9 +112,8 @@ For a new production database:
 4. Run `just sync-spire`, then `just sync-fitness <csv>` from the machines
    holding the source files.
 
-This project deliberately starts clean; there is no legacy import or
-compatibility step. Upgrade the pinned database image deliberately and take a
-volume backup first.
+The same migrations preserve an existing diary in place. Upgrade the pinned
+database image deliberately and take a volume backup first.
 
 `just sync-spire` discovers both games on Linux: Slay the Spire 1 below the
 Steam install's `SlayTheSpire/runs` character directories, and Slay the Spire
@@ -135,7 +163,10 @@ zone when a change must appear immediately.
 
 Railway's GitHub App builds `deploy/Dockerfile` and deploys the web service on
 push to `main`; CI only runs `just check`. Set the database service's Railway
-config-file path to `/deploy/surrealdb.railway.toml`.
+config-file path to `/deploy/surrealdb.railway.toml`. The Dockerfile's
+`wasm-builder` stage compiles the diary queue's wasm module (docs/diary-sync.md)
+in parallel with the site build and ships it as `/app/wasm-dist`; if that stage
+is ever dropped, the site still serves — the diary just loses its offline queue.
 
 ```sh
 just deploy

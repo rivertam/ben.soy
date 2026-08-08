@@ -3,3 +3,6 @@ target/
 deploy/
 docs/
 .env
+!deploy/surrealdb-core-wasm-time.patch
+crates/diary-worker/target/
+vendor/

@@ -1,3 +1,6 @@
 /target
 /.env
 /.env.dev
+/wasm-dist
+/vendor
+/crates/diary-worker/target

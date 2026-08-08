@@ -120,7 +120,13 @@ d1() {
     --remote --json --command "$sql") >"$d1_dir/$name.json"
   echo "  d1 $name"
 }
-d1 workout_triples "SELECT started_at_utc, started_at_local, eastern_offset_minutes, duration_seconds, id FROM workouts ORDER BY id"
+# workout_triples is the Eastern-projection corpus, consumed by
+# crates/diary-core's eastern tests — captured straight into that crate.
+diary_d1_dir="$here/../../crates/diary-core/tests/fixtures/d1"
+mkdir -p "$diary_d1_dir"
+(cd "$here/../../deploy" && npx wrangler d1 execute benjisponge-spire \
+  --remote --json --command "SELECT started_at_utc, started_at_local, eastern_offset_minutes, duration_seconds, id FROM workouts ORDER BY id") >"$diary_d1_dir/workout_triples.json"
+echo "  d1 workout_triples (-> crates/diary-core)"
 d1 spire_rows "SELECT id, date, start_time, character, win, abandoned, ascension, acts, floors, killed_by, kill_kind, run_time, seed, game_mode, build_id, added_at FROM spire_runs ORDER BY id"
 d1 meta_versions "SELECT 'fitness' AS src, v FROM fitness_meta WHERE k='version' UNION ALL SELECT 'spire', v FROM spire_meta WHERE k='version'"
 d1 counts "SELECT (SELECT COUNT(*) FROM workouts) AS workouts, (SELECT COUNT(*) FROM sets) AS sets, (SELECT COUNT(*) FROM exercises) AS exercises, (SELECT COUNT(*) FROM exercise_tags) AS tags, (SELECT COUNT(*) FROM set_records) AS set_records, (SELECT COUNT(*) FROM spire_runs) AS spire_runs"

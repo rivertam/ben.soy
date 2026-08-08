@@ -1,0 +1,34 @@
+[package]
+name = "diary-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Minimal feature set on purpose: eastern.rs only does calendar math over the
+# bundled tzdb (no clock reads), and this is the set that must also compile
+# for wasm32 in the worker's workspace — `js` is deliberately absent.
+jiff = { version = "0.2.34", default-features = false, features = [
+    "std",
+    "tzdb-bundle-always",
+    "perf-inline",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+surrealdb = { workspace = true }
+# The shared diary views (feature "view"): pure components — props in,
+# markup out, zero awaits — which is what keeps Component::render's +Send
+# bound satisfiable on wasm32. View-only topcoat compiles for wasm; the
+# server's full-featured topcoat unifies with it in the root workspace.
+topcoat = { version = "0.5.0", default-features = false, features = [
+    "view",
+], optional = true }
+
+[features]
+view = ["dep:topcoat"]
+
+[dev-dependencies]
+# The isomorphism proof: the same outbox code the service worker runs against
+# `indxdb://` is tested natively against `mem://`.
+surrealdb = { workspace = true, features = ["kv-mem"] }
+tokio = { version = "1.53.0", features = ["macros", "rt"] }

@@ -1,0 +1,76 @@
+[package]
+name = "diary-worker"
+version = "0.1.0"
+edition = "2024"
+
+# Deliberately its own workspace, NOT a member of the repo root's: the
+# [patch] below must apply to this build only. The site's server workspace
+# always compiles pristine crates.io surrealdb code; only the wasm artifact
+# carries the fix. `just wasm` materializes vendor/surrealdb-core before
+# building (scripts/vendor-surrealdb-core.sh).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+# Everything is wasm32-only (and the crate root is `#![cfg]`-gated to match),
+# so a stray native build compiles an empty crate. The wasm-bindgen pin must
+# match the CLI installed by the Justfile `wasm` recipe and deploy/Dockerfile
+# exactly — the glue and the binary are a matched pair.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+diary-core = { path = "../diary-core", features = ["view"] }
+# Offline SSR: the serve-less topcoat router + the shared views. This is the
+# 0.5.0 feature split working as designed — hyper/tokio never enter this
+# graph. The oneshot channel is the Send bridge: page render futures must be
+# Send (topcoat bounds), indxdb query futures are not, so reads run in
+# spawn_local and hand results back through a receiver (which IS Send).
+futures-channel = "0.3"
+js-sys = "0.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+# protocol-ws joins kv-indxdb for direct mode. Deliberately NOT
+# protocol-http: the stateless-http engine's authenticate() silently does
+# not stick on server 3.2.3 (each /rpc arrives anonymous — probed), and
+# denied reads filter to EMPTY rather than erroring. The websocket session
+# holds its principal for the connection's life; each sync pass opens a
+# fresh short-lived connection, so no heartbeat or reconnect machinery.
+surrealdb = { version = "=3.2.3", default-features = false, features = [
+    "kv-indxdb",
+    "protocol-ws",
+] }
+topcoat = { version = "0.5.0", default-features = false, features = [
+    "router",
+    "view",
+    "discover",
+] }
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Headers",
+    "Request",
+    "RequestCache",
+    "RequestCredentials",
+    "RequestInit",
+    "Response",
+] }
+
+# surrealdb-core 3.2.3 panics on wasm32-unknown-unknown: `kvs/ds.rs` and the
+# TIMEOUT operator still call `tokio::time::Instant::now()`, which reaches
+# std's unimplemented monotonic clock (the unresolved half of upstream
+# issue #6711 — the rest of the crate already migrated to web_time). The
+# vendored copy is the crates.io tarball (sha256-verified) plus
+# deploy/surrealdb-core-wasm-time.patch, which swaps those two files to the
+# crate's own established wasmtimer pattern. Drop this whole [patch] when a
+# release lands with the fix.
+[patch.crates-io]
+surrealdb-core = { path = "../../vendor/surrealdb-core" }
+
+# Size beats speed for a multi-megabyte download the phone caches once per
+# deploy.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

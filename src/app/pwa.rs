@@ -2,7 +2,8 @@
 //! manifest, and the launcher icons. Not pages: no shell, out of
 //! `site_routes()` (the 404 index is for pages) — `favicon.rs` is the
 //! pattern. The interactive halves live in `diary/sw.js` and
-//! `diary/diary.js`; the write endpoint is `POST /api/diary/entries` in
+//! `diary/diary.js`; the queue those two load is Rust served by
+//! `diary_sync.rs`; the write endpoint is `POST /api/diary/entries` in
 //! `diary.rs`.
 //!
 //! Deliberately ungated: Chrome fetches manifests without credentials (a
@@ -114,44 +115,131 @@ mod tests {
 
     /// The worker owns flushing; these literals ARE the protocol. If one
     /// vanishes in an edit, the offline queue stops working silently — fail
-    /// loudly here instead.
+    /// loudly here instead. (The POST itself — same-origin credentials,
+    /// no-store, the JSON body — moved into Rust: diary-worker's `try_send`,
+    /// built from diary-core's contract.)
     #[test]
     fn sw_js_pins_the_offline_protocol() {
         for needle in [
-            "\"diary-page-v1\"",
             "\"diary-assets-v1\"",
             "\"/api/diary/entries\"",
+            "\"/api/diary/snapshot\"",
             "\"diary-flush\"",
+            "\"diary-store\"",
             "self.skipWaiting()",
             "clients.claim()",
             "\"navigate\"",
-            // the opaqueredirect guard: only real 200s become the offline copy
+            // offline navigations RENDER from the mirror (the wasm router);
+            // the stub only answers when the module itself refuses
+            "diary_render(",
+            "offlineStub()",
             "response.type === \"basic\"",
-            "url.search === \"\"",
             "/_topcoat/assets/",
             "navigator.locks.request",
-            "credentials: \"same-origin\"",
             "new BroadcastChannel(\"diary\")",
+            // the Rust queue: both imports at evaluation time (Chrome refuses
+            // lazy importScripts), instantiation deferred to the first flush
+            "importScripts(SYNC_LOADER)",
+            "importScripts(self.DIARY_SYNC.glue)",
+            "module_or_path",
+            // flush-then-pull as ONE call inside the one lock hold
+            "diary_sync(API_PATH, SNAPSHOT_PATH, direct)",
+            // the one-way legacy migration and the store it drains
+            "diary_import",
+            "\"diary-queue\"",
+            "\"entries\"",
+            // a failed POST navigation must error, never be answered with
+            // the cached page (that would silently eat the form body)
+            "request.method !== \"GET\"",
         ] {
             assert!(SW_JS.contains(needle), "sw.js lost {needle:?}");
         }
     }
 
+    /// A page enqueues before it kicks the worker. If a slow flush already
+    /// owns the Web Lock, that kick must dirty the active single-flight drain
+    /// instead of disappearing; its shared promise must remain the value
+    /// passed to `event.waitUntil`, so a network rejection still reaches
+    /// Background Sync.
+    #[test]
+    fn worker_coalesces_flush_kicks_without_dropping_a_locked_request() {
+        for needle in [
+            "let flushFlight = null;",
+            "let flushRequested = false;",
+            "flushRequested = true;",
+            "flushFlight = drainFlushRequests();",
+            "return flushFlight;",
+            "while (flushRequested)",
+            "flushRequested = false;",
+            "await navigator.locks.request(STORE_LOCK, () => flush());",
+            "flushFlight = null;",
+        ] {
+            assert!(SW_JS.contains(needle), "sw.js lost {needle:?}");
+        }
+        assert!(
+            !SW_JS.contains("ifAvailable"),
+            "a busy lock must queue/coalesce the follow-up flush, never drop it"
+        );
+    }
+
     /// Names both sides must agree on — renaming in one file only would
-    /// strand the other side's queue, caches, or channel.
+    /// strand the other side's queue, caches, channel, or wasm pair. (The
+    /// legacy "diary-queue"/"entries" names are now worker-only: the page
+    /// never touches the old store, the migration drains it.)
     #[test]
     fn page_and_worker_agree_on_shared_names() {
         for shared in [
             "\"diary-flush\"",
-            "\"diary-page-v1\"",
+            "\"diary-store\"",
             "\"diary-assets-v1\"",
-            "\"diary-queue\"",
-            "\"entries\"",
+            "\"/diary-sync.js\"",
+            "DIARY_SYNC.glue",
+            "DIARY_SYNC.wasm",
+            "wasm_bindgen(",
             "new BroadcastChannel(\"diary\")",
+            // the current identity-only flush acknowledgement — rename it in
+            // one file only and saves silently stop reconciling
+            "saved_refs",
         ] {
             assert!(SW_JS.contains(shared), "sw.js lost {shared:?}");
             assert!(DIARY_JS.contains(shared), "diary.js lost {shared:?}");
         }
+        // New page/worker code can consume the predecessor wasm/worker's
+        // content-bearing report field during activation.
+        assert!(SW_JS.contains("saved_entries"));
+        assert!(DIARY_JS.contains("saved_entries"));
+    }
+
+    /// The local epoch check lives inside each wasm export, so the browser
+    /// must keep that check and the subsequent store use in one shared lock
+    /// hold. Otherwise a stale page could project a newer business field
+    /// between those two operations.
+    #[test]
+    fn page_and_worker_fence_every_device_store_entry_with_one_lock() {
+        for (call, guarded) in [
+            (
+                "wasm.diary_enqueue",
+                "withStoreLock(() => wasm.diary_enqueue",
+            ),
+            (
+                "wasm.diary_snapshot",
+                "withStoreLock(() => wasm.diary_snapshot",
+            ),
+            (
+                "wasm.diary_discard",
+                "withStoreLock(() => wasm.diary_discard",
+            ),
+        ] {
+            assert_eq!(DIARY_JS.matches(call).count(), 1, "unexpected {call} call");
+            assert!(
+                DIARY_JS.contains(guarded),
+                "{call} escaped the diary-store lock"
+            );
+        }
+        assert!(SW_JS.contains(
+            "navigator.locks.request(STORE_LOCK, () =>\n        wasm_bindgen.diary_render"
+        ));
+        assert!(SW_JS.contains("navigator.locks.request(STORE_LOCK, () => flush())"));
     }
 
     /// Same rule as favicon.rs and /diary itself: reachable, never listed.

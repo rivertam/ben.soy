@@ -1,6 +1,6 @@
 # benjisponge.com
 
-Rust SSR personal site on topcoat 0.4.0 — a niche framework; read
+Rust SSR personal site on topcoat 0.5.0 — a niche framework; read
 `docs/topcoat-notes.md` before writing any topcoat code, don't guess APIs.
 Same rule for the data layer: read `docs/surrealdb-notes.md` before touching
 SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
@@ -9,6 +9,7 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 
 - `just dev [port] [--no-podrick] [--podrick-reset]` — start local SurrealDB (docker) + live-reload server (default 3000), plus Podrick when `.env.dev` configures it (`docs/podrick.md`); run `just reset-fitness-local [csv]` separately to rebuild fitness data; details in `docs/fitness.md`
 - `just build` — cargo build + `topcoat asset bundle`; serving without the bundle step panics
+- `just wasm` — build the diary queue's wasm module into `wasm-dist/` (optional: without it /diary falls back to plain form POSTs); the wasm-bindgen CLI version must equal diary-worker's pinned crate version; read `docs/diary-sync.md` before touching `crates/` or the sync routes. `crates/diary-worker` is deliberately its OWN workspace carrying a `[patch.crates-io]` on surrealdb-core (wasm-only upstream bug) — never merge it into the root workspace or the server would build patched code
 - `just check` — fmt + clippy -D warnings + tests; must pass before claiming done
 - `just deploy` — optional Railway redeploy + Cloudflare cache purge (Railway GitHub App deploys on push to main; CI only runs `just check`). Prod path: `docs/railway-deploy.md` (Dockerfile only — not Railpack); DNS/Tunnel/CDN: `docs/cloudflare-deploy.md`
 - `just sync-spire [--dry-run|--json]` — upload new Slay the Spire 2 runs from this machine's save files to the site's database; idempotent; pipeline details in `docs/railway-deploy.md`
@@ -43,8 +44,8 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 - The cookie layer drops `Set-Cookie` on `Err` responses — auth routes build `Ok(303)`s by hand; gated pages emit `no-store` before `shell()` or the edge caches one viewer's HTML for a day (`docs/auth.md`)
 - Topcoat discovery allows ONE `#[layer]` per path — a second `#[layer("/")]` panics at router build, and `just check` doesn't boot the router; whole-site response behavior (viewer no-store, em-dash links) all lives in `src/app/response_layer.rs`
 - Signed-in HTML is personalized (shell nav/footer), so `response_layer.rs` forces `private, no-store` when the `__Host-viewer` cookie is present, and prod needs the Cloudflare bypass-on-cookie Cache Rule (`docs/auth.md`) — without it signed-in visitors see the cached anonymous page
-- `/diary` is also an installable offline PWA (`src/app/diary/*.js`, stable routes in `pwa.rs`, replay endpoint `POST /api/diary/entries`) — the service worker owns ALL queue flushing and replays dedupe by client-second+body; read the PWA section of `docs/auth.md` before touching any of it
+- `/diary` is a local-first offline PWA: ONE local table is outbox and mirror (a queued entry is a `state='pending'` row, flipped in place on delivery — never deleted mid-flush), entry ids/permalinks are predicted at enqueue with the same probe the server runs, and the service worker owns ALL syncing (flush-then-pull in one Web Lock hold; direct-to-SurrealDB when the `DIARY_SYNC_*` flag trio is set) AND renders /diary offline via `Router::handle` in wasm. Transcript markup has exactly one definition — `diary_core::views` — used by the server page, the worker SSR, and the page JS via the served `<template id="diary-bubble">`; never hand-build bubble DOM. Read `docs/diary-sync.md` + the PWA section of `docs/auth.md` before touching any of it
 - Hand-served byte routes (`favicon.rs`, `pwa.rs`) must set Content-Type explicitly — the response layer treats untyped bodies as HTML and runs the em-dash rewriter through them; `/sw.js` must stay a stable un-hashed URL because a service worker's URL is its identity
-- Tailwind scans only `.rs` files, so classes referenced from JS (the diary queue UI) must also appear in some `.rs` file or they render unstyled
+- Tailwind scans only `.rs` files (including `crates/`); JS must never carry class strings — the diary page clones its served `<template>` instead. One `asset!` (or `tailwind::stylesheet!()`) invocation per file TOTAL: a second registers a duplicate route and panics at router BUILD, which `just check` never runs — share `chrome::SITE_CSS` / `diary::DIARY_JS`
 - Podrick ships a fourth Railway service plus the hidden `/podrick` page; read `docs/podrick.md` before changing it. Never move or clear production `podrick_meta` cursors: they suppress lift-history announcements and Pants-history reactions. Keep `--dry-run` write-free; only `just dev --podrick-reset` may clear LOCAL Podrick state, and the binary must never grow a reset/backfill switch
 - SurrealDB `CREATE` returns `id` as a record id and `SELECT *` drops `option` fields holding `NONE`; both silently break deserialization into `String`/`Option` model fields — see the result-shape rules in `docs/surrealdb-notes.md`

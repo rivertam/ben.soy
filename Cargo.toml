@@ -6,6 +6,24 @@ edition = "2024"
 # `cargo run` and `topcoat dev` need to keep resolving to the site.
 default-run = "benjisponge"
 
+# The diary offline queue is Rust on both sides (docs/diary-sync.md):
+# `diary-core` is the shared contract + outbox logic, `diary-worker` its
+# wasm32 build for the service worker. The worker is deliberately its OWN
+# workspace (excluded here): its build carries a [patch] on surrealdb-core
+# for a wasm-only upstream bug, and that patch must never enter this
+# workspace's graph — the server always builds pristine crates.io code.
+[workspace]
+members = ["crates/diary-core"]
+exclude = ["crates/diary-worker"]
+resolver = "3"
+
+[workspace.dependencies]
+diary-core = { path = "crates/diary-core" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+surrealdb = { version = "=3.2.3", default-features = false }
+
 # The sync CLIs and the bot are standalone crates that live WITH their
 # interests — delete an interest folder and its importer goes too. They are
 # not part of the site binary's module tree.
@@ -27,29 +45,33 @@ path = "src/app/interests/podrick/podrick.rs"
 anyhow = "1.0.104"
 base64 = "0.22"
 csv = "1.3.1"
+diary-core = { workspace = true, features = ["view"] }
 form_urlencoded = "1.2.2"
 # Same crate topcoat re-exports header types from; needed whole for
 # `http::request::Parts` in the viewer layer.
 http = "1"
 inventory = "0.3.24"
 jiff = { version = "0.2.34", features = ["tzdb-bundle-always"] }
+# Mints the diary direct-sync tokens (ES256; the private key env var must
+# be PKCS#8 PEM — jsonwebtoken rejects SEC1 "EC PRIVATE KEY" files).
+jsonwebtoken = "9"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-webpki-roots",
     "json",
 ] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-sha2 = "0.11.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 subtle = "2.6.1"
-surrealdb = { version = "=3.2.3", default-features = false, features = [
-    "protocol-ws",
-    "rustls",
-] }
+surrealdb = { workspace = true, features = ["protocol-ws", "rustls"] }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
-topcoat = { version = "0.4.0", features = ["tailwind", "font-fontsource"] }
+topcoat = { version = "0.5.0", features = ["tailwind", "font-fontsource"] }
 url = "2.5.8"
 uuid = { version = "1.19.0", features = ["v4"] }
 
 [build-dependencies]
-topcoat = { version = "0.4.0", default-features = false, features = ["tailwind"] }
+topcoat = { version = "0.5.0", default-features = false, features = ["tailwind"] }
+
+[dev-dependencies]
+surrealdb = { workspace = true, features = ["kv-mem"] }

@@ -24,7 +24,10 @@ use topcoat::{
     Result,
     asset::{Asset, asset},
     context::{Cx, app_context},
-    router::{HeaderValue, header, not_found, page, parse_query_params, path_param, redirect, uri},
+    router::{
+        HeaderValue, error::not_found, error::redirect, header, page, parse_query_params,
+        path_param, uri,
+    },
     view::{class, component, view},
 };
 

@@ -19,6 +19,12 @@ pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
 pub const FIRA_SANS: Font = fontsource_font!(FIRA_SANS, host: Asset);
 pub const FIRA_MONO: Font = fontsource_font!(FIRA_MONO, host: Asset);
 const KALAM: Font = fontsource_font!(KALAM, weight: 700, style: Normal, subset: Latin, host: Asset);
+/// The site stylesheet's ONE declaration — `stylesheet!()` is an `asset!`
+/// underneath, and a second invocation anywhere registers a duplicate
+/// serving route that panics at router build (which `just check` never
+/// runs). diary_sync.rs resolves this const into the /diary-sync.js loader
+/// so the service worker's offline SSR can link the same stylesheet.
+pub const SITE_CSS: Asset = topcoat::tailwind::stylesheet!();
 const ANALYTICS_JS: Asset = asset!("./analytics.js");
 const FAVICON_16: Asset = asset!("./favicon/favicon-16.png");
 const FAVICON_32: Asset = asset!("./favicon/favicon-32.png");
@@ -110,7 +116,7 @@ pub async fn shell(
                 if analytics {
                     <script defer="" src=(ANALYTICS_JS)></script>
                 }
-                <link rel="stylesheet" href=(topcoat::tailwind::stylesheet!())>
+                <link rel="stylesheet" href=(SITE_CSS)>
                 topcoat::font::link(font: ZILLA_SLAB)
                 topcoat::font::link(font: FIRA_SANS)
                 topcoat::font::link(font: FIRA_MONO)

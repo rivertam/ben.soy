@@ -62,32 +62,59 @@ queue. `src/app/pwa.rs` serves the stable pieces (`/sw.js`,
 `/diary.webmanifest`, two icons); the diary pages load
 `src/app/diary/diary.js`; the worker `src/app/diary/sw.js` registers with
 scope `/diary`, so no public page is ever controlled and the CDN
-invariants above are untouched. Invariants:
+invariants above are untouched. The queue logic itself is Rust —
+`crates/diary-core` compiled to wasm, storing entries in a device-local
+SurrealDB over IndexedDB, served by `src/app/diary_sync.rs` — read
+`docs/diary-sync.md` alongside this section before touching any of it.
+Invariants:
 
 - The PWA routes are deliberately ungated: Chrome fetches manifests
   without credentials (a cookie gate breaks install), and the bytes only
   disclose that a diary app exists — which the public repo and the login
   redirect already do. Keep anything private out of them.
-- With JS, saves are IndexedDB-first (db `diary-queue`) and flushed ONLY
-  by the service worker via `POST /api/diary/entries`. Never add a
-  page-side POST: one flush implementation is what keeps replays safe.
-  Without JS (or when IndexedDB refuses), the plain form POST to
-  `/diary/write` still works.
-- The API keys an entry by the CLIENT's composition second — a queued
-  entry keeps the time it was written, not the time it synced — inside a
-  bounded window (a year back, 5 minutes forward; outside is a 422, never
-  clamped, because clamping would mint a fresh key per replay and
-  double-post). Replays dedupe: same second + same body is "already
-  saved"; an occupied second probes forward ≤5 s, re-running the dedupe
-  at every probe. Overwriting an entry stays impossible.
-- The worker keeps the last good `GET /diary` (page 1) plus hashed assets
-  for offline reads — deliberate, device-local, Ben's choice. That cache
-  and the queue OUTLIVE sign-out and `COOKIE_KEY` rotation; wiping them
-  means clearing the site's data in Chrome on the device.
-- A flush stops and keeps the queue on 401/404 (sign in again), 403/5xx/
-  network (retry later); only 400/409/413/415/422 mark an entry failed,
-  and failed text stays on the page with a discard button — queued diary
-  text is never silently dropped.
+- With JS, saves are local-first (the wasm store) and synced ONLY by the
+  service worker: `POST /api/diary/entries` + `GET /api/diary/snapshot`
+  (admin-gated, `no-store`), or straight to the database over a websocket
+  when direct sync is flagged on (docs/diary-sync.md). Never add a
+  page-side POST: one sync implementation — `diary_core::sync::run` over
+  the outbox — is what keeps replays and pulls safe (a garbage pull
+  response must be a mirror no-op, never "zero entries"). Without JS (or
+  when the wasm store refuses: no `wasm-dist/` build served, private-mode
+  IndexedDB), the plain form POST to `/diary/write` still works. The
+  pre-wasm IndexedDB queue (`diary-queue`) is drained by a one-way
+  migration in the worker.
+- The API starts placement from the CLIENT's composition second — not the
+  time the entry syncs — inside a bounded window (a year back, 5 minutes
+  forward; outside is a 422, never clamped, because clamping would mint a
+  fresh key per replay and double-post). At every candidate second,
+  identical Entry Content is "already saved" and different content probes
+  forward ≤5 s. A device collision may re-anchor the queued entry before
+  sync, and a server collision may re-anchor it again. Overwriting an entry
+  stays impossible.
+- Offline reads are deliberate, device-local, and Ben's choice — and they
+  cover the WHOLE diary: the local store mirrors every entry, and when a
+  navigation's network fetch fails the worker RENDERS the page from that
+  mirror (the same Rust router and views the server runs, compiled to
+  wasm) — pagination, permalinks, and pending rows included. There is no
+  cached-HTML copy anymore; only hashed assets and the versioned wasm
+  pair sit in Cache Storage. The mirror, those caches, and the queue
+  OUTLIVE sign-out and `COOKIE_KEY` rotation — a signed-out or stolen
+  device reads the full diary offline; wiping it means clearing the
+  site's data in Chrome on the device. That is the accepted trust model:
+  device possession is the boundary, and the server stays the auth
+  boundary whenever it is reachable (offline SSR answers only after the
+  network fetch fails).
+- A flush stops and keeps the queue on 401/404 (sign in again) and on
+  400/403/5xx/network trouble (retry later); a 400 can be an older server
+  rejecting a newer strict envelope during rollout. Every HTTP sync request
+  and direct JWT carries the exact Diary Schema Epoch; a mismatch is 503 and
+  leaves the outbox untouched. Ordered migrations put both stores in one
+  current shape. The page and worker serialize local epoch checks and store
+  operations with the `diary-store` Web Lock, while an older server binary
+  refuses a newer diary migration ledger instead of reapplying obsolete
+  permissions. Only
+  409/413/415/422 mark an entry failed, and failed text stays on the page
+  with a discard button — queued diary text is never silently dropped.
 - `/sw.js` and the manifest keep stable un-hashed URLs (a worker's URL is
   its identity; a hashed URL would register a new worker every deploy).
   Served `no-cache` / day-long cache respectively via `pwa.rs`.

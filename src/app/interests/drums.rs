@@ -1,6 +1,6 @@
 use topcoat::{
     Result,
-    router::{page, redirect_permanent, route},
+    router::{error::redirect_permanent, page, route},
     view::view,
 };
 
