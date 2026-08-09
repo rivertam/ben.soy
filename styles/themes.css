@@ -402,13 +402,34 @@
   vertical-align: baseline;
 }
 
-/* Links honk instead of oxidize: the underline goes wavy nose-red. */
+/* Links honk instead of oxidize: the underline goes wavy nose-red and the
+   words wobble. A link lifted into the juggling loop owns its transform, so
+   the hover animation politely gets out of its way. */
 [data-theme="clown"] a:hover,
 [data-theme="clown"] a:focus-visible {
   text-decoration-line: underline;
   text-decoration-style: wavy;
   text-decoration-thickness: 2px;
   text-decoration-color: var(--color-oxide);
+}
+
+[data-theme="clown"] a:not([data-clown-prop]):hover,
+[data-theme="clown"] a:not([data-clown-prop]):focus-visible {
+  position: relative;
+  animation: clown-link-wobble 0.48s ease-in-out;
+}
+
+[data-theme="clown"] a,
+[data-theme="clown"] button,
+[data-theme="clown"] img,
+[data-theme="clown"] video,
+[data-theme="clown"] [data-clown-physics] {
+  cursor: grab;
+}
+
+[data-theme="clown"] .corner-rack,
+[data-theme="clown"] .corner-rack * {
+  cursor: revert;
 }
 
 /* Ticket-stub seals: 'entry № 0042' prints as an ADMIT ONE stub. */
@@ -451,6 +472,22 @@
   }
   70% {
     transform: rotate(1.2deg);
+  }
+}
+
+@keyframes clown-link-wobble {
+  0%,
+  100% {
+    top: 0;
+    text-shadow: 0 0 transparent;
+  }
+  28% {
+    top: -0.16rem;
+    text-shadow: -0.07rem 0 var(--color-brass);
+  }
+  62% {
+    top: 0.08rem;
+    text-shadow: 0.07rem 0 var(--color-steel);
   }
 }
 

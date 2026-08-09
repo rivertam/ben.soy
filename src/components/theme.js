@@ -314,6 +314,302 @@
     }
   };
 
+  /* ── juggling (clown mode) ───────────────────────────────────────── */
+  // Links and loose images become little viewport-bound physics props. A
+  // press picks one up; a quick click tosses it, while a drag uses the
+  // pointer's release velocity. The moving prop is a pixel-matched copy in
+  // a viewport overlay. Keeping the source invisibly in flow avoids inline
+  // text reflow and transformed-ancestor coordinate systems moving the prop
+  // away from the pointer. Theme controls stay bolted to the floor so there
+  // is always a way out of the tent.
+  const GRAVITY = 1800;
+  const props = new Set();
+  let propFor = new WeakMap();
+  const suppressClicks = new WeakSet();
+  let juggleRaf = 0;
+  let juggleLastFrame = 0;
+  let juggleOverlay = null;
+
+  const juggleTarget = (target) => {
+    if (!(target instanceof Element)) return null;
+    if (target.closest(".corner-rack, [data-no-clown-physics]")) return null;
+    const link = target.closest("a");
+    if (link) return link;
+    // Many pages present their most visual objects through buttons: Felix's
+    // photos open a lightbox, and inline-popover labels look and read like
+    // links. In clown mode those are props too; authors can keep a specific
+    // control functional with data-no-clown-physics.
+    const button = target.closest("button");
+    if (button) return button;
+    return target.closest("img, video, [data-clown-physics]");
+  };
+
+  const clampSpeed = (speed) => Math.max(-1800, Math.min(1800, speed));
+
+  const ensureJuggleFrame = () => {
+    if (juggleRaf) return;
+    juggleLastFrame = performance.now();
+    juggleRaf = requestAnimationFrame(juggleFrame);
+  };
+
+  const copyComputedTree = (source, copy) => {
+    const computed = getComputedStyle(source);
+    for (let i = 0; i < computed.length; i++) {
+      const name = computed[i];
+      copy.style.setProperty(name, computed.getPropertyValue(name));
+    }
+    copy.removeAttribute("id");
+    for (let i = 0; i < source.children.length; i++) {
+      copyComputedTree(source.children[i], copy.children[i]);
+    }
+  };
+
+  const overlay = () => {
+    if (juggleOverlay) return juggleOverlay;
+    juggleOverlay = document.createElement("div");
+    juggleOverlay.dataset.clownJuggleOverlay = "";
+    juggleOverlay.setAttribute("aria-hidden", "true");
+    juggleOverlay.style.cssText =
+      "position:fixed;inset:0;z-index:100;pointer-events:none;overflow:visible;";
+    document.body.appendChild(juggleOverlay);
+    return juggleOverlay;
+  };
+
+  const makeProp = (source) => {
+    const existing = propFor.get(source);
+    if (existing) return existing;
+    const box = source.getBoundingClientRect();
+    const element = source.cloneNode(true);
+    copyComputedTree(source, element);
+    element.dataset.clownProp = "";
+    element.setAttribute("aria-hidden", "true");
+    overlay().appendChild(element);
+    const prop = {
+      source,
+      element,
+      originalStyle: source.getAttribute("style"),
+      x: box.left,
+      y: box.top,
+      width: box.width,
+      height: box.height,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      spin: 0,
+      held: false,
+      pointerId: null,
+      grabX: 0,
+      grabY: 0,
+      lastX: 0,
+      lastY: 0,
+      lastAt: 0,
+      dragged: false,
+      sleeping: false,
+    };
+    // The overlay is fixed to the viewport; its children can therefore use
+    // the same coordinates as PointerEvent.clientX/Y on every page.
+    Object.assign(element.style, {
+      position: "absolute",
+      left: "0",
+      top: "0",
+      width: `${box.width}px`,
+      height: `${box.height}px`,
+      boxSizing: "border-box",
+      margin: "0",
+      zIndex: "1",
+      pointerEvents: "auto",
+      touchAction: "none",
+      userSelect: "none",
+      cursor: "grab",
+      willChange: "transform",
+      animation: "none",
+      transition: "none",
+    });
+    source.style.visibility = "hidden";
+    props.add(prop);
+    propFor.set(source, prop);
+    propFor.set(element, prop);
+    paintProp(prop);
+    return prop;
+  };
+
+  const paintProp = (prop) => {
+    prop.element.style.transform =
+      `translate3d(${prop.x}px, ${prop.y}px, 0) rotate(${prop.angle}deg)`;
+  };
+
+  const juggleFrame = (now) => {
+    juggleRaf = 0;
+    const dt = Math.min(0.034, (now - juggleLastFrame) / 1000 || 0.016);
+    juggleLastFrame = now;
+    let awake = false;
+    for (const prop of props) {
+      if (prop.held || prop.sleeping) {
+        if (prop.held) awake = true;
+        continue;
+      }
+      awake = true;
+      prop.vy += GRAVITY * dt;
+      prop.x += prop.vx * dt;
+      prop.y += prop.vy * dt;
+      prop.angle += prop.spin * dt;
+
+      const right = Math.max(0, innerWidth - prop.width);
+      const floor = Math.max(0, innerHeight - prop.height);
+      if (prop.x < 0) {
+        prop.x = 0;
+        prop.vx = Math.abs(prop.vx) * 0.55;
+        prop.spin *= -0.7;
+      } else if (prop.x > right) {
+        prop.x = right;
+        prop.vx = -Math.abs(prop.vx) * 0.55;
+        prop.spin *= -0.7;
+      }
+      if (prop.y > floor) {
+        prop.y = floor;
+        prop.vy = -Math.abs(prop.vy) * 0.38;
+        prop.vx *= 0.82;
+        prop.spin *= 0.72;
+        // End the tiny asymptotic hops, but leave the prop on the floor to
+        // be picked up and thrown again.
+        if (Math.abs(prop.vy) < 70 && Math.abs(prop.vx) < 28) {
+          prop.vx = 0;
+          prop.vy = 0;
+          prop.spin = 0;
+          prop.sleeping = true;
+        }
+      }
+      paintProp(prop);
+    }
+    if (awake) juggleRaf = requestAnimationFrame(juggleFrame);
+  };
+
+  const stopJuggling = () => {
+    if (juggleRaf) cancelAnimationFrame(juggleRaf);
+    juggleRaf = 0;
+    for (const prop of props) {
+      if (
+        prop.pointerId !== null &&
+        prop.captureElement?.hasPointerCapture(prop.pointerId)
+      ) {
+        prop.captureElement.releasePointerCapture(prop.pointerId);
+      }
+      if (prop.originalStyle === null) prop.source.removeAttribute("style");
+      else prop.source.setAttribute("style", prop.originalStyle);
+    }
+    props.clear();
+    propFor = new WeakMap();
+    juggleOverlay?.remove();
+    juggleOverlay = null;
+  };
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (
+        wornId() !== "clown" ||
+        reducedMotion() ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey
+      )
+        return;
+      const target = juggleTarget(event.target);
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const prop = propFor.get(target) || makeProp(target);
+      const box = prop.element.getBoundingClientRect();
+      prop.held = true;
+      prop.sleeping = false;
+      prop.pointerId = event.pointerId;
+      prop.captureElement = target;
+      prop.grabX = event.clientX - box.left;
+      prop.grabY = event.clientY - box.top;
+      prop.lastX = event.clientX;
+      prop.lastY = event.clientY;
+      prop.lastAt = event.timeStamp;
+      prop.vx = 0;
+      prop.vy = 0;
+      prop.dragged = false;
+      prop.element.style.cursor = "grabbing";
+      target.setPointerCapture(event.pointerId);
+      suppressClicks.delete(target);
+      ensureJuggleFrame();
+    },
+    true
+  );
+
+  document.addEventListener(
+    "pointermove",
+    (event) => {
+      const target = juggleTarget(event.target);
+      const prop = target && propFor.get(target);
+      if (!prop || !prop.held || prop.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      const dt = Math.max(8, event.timeStamp - prop.lastAt) / 1000;
+      const dx = event.clientX - prop.lastX;
+      const dy = event.clientY - prop.lastY;
+      prop.x = event.clientX - prop.grabX;
+      prop.y = event.clientY - prop.grabY;
+      prop.vx = clampSpeed(prop.vx * 0.35 + (dx / dt) * 0.65);
+      prop.vy = clampSpeed(prop.vy * 0.35 + (dy / dt) * 0.65);
+      prop.spin = clampSpeed(prop.vx * 0.09);
+      prop.dragged ||= Math.hypot(dx, dy) > 2;
+      prop.lastX = event.clientX;
+      prop.lastY = event.clientY;
+      prop.lastAt = event.timeStamp;
+      paintProp(prop);
+    },
+    true
+  );
+
+  const releaseProp = (event) => {
+    const target = juggleTarget(event.target);
+    const prop = target && propFor.get(target);
+    if (!prop || !prop.held || prop.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    prop.held = false;
+    prop.pointerId = null;
+    prop.captureElement = null;
+    prop.element.style.cursor = "grab";
+    if (!prop.dragged && event.type === "pointerup") {
+      // A click is a jaunty upward toss. Its horizontal direction depends
+      // on which side was grabbed, so repeated clicks can keep it aloft.
+      const side = prop.grabX / Math.max(1, prop.width) - 0.5;
+      prop.vx = side * 700 + (Math.random() - 0.5) * 180;
+      prop.vy = -720;
+      prop.spin = prop.vx * 0.12;
+    }
+    if (event.type === "pointerup") {
+      suppressClicks.add(target);
+      // A prevented pointerdown does not produce a click in every browser.
+      // Do not let a missing compatibility click poison the next keyboard
+      // activation of the same link.
+      setTimeout(() => suppressClicks.delete(target), 0);
+    }
+    ensureJuggleFrame();
+  };
+  document.addEventListener("pointerup", releaseProp, true);
+  document.addEventListener("pointercancel", releaseProp, true);
+
+  // Cancel only the synthetic click following a handled pointer gesture.
+  // Keyboard activation and modifier-clicks retain ordinary navigation.
+  document.addEventListener(
+    "click",
+    (event) => {
+      const element = juggleTarget(event.target);
+      if (!element || !suppressClicks.has(element)) return;
+      suppressClicks.delete(element);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    },
+    true
+  );
+
   /* ── the fetch (felix mode) ───────────────────────────────────────── */
   // Felix — cut out of the sprint photo — trails the tennis-ball cursor
   // with smooth pursuit, and when the ball rests he catches up and holds
@@ -419,6 +715,7 @@
     if (!id || id === DEFAULT_ID) delete root.dataset.theme;
     else root.dataset.theme = id;
     const worn = wornId();
+    if (worn !== "clown") stopJuggling();
     for (const button of document.querySelectorAll("[data-set-theme]")) {
       button.setAttribute("aria-pressed", String(button.dataset.setTheme === worn));
     }
