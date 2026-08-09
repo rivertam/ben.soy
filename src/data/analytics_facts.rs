@@ -52,6 +52,18 @@ struct BackfillState {
 }
 
 pub fn start_backfill(db: Db) {
+    // Off by default: the leased scan rebuilds enough visitor-days to reset
+    // SurrealDB connections and starve the legacy dashboard. Re-enable with
+    // ANALYTICS_FACTS_BACKFILL=1 once raw reads are healthy again.
+    match std::env::var("ANALYTICS_FACTS_BACKFILL") {
+        Ok(value) if matches!(value.as_str(), "1" | "true" | "TRUE" | "yes") => {}
+        _ => {
+            eprintln!(
+                "analytics facts: backfill worker idle (set ANALYTICS_FACTS_BACKFILL=1 to enable)"
+            );
+            return;
+        }
+    }
     tokio::spawn(async move {
         let owner = Uuid::new_v4().to_string();
         let mut failures: u32 = 0;

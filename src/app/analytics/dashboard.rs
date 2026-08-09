@@ -10,8 +10,6 @@ use benjisponge::data::{
     Db, analytics_facts,
     analytics_models::{AnalyticsEvent, AnalyticsVisitorDay},
 };
-use serde::Deserialize;
-use surrealdb::types::SurrealValue;
 use tokio::time::timeout;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,12 +153,6 @@ pub struct Campaign {
     pub visitors: i64,
 }
 
-#[derive(Deserialize, SurrealValue)]
-struct SnapshotRows {
-    events: Vec<AnalyticsEvent>,
-    prior_sessions: Vec<String>,
-}
-
 pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
     let current = current_timestamp()?;
     match analytics_facts::load(db, cutoff).await {
@@ -208,57 +200,62 @@ pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
 }
 
 async fn load_raw(db: &Db, cutoff: i64, current: i64) -> anyhow::Result<Dashboard> {
-    // `prior_sessions` only needs the idle window before `$cutoff`. A session
-    // id that survives across the boundary must have had activity inside that
-    // window (see `SESSION_IDLE_SECONDS`); scanning unbounded history made the
-    // nested IN pathologically slow on short ranges once older traffic existed
-    // alongside a busy in-window set (the 7d standby card).
-    const SNAPSHOT: &str = "
-        RETURN {
-            events: (
-                SELECT *, record::id(id) AS id
-                FROM analytics_events
-                WHERE occurred_at >= $cutoff
-            ),
-            prior_sessions: (
-                SELECT VALUE session_id
-                FROM analytics_events
-                WHERE kind = 'pageview'
-                    AND occurred_at < $cutoff
-                    AND occurred_at >= $prior_floor
-                    AND session_id IN (
-                        SELECT VALUE session_id
-                        FROM analytics_events
-                        WHERE kind = 'pageview'
-                            AND occurred_at >= $cutoff
-                    )
-                GROUP BY session_id
-            )
-        }";
-
+    // Prior markers only need the idle window before `$cutoff`. Intersect that
+    // tiny candidate set with in-window pageview sessions in Rust — a nested
+    // `session_id IN (SELECT … from the whole window)` re-scanned the busy
+    // range under every dashboard load and timed out once fact backfill was
+    // also contending for SurrealDB.
     let prior_floor = cutoff.saturating_sub(super::db::SESSION_IDLE_SECONDS);
-    let snapshot = timeout(Duration::from_secs(3), async {
+    let (events, prior_sessions) = timeout(Duration::from_secs(8), async {
         let mut response = db
-            .query(SNAPSHOT)
+            .query(
+                "SELECT *, record::id(id) AS id
+                 FROM analytics_events
+                 WHERE occurred_at >= $cutoff",
+            )
             .bind(("cutoff", cutoff))
-            .bind(("prior_floor", prior_floor))
             .await
             .context("analytics snapshot query failed")?
             .check()
             .context("analytics snapshot query failed")?;
-        let snapshot: Option<SnapshotRows> = response
+        let events: Vec<AnalyticsEvent> = response
             .take(0)
             .context("analytics snapshot decoding failed")?;
-        snapshot.context("analytics snapshot query returned no rows")
+
+        let mut response = db
+            .query(
+                "SELECT VALUE session_id
+                 FROM analytics_events
+                 WHERE kind = 'pageview'
+                     AND occurred_at < $cutoff
+                     AND occurred_at >= $prior_floor
+                 GROUP BY session_id",
+            )
+            .bind(("cutoff", cutoff))
+            .bind(("prior_floor", prior_floor))
+            .await
+            .context("analytics prior-session query failed")?
+            .check()
+            .context("analytics prior-session query failed")?;
+        let candidates: Vec<String> = response
+            .take(0)
+            .context("analytics prior-session decoding failed")?;
+
+        let window_sessions: HashSet<&str> = events
+            .iter()
+            .filter(|event| event.kind == "pageview")
+            .map(|event| event.session_id.as_str())
+            .collect();
+        let prior_sessions = candidates
+            .into_iter()
+            .filter(|session_id| window_sessions.contains(session_id.as_str()))
+            .collect::<HashSet<_>>();
+        Ok::<_, anyhow::Error>((events, prior_sessions))
     })
     .await
-    .context("analytics snapshot exceeded three seconds")??;
-    Ok(aggregate(
-        &snapshot.events,
-        &snapshot.prior_sessions.into_iter().collect(),
-        cutoff,
-        current,
-    ))
+    .context("analytics snapshot exceeded eight seconds")??;
+
+    Ok(aggregate(&events, &prior_sessions, cutoff, current))
 }
 
 fn current_timestamp() -> anyhow::Result<i64> {
