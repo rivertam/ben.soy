@@ -91,6 +91,12 @@ Invariants:
   forward ≤5 s. A device collision may re-anchor the queued entry before
   sync, and a server collision may re-anchor it again. Overwriting an entry
   stays impossible.
+- Replies carry an optional Reply Target in Entry Content. It is a soft,
+  valid-permalink Entry Reference, not a SurrealDB record link: acceptance
+  validates the key shape but does not require a target row to exist. For now,
+  only a synced Device Entry offers the reply action. A pending Device Entry's
+  predicted Entry Key is not selectable until delivery or a snapshot confirms
+  it as an Entry Reference.
 - Offline reads are deliberate, device-local, and Ben's choice — and they
   cover the WHOLE diary: the local store mirrors every entry, and when a
   navigation's network fetch fails the worker RENDERS the page from that

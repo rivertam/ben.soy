@@ -71,11 +71,10 @@ const LEGACY_OUTBOX_SCHEMA: &str = "\
 
 #[derive(Debug)]
 pub enum OutboxError {
-    /// Empty after normalization — nothing to queue. This is the ONLY
-    /// validation applied to new text; anything non-empty is queued and the
-    /// server judges it on replay, so a rejection marks the entry failed
-    /// with its text preserved instead of bouncing it into the lossy
-    /// form-POST fallback.
+    /// Empty after normalization, or an intrinsically malformed Entry
+    /// Content relationship. Remote-only policy such as timestamp and body
+    /// length is deliberately not checked here: the server rejects it in
+    /// place with its text preserved.
     InvalidBody,
     Db(String),
 }
@@ -1056,6 +1055,10 @@ mod tests {
         ComposedEntry::new(written_at, body)
     }
 
+    fn composed_reply(written_at: i64, body: &str, reply_to: &str) -> ComposedEntry {
+        ComposedEntry::new(written_at, body).with_reply_to(Some(reply_to.to_string()))
+    }
+
     async fn enqueue(
         db: &Db,
         written_at: i64,
@@ -1063,6 +1066,16 @@ mod tests {
         enqueued_at: i64,
     ) -> Result<LocalEntry, OutboxError> {
         super::enqueue(db, composed(written_at, body), enqueued_at).await
+    }
+
+    async fn enqueue_reply(
+        db: &Db,
+        written_at: i64,
+        body: &str,
+        enqueued_at: i64,
+        reply_to: &str,
+    ) -> Result<LocalEntry, OutboxError> {
+        super::enqueue(db, composed_reply(written_at, body, reply_to), enqueued_at).await
     }
 
     /// A server acceptance, as `classify_response` would build it.
@@ -1261,11 +1274,12 @@ mod tests {
     async fn typed_content_rows_round_trip_and_clear_optional_fields() {
         let db = store().await;
         let id = key(1_753_640_000);
+        let parent = "2026-07-27T14-30-45-04-00";
         create_row(
             &db,
             &id,
             LocalRow::new(
-                ComposedEntry::new(1_753_640_000, "preserved"),
+                composed_reply(1_753_640_000, "preserved", parent),
                 STATE_FAILED,
                 Some("first reason".to_string()),
                 7,
@@ -1276,6 +1290,10 @@ mod tests {
         assert_eq!(
             row(&db, &id).await.unwrap().reason.as_deref(),
             Some("first reason")
+        );
+        assert_eq!(
+            row(&db, &id).await.unwrap().reply_to.as_deref(),
+            Some(parent)
         );
 
         db.query("UPDATE type::record('diary_entries', $id) CONTENT $row")
@@ -1297,6 +1315,28 @@ mod tests {
         assert_eq!(updated.reason, None);
         assert_eq!(updated.state, STATE_SYNCED);
         assert_eq!(updated.body, "preserved");
+        assert_eq!(updated.reply_to, None);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_preserves_and_can_clear_reply_content() {
+        let db = store().await;
+        let written_at = 1_753_640_000;
+        let id = key(written_at);
+        let parent = "2026-07-27T14-30-45-04-00";
+        let reply = DiaryEntry::new(
+            id.clone(),
+            composed_reply(written_at, "remote reply", parent),
+        );
+        assert_eq!(reconcile(&db, &[reply]).await.unwrap(), 1);
+        assert_eq!(
+            row(&db, &id).await.unwrap().reply_to.as_deref(),
+            Some(parent)
+        );
+
+        let top_level = DiaryEntry::from_parts(id.clone(), written_at, "remote reply");
+        assert_eq!(reconcile(&db, &[top_level]).await.unwrap(), 1);
+        assert_eq!(row(&db, &id).await.unwrap().reply_to, None);
     }
 
     #[tokio::test]
@@ -1309,6 +1349,46 @@ mod tests {
             ));
         }
         assert!(queued(&db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn enqueue_applies_shared_reply_validation() {
+        let db = store().await;
+        assert!(matches!(
+            super::enqueue(
+                &db,
+                ComposedEntry::new(1_753_640_000, "reply")
+                    .with_reply_to(Some("not-a-diary-id".to_string())),
+                1,
+            )
+            .await,
+            Err(OutboxError::InvalidBody)
+        ));
+        assert!(queued(&db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reply_content_controls_local_dedupe_and_fingerprint_identity() {
+        let db = store().await;
+        let parent = "2026-07-27T14-30-45-04-00";
+        let written_at = 1_753_640_000;
+        let plain = enqueue(&db, written_at, "same words", 10).await.unwrap();
+        let reply = enqueue_reply(&db, written_at, "same words", 20, parent)
+            .await
+            .unwrap();
+        assert_eq!(plain.written_at, written_at);
+        assert_eq!(reply.written_at, written_at + 1);
+        assert_eq!(reply.reply_to.as_deref(), Some(parent));
+        assert_ne!(
+            write_fingerprint(&plain.composed, 77),
+            write_fingerprint(&reply.composed, 77)
+        );
+
+        let replay = enqueue_reply(&db, written_at, "same words", 30, parent)
+            .await
+            .unwrap();
+        assert_eq!(replay.id, reply.id);
+        assert_eq!(queued(&db).await.unwrap().len(), 2);
     }
 
     /// A double-tap that slips the emptied-textarea guard converges on ONE
@@ -1586,11 +1666,17 @@ mod tests {
     #[tokio::test]
     async fn flush_rekeys_a_server_bumped_entry() {
         let db = store().await;
-        let entry = enqueue(&db, 1_753_640_000, "bumped", 10).await.unwrap();
-        let server_id = key(1_753_640_001);
-        let report = flush(&db, |_| ready(saved(&server_id, 1_753_640_001)))
+        let parent = "2026-07-27T14-30-45-04-00";
+        let entry = enqueue_reply(&db, 1_753_640_000, "bumped", 10, parent)
             .await
             .unwrap();
+        let server_id = key(1_753_640_001);
+        let report = flush(&db, |sent| {
+            assert_eq!(sent.reply_to.as_deref(), Some(parent));
+            ready(saved(&server_id, 1_753_640_001))
+        })
+        .await
+        .unwrap();
         assert_eq!(report.saved_refs[0].qid, entry.id);
         assert_eq!(report.saved_refs[0].saved.id, server_id);
         assert!(row(&db, &entry.id).await.is_none(), "old key released");
@@ -1598,6 +1684,7 @@ mod tests {
         assert_eq!(moved.state, STATE_SYNCED);
         assert_eq!(moved.written_at, 1_753_640_001);
         assert_eq!(moved.body, "bumped");
+        assert_eq!(moved.reply_to.as_deref(), Some(parent));
     }
 
     /// The destination is free but the source key was reused while the send

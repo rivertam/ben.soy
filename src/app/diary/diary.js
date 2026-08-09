@@ -55,6 +55,7 @@ function init() {
   });
   hookForm();
   hookDiscards();
+  hookReplies();
   positionTranscript();
   renderFromStore();
   kick();
@@ -129,6 +130,49 @@ function hookForm() {
   if (desktop.matches && document.activeElement === document.body) {
     box.focus();
   }
+  const cancel = document.getElementById("diary-reply-cancel");
+  if (cancel) {
+    cancel.addEventListener("click", () => clearReplyTarget(box));
+  }
+}
+
+function replyTarget() {
+  const input = document.getElementById("diary-reply-to");
+  const value = input && input.value.trim();
+  return value || undefined;
+}
+
+function setReplyTarget(id, box) {
+  const input = document.getElementById("diary-reply-to");
+  const banner = document.getElementById("diary-replying");
+  const stamp = document.getElementById("diary-replying-stamp");
+  if (!input || !banner || !stamp) {
+    return;
+  }
+  input.value = id;
+  stamp.textContent = stampOf({ id: id, written_at: 0 });
+  banner.hidden = false;
+  if (box) {
+    box.focus();
+  }
+}
+
+function clearReplyTarget(box) {
+  const input = document.getElementById("diary-reply-to");
+  const banner = document.getElementById("diary-replying");
+  const stamp = document.getElementById("diary-replying-stamp");
+  if (input) {
+    input.value = "";
+  }
+  if (stamp) {
+    stamp.textContent = "";
+  }
+  if (banner) {
+    banner.hidden = true;
+  }
+  if (box) {
+    box.focus();
+  }
 }
 
 /* The synchronous half: the bubble is in the DOM before ANY await, so the
@@ -138,6 +182,7 @@ function save(form, box) {
   if (!raw.trim()) {
     return;
   }
+  const parent = replyTarget();
   const draft = {
     id: null,
     written_at: Math.floor(Date.now() / 1000),
@@ -145,20 +190,29 @@ function save(form, box) {
     state: "draft",
     reason: null,
   };
+  if (parent) {
+    draft.reply_to = parent;
+  }
   const bubble = appendBubble(draft, true);
   box.value = "";
-  box.focus();
-  persist(form, box, raw, draft, bubble);
+  clearReplyTarget(box);
+  persist(form, box, raw, draft, bubble, parent);
 }
 
-async function persist(form, box, raw, draft, bubble) {
+async function persist(form, box, raw, draft, bubble, parent) {
   try {
     const wasm = await ensureWasm();
+    const content = { written_at: draft.written_at, body: raw };
+    // Absence is the canonical top-level-entry shape. In particular, do not
+    // send a null optional field through the exact wire decoder.
+    if (parent) {
+      content.reply_to = parent;
+    }
     const entry = JSON.parse(
       await withStoreLock(() => wasm.diary_enqueue(
         JSON.stringify({
           schema_epoch: wasm.diary_schema_epoch(),
-          entry: { written_at: draft.written_at, body: raw },
+          entry: content,
           enqueued_at_ms: Date.now(),
         }),
       )),
@@ -184,6 +238,9 @@ async function persist(form, box, raw, draft, bubble) {
     }
     hideQueueIfEmpty();
     box.value = box.value ? raw + "\n\n" + box.value : raw;
+    if (parent) {
+      setReplyTarget(parent, null);
+    }
     if (navigator.onLine === false) {
       return;
     }
@@ -236,6 +293,21 @@ function applyEntry(bubble, entry) {
   if (body) {
     body.textContent = entry.body;
   }
+  const parent = entry.reply_to || "";
+  bubble.dataset.replyTo = parent;
+  const replyTo = bubble.querySelector(".diary-reply-to");
+  const replyLink = replyTo && replyTo.querySelector("a");
+  if (replyTo && replyLink) {
+    if (parent) {
+      replyTo.hidden = false;
+      replyLink.href = SCOPE + "/" + encodeURIComponent(parent);
+      replyLink.textContent = "↳ " + stampOf({ id: parent, written_at: 0 });
+    } else {
+      replyTo.hidden = true;
+      replyLink.removeAttribute("href");
+      replyLink.textContent = "";
+    }
+  }
   applyEntryState(bubble, entry);
 }
 
@@ -248,11 +320,15 @@ function applyEntryState(bubble, entry) {
   }
   bubble.dataset.state = entry.state;
   const note = bubble.querySelector(".diary-note");
-  const link = bubble.querySelector("a");
+  const link = bubble.querySelector(".diary-permalink");
+  const reply = bubble.querySelector(".diary-reply");
   const discard = bubble.querySelector(".diary-discard");
   const queuedLook =
     entry.state === "failed" || (entry.state === "pending" && lastBlocked);
   bubble.classList.toggle("diary-message-queued", Boolean(queuedLook));
+  if (reply) {
+    reply.hidden = entry.state !== "synced" || !entry.id;
+  }
   if (entry.state === "synced") {
     link.hidden = false;
     link.href = SCOPE + "/" + encodeURIComponent(entry.id);
@@ -441,6 +517,28 @@ function hookDiscards() {
     } catch (error) {
       // Store refused; the bubble stays and the tap can be retried.
     }
+  });
+}
+
+function hookReplies() {
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest(".diary-reply");
+    if (!button) {
+      return;
+    }
+    const bubble = button.closest(".diary-message");
+    // A reply can point only at a server-confirmed permalink. Keep this
+    // guard even though Rust markup and applyEntryState hide the control:
+    // programmatic clicks must not bypass the state rule.
+    if (!bubble || bubble.dataset.state !== "synced") {
+      return;
+    }
+    const id = bubble.dataset.id;
+    if (!id) {
+      return;
+    }
+    const box = document.getElementById("diary-body");
+    setReplyTarget(id, box);
   });
 }
 

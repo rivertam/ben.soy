@@ -16,16 +16,23 @@ struct Migration {
     data_sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    epoch: 1,
-    schema_sql: include_str!("outbox_migrations/0001_current_entry_store.surql"),
-    // This column existed only on review builds of the superseded adapter
-    // ladder. It is retired once, not rewritten across all history per sync.
-    data_sql: "\
-        DEFINE FIELD OVERWRITE entry_version ON diary_entries TYPE option<int>;\n\
-        UPDATE diary_entries UNSET entry_version;\n\
-        REMOVE FIELD IF EXISTS entry_version ON diary_entries;",
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        epoch: 1,
+        schema_sql: include_str!("outbox_migrations/0001_current_entry_store.surql"),
+        // This column existed only on review builds of the superseded adapter
+        // ladder. It is retired once, not rewritten across all history per sync.
+        data_sql: "\
+            DEFINE FIELD OVERWRITE entry_version ON diary_entries TYPE option<int>;\n\
+            UPDATE diary_entries UNSET entry_version;\n\
+            REMOVE FIELD IF EXISTS entry_version ON diary_entries;",
+    },
+    Migration {
+        epoch: 2,
+        schema_sql: include_str!("outbox_migrations/0002_replies.surql"),
+        data_sql: "",
+    },
+];
 
 const LEDGER_SCHEMA: &str = "\
     DEFINE TABLE OVERWRITE diary_schema_migrations SCHEMAFULL PERMISSIONS NONE;\n\
@@ -169,7 +176,7 @@ mod tests {
         let db = db().await;
         apply(&db).await.unwrap();
         apply(&db).await.unwrap();
-        assert_eq!(applied_epochs(&db).await.unwrap(), [1]);
+        assert_eq!(applied_epochs(&db).await.unwrap(), [1, 2]);
     }
 
     #[tokio::test]
@@ -213,6 +220,52 @@ mod tests {
         let info: Option<TableInfo> = response.take(1).unwrap();
         assert_eq!(bodies, ["preserved"]);
         assert!(!info.unwrap().fields.contains_key("entry_version"));
+    }
+
+    #[tokio::test]
+    async fn replies_migration_preserves_epoch_one_rows_and_cas_tokens() {
+        #[derive(Deserialize, SurrealValue)]
+        struct Row {
+            body: String,
+            reply_to: Option<String>,
+            write_fingerprint: String,
+        }
+
+        let db = db().await;
+        db.query(LEDGER_SCHEMA).await.unwrap().check().unwrap();
+        apply_one(&db, &MIGRATIONS[0]).await.unwrap();
+        let fingerprint = "a".repeat(64);
+        db.query(
+            "CREATE ONLY diary_entries:legacy SET
+                 written_at = 1,
+                 body = 'preserved',
+                 state = 'pending',
+                 enqueued_at = 7,
+                 write_fingerprint = $fingerprint;",
+        )
+        .bind(("fingerprint", fingerprint.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        apply(&db).await.unwrap();
+
+        let mut response = db
+            .query(
+                "SELECT body, reply_to, write_fingerprint
+                 FROM diary_entries:legacy",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let rows: Vec<Row> = response.take(0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "preserved");
+        assert_eq!(rows[0].reply_to, None);
+        assert_eq!(rows[0].write_fingerprint, fingerprint);
+        assert_eq!(applied_epochs(&db).await.unwrap(), [1, 2]);
     }
 
     #[tokio::test]

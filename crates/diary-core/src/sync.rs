@@ -389,6 +389,15 @@ mod tests {
                 .await,
             SendOutcome::Rejected(422)
         );
+        assert_eq!(
+            remote
+                .push(
+                    ComposedEntry::new(now, "bad parent")
+                        .with_reply_to(Some("not-a-diary-id".to_string())),
+                )
+                .await,
+            SendOutcome::Rejected(422)
+        );
         assert!(store::all_entries(&server.db).await.unwrap().is_empty());
 
         let saved = remote

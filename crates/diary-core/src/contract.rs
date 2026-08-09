@@ -14,7 +14,7 @@ pub const API_PATH: &str = "/api/diary/entries";
 
 /// The one schema epoch understood by this build. Server rows and device rows
 /// are migrated to this shape before the build may sync them.
-pub const CURRENT_SCHEMA_EPOCH: u16 = 1;
+pub const CURRENT_SCHEMA_EPOCH: u16 = 2;
 
 /// Required on every HTTP sync request. The server answers a mismatch with a
 /// retryable status before it parses or returns canonical entry content.

@@ -61,7 +61,8 @@ sentence is the whole design.
 The Diary Entry Module owns the lifecycle values used at the persistence and
 transport Seams:
 
-- `EntryContent` owns the business fields that determine replay equality.
+- `EntryContent` owns the business fields that determine replay equality: the
+  body and its optional Reply Target.
 - `ComposedEntry` pairs `EntryContent` with the second proposed to placement;
   a same-device collision can re-anchor it to a later probed second.
 - `DiaryEntry` carries the placement-selected record key and second; ordinary
@@ -77,7 +78,10 @@ Adding a durable `EntryContent` field has four production field-list Seams:
 `EntryContent`, the shared explicit `PROJECTION`, the next server migration,
 and the next device migration. It does not add per-query binds,
 write branches, snapshot mappings, compatibility DTOs, flush-report content,
-placement or reconciliation comparisons, or CAS predicates.
+placement or reconciliation comparisons, or CAS predicates. Replies are the
+worked example: `reply_to` is part of the canonical Entry Content and both
+migrations, while the existing Adapters continue carrying whole canonical
+values.
 
 Presentation was deliberately not deepened in this refactor. A field that is
 composed or shown still needs feature-specific work in `views`, the served
@@ -86,7 +90,7 @@ not another persistence or transport representation.
 
 `CURRENT_SCHEMA_EPOCH` is the single compatibility number carried by
 `ComposeCommand`, `PushWire`, `SnapshotWire`, HTTP sync headers, and direct
-token grants. There are no older-entry DTOs or multi-generation readers. The
+token grants. There are no older-entry DTOs or compatibility readers. The
 server requires an exact epoch on push, snapshot, and token requests and
 answers any mismatch with 503; the worker classifies that as Retry, leaves the
 outbox pending, and makes a mismatched snapshot a mirror no-op. The strict
@@ -145,6 +149,16 @@ can make the server's `SavedRef` bump the key and placement second again; the
 device store re-keys the row and the pull that follows converges the mirror. In
 the common case, proposed, predicted, and saved seconds agree.
 
+A Reply Target is another entry's valid permalink-shaped Entry Reference,
+stored as an optional soft reference in Entry Content rather than a SurrealDB
+record link. Acceptance validates its shape but deliberately does not require
+the target row to exist. For now, the compose UI offers the reply action only
+on a synced Device Entry: a pending entry has merely predicted its Entry Key
+and cannot be selected until delivery or a snapshot confirms it. Because
+replay equality and write fingerprints cover whole Entry Content, identical
+body text with different Reply Targets remains distinct without reply-specific
+sync logic.
+
 An unprojectable timestamp from a legacy queue is the exception: its text is
 kept failed under a synthetic `failed-*` Recovery Key. Recovery Keys are
 device-only preservation handles, never Entry Keys, permalinks, or replyable
@@ -198,20 +212,22 @@ by its composition second plus legacy body, state/reason preserved, bodies
 kept byte-for-byte) → delete legacy rows only after import returns. Its source
 shape is frozen at `qid`, `written_at`, `body`, `state`, `reason`, and
 `enqueued_at`; future Entry Content fields were never present there and must
-default absent during import. A crash anywhere re-runs safely. The emptied
-database is left behind for any straggler old worker. Page kicks are
-deliberately unconditional (the old "any pending?" check is gone) because only
-the worker can see both stores while the migration exists.
+default absent during import, so imported rows have no Reply Target. A crash
+anywhere re-runs safely. The emptied database is left behind for any straggler
+old worker. Page kicks are deliberately unconditional (the old "any pending?"
+check is gone) because only the worker can see both stores while the migration
+exists.
 
 The retired wasm queue (`diary_outbox`, the separate outbox table before the
 single store) drains the same way inside `outbox::open` and before each flush.
 Its SurrealDB source
 schema is likewise frozen at `written_at`, `body`, `state`, `reason`, and
 `enqueued_at`; do not add later Entry Content fields to that legacy table.
-Rows port into `diary_entries` under predicted keys (unprojectable timestamps
-land under synthetic `failed-*` Recovery Keys as failed rows — never dropped),
-then the old rows delete one by one. It is a STANDING step, not one-shot:
-during deploy skew an old worker happily re-creates the table.
+Rows port into `diary_entries` with no Reply Target under predicted keys;
+unprojectable timestamps land under synthetic `failed-*` Recovery Keys as
+failed rows — never dropped. The old rows then delete one by one. It is a
+STANDING step, not one-shot: during deploy skew an old worker happily
+re-creates the table.
 
 ## Serving and cache pairing
 
