@@ -136,9 +136,11 @@ pub async fn insert_event(
 ) -> anyhow::Result<bool> {
     if event_exists(db, &event.id).await? {
         update_engagement(db, visitor_hash, &event, occurred_at).await?;
-        analytics_facts::rebuild_for_event(db, &event.id)
-            .await
-            .context("analytics visitor-day rebuild failed")?;
+        // Event rows are already durable; the DEFINE EVENT dirty mark plus the
+        // leased reconciler cover a lost or deferred fact rebuild.
+        if let Err(error) = analytics_facts::rebuild_for_event(db, &event.id).await {
+            eprintln!("analytics facts: request-path rebuild deferred: {error}");
+        }
         return Ok(false);
     }
 
@@ -235,9 +237,9 @@ pub async fn insert_event(
             false
         }
     };
-    analytics_facts::rebuild_for_event(db, &event_id)
-        .await
-        .context("analytics visitor-day rebuild failed")?;
+    if let Err(error) = analytics_facts::rebuild_for_event(db, &event_id).await {
+        eprintln!("analytics facts: request-path rebuild deferred: {error}");
+    }
     Ok(inserted)
 }
 

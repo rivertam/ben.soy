@@ -100,16 +100,20 @@ auditable and available for a later allocation-free aggregator.
 
 An additive migration installs `fn::analytics::rebuild_visitor_day`, a raw
 `(visitor_id, occurred_at)` lookup index, and a synchronous create/update event.
-The event increments the absolute visitor/day key's dirty revision; the request
-path rebuilds and replaces its complete payload before returning. A
-compare-and-replace check rejects a raw snapshot if another event advanced the
-revision on either side of its read, preventing an older concurrent rebuild
-from winning last. Deletes are ignored, so a
-later raw-retention policy cannot subtract retained facts. A background worker
-with a 30-second database lease and persisted `(occurred_at, UUID)` cursor
-backfills in bounded batches. It runs after database initialization, advances
-through scan and final reconciliation phases, and keeps processing dirty keys
-after readiness; it never blocks a data-backed route from opening.
+The event increments the absolute visitor/day key's dirty revision. While the
+leased backfill is still scanning or reconciling, only that worker rebuilds
+payloads — the request path skips so live beacons do not race it and starve the
+legacy three-second dashboard. Once phase is `ready`, the request path rebuilds
+and replaces the complete payload after the durable event write; a rebuild
+failure is logged and deferred to the dirty reconciler rather than failing the
+beacon. A compare-and-replace check rejects a raw snapshot if another event
+advanced the revision on either side of its read, preventing an older concurrent
+rebuild from winning last. Deletes are ignored, so a later raw-retention policy
+cannot subtract retained facts. A background worker with a 30-second database
+lease and persisted `(occurred_at, UUID)` cursor backfills in small batches with
+exponential backoff on datastore errors. It runs after database initialization,
+advances through scan and final reconciliation phases, and keeps processing
+dirty keys after readiness; it never blocks a data-backed route from opening.
 
 Until reconciliation completes, each render performs the legacy three-second
 raw snapshot. The first request for each of the four windows then compares the
