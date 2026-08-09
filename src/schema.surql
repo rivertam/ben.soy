@@ -1,5 +1,7 @@
--- The application applies this schema on its first database connection.
--- OVERWRITE changes definitions in place without deleting stored records.
+-- The application reconciles these table and field definitions on its first
+-- database connection. Indexes are forward-only migrations in
+-- data/schema_migrations/: DEFINE INDEX OVERWRITE destroys and rebuilds an
+-- existing index on SurrealDB 3.2.3, even when its definition is unchanged.
 
 DEFINE TABLE OVERWRITE spire_runs SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON spire_runs TYPE string;
@@ -22,7 +24,6 @@ DEFINE FIELD OVERWRITE seed ON spire_runs TYPE string;
 DEFINE FIELD OVERWRITE game_mode ON spire_runs TYPE string;
 DEFINE FIELD OVERWRITE build_id ON spire_runs TYPE string;
 DEFINE FIELD OVERWRITE added_at ON spire_runs TYPE int;
-DEFINE INDEX OVERWRITE spire_runs_start_time ON spire_runs FIELDS start_time;
 
 DEFINE TABLE OVERWRITE spire_run_raws SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON spire_run_raws TYPE string;
@@ -48,20 +49,16 @@ DEFINE FIELD OVERWRITE notes ON workouts TYPE option<string>;
 DEFINE FIELD OVERWRITE description ON workouts TYPE option<string>;
 DEFINE FIELD OVERWRITE source ON workouts TYPE string;
 DEFINE FIELD OVERWRITE imported_at ON workouts TYPE int;
-DEFINE INDEX OVERWRITE workouts_started_at_utc ON workouts FIELDS started_at_utc;
 
 DEFINE TABLE OVERWRITE exercises SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON exercises TYPE string;
 DEFINE FIELD OVERWRITE name ON exercises TYPE string;
-DEFINE INDEX OVERWRITE exercises_name ON exercises FIELDS name UNIQUE;
 
 DEFINE TABLE OVERWRITE exercise_tags SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON exercise_tags TYPE string;
 DEFINE FIELD OVERWRITE exercise_name ON exercise_tags TYPE string;
 DEFINE FIELD OVERWRITE kind ON exercise_tags TYPE string;
 DEFINE FIELD OVERWRITE value ON exercise_tags TYPE string;
-DEFINE INDEX OVERWRITE exercise_tags_identity
-    ON exercise_tags FIELDS exercise_name, kind, value UNIQUE;
 
 DEFINE TABLE OVERWRITE sets SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON sets TYPE string;
@@ -79,8 +76,6 @@ DEFINE FIELD OVERWRITE distance_milli ON sets TYPE option<int>;
 DEFINE FIELD OVERWRITE set_time_seconds ON sets TYPE option<int>;
 DEFINE FIELD OVERWRITE set_type ON sets TYPE string;
 DEFINE FIELD OVERWRITE incomplete ON sets TYPE bool;
-DEFINE INDEX OVERWRITE sets_workout_ordinal ON sets FIELDS workout_id, ordinal UNIQUE;
-DEFINE INDEX OVERWRITE sets_workout_id ON sets FIELDS workout_id;
 
 DEFINE TABLE OVERWRITE fitness_meta SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON fitness_meta TYPE string;
@@ -111,7 +106,6 @@ DEFINE FIELD OVERWRITE muscle_group ON muscles TYPE string
         'core', 'legs', 'glutes', 'calves'];
 DEFINE FIELD OVERWRITE ordinal ON muscles TYPE int
     ASSERT $value >= 0 AND $value <= 100;
-DEFINE INDEX OVERWRITE muscles_name ON muscles FIELDS name UNIQUE;
 
 -- One weighted exercise↔muscle connection. ratio_hundredths scales a set's
 -- volume points for that muscle: 100 = full credit, 50 = half. Absence of a
@@ -142,8 +136,6 @@ DEFINE FIELD OVERWRITE source ON exercise_muscles TYPE string
     ASSERT $value IN ['seed', 'derived', 'admin'];
 DEFINE FIELD OVERWRITE updated_at ON exercise_muscles TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799;
-DEFINE INDEX OVERWRITE exercise_muscles_identity
-    ON exercise_muscles FIELDS exercise_name, muscle UNIQUE;
 
 -- Hidden-page allowlists (docs/auth.md). One row grants one email one page;
 -- the record key is content::access::grant_id(page_path, email), so the pair
@@ -166,8 +158,6 @@ DEFINE FIELD OVERWRITE email ON hidden_page_grants TYPE string
         AND string::matches($value, '^[!-?A-~]+@[!-?A-~]+\\.[!-?A-~]+$');
 DEFINE FIELD OVERWRITE granted_at ON hidden_page_grants TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799;
-DEFINE INDEX OVERWRITE hidden_page_grants_identity
-    ON hidden_page_grants FIELDS page_path, email UNIQUE;
 
 DEFINE TABLE OVERWRITE analytics_events SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON analytics_events TYPE string
@@ -300,14 +290,6 @@ DEFINE FIELD OVERWRITE utm_campaign ON analytics_events TYPE option<string>
         AND string::len($value) <= 80
         AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
     );
-DEFINE INDEX OVERWRITE analytics_events_kind_time
-    ON analytics_events FIELDS kind, occurred_at;
-DEFINE INDEX OVERWRITE analytics_events_time
-    ON analytics_events FIELDS occurred_at;
-DEFINE INDEX OVERWRITE analytics_events_session
-    ON analytics_events FIELDS visitor_id, session_id, occurred_at;
-DEFINE INDEX OVERWRITE analytics_events_session_time
-    ON analytics_events FIELDS session_id, occurred_at;
 
 DEFINE TABLE OVERWRITE analytics_visitor_aliases SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON analytics_visitor_aliases TYPE string
@@ -374,8 +356,6 @@ DEFINE FIELD OVERWRITE posted_at ON podrick_announcements TYPE option<int>
     ASSERT $value IS NONE OR ($value >= 0 AND $value <= 253402300799);
 DEFINE FIELD OVERWRITE attempts ON podrick_announcements TYPE int
     ASSERT $value >= 0 AND $value <= 1000000;
-DEFINE INDEX OVERWRITE podrick_announcements_claimed_at
-    ON podrick_announcements FIELDS claimed_at;
 
 -- Source facts for Pants Off: one row per Discord message by one of the three
 -- participants in #no-pants-talk. The Discord snowflake is both the record key
@@ -393,10 +373,6 @@ DEFINE FIELD OVERWRITE author_id ON podrick_pants_messages TYPE string
     ASSERT string::matches($value, '^[0-9]{1,20}$');
 DEFINE FIELD OVERWRITE posted_at ON podrick_pants_messages TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799;
-DEFINE INDEX OVERWRITE podrick_pants_messages_posted_at
-    ON podrick_pants_messages FIELDS posted_at;
-DEFINE INDEX OVERWRITE podrick_pants_messages_author_posted_at
-    ON podrick_pants_messages FIELDS author_id, posted_at;
 
 -- Retryable side effects produced from live Pants Off messages. Posts report
 -- infarctions in their channel; reactions put a worm on each participant's
@@ -423,8 +399,6 @@ DEFINE FIELD OVERWRITE output_message_id ON podrick_pants_actions TYPE option<st
     ASSERT $value IS NONE OR string::matches($value, '^[0-9]{1,20}$');
 DEFINE FIELD OVERWRITE attempts ON podrick_pants_actions TYPE int
     ASSERT $value >= 0 AND $value <= 1000000;
-DEFINE INDEX OVERWRITE podrick_pants_actions_claimed_at
-    ON podrick_pants_actions FIELDS claimed_at;
 
 -- String-valued cursors, keyed by `k`. `announce_watermark` holds the newest
 -- workout `started_at_utc` that already existed the first time Podrick ran;

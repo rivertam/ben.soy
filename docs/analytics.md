@@ -78,8 +78,9 @@ label—not authentication.
 
 ## Database behavior
 
-The committed schema lives in `src/schema.surql`, including bounded field
-assertions and query-specific indexes. Rust row shapes live in
+Bounded table and field definitions live in `src/schema.surql`; query-specific
+indexes live in the forward-only migrations under
+`src/data/schema_migrations/`. Rust row shapes live in
 `src/app/analytics/models.rs`.
 
 Dashboard windows are 7, 30, 90, or 365 UTC days. Each render performs one
@@ -121,8 +122,8 @@ those atomicity boundaries when changing analytics storage.
 ## Local verification
 
 `just dev` starts local SurrealDB before Topcoat; the app applies
-`src/schema.surql` on its first data-backed connection. After schema or
-analytics changes:
+`src/schema.surql` plus pending site/diary migrations on its first data-backed
+connection. After schema or analytics changes:
 
 ```sh
 just build

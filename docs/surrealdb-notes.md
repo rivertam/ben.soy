@@ -7,8 +7,9 @@ docs before changing query or schema APIs.
 ## Project layout
 
 - `src/data.rs` owns the shared connection and schema bootstrap.
-- `src/schema.surql` holds additive site definitions; the diary's forward-only
-  schema lives in `src/data/diary_migrations/`.
+- `src/schema.surql` holds additive table and field definitions.
+- `src/data/schema_migrations/` owns forward-only site index definitions;
+  `src/data/diary_migrations/` owns the diary's separately fenced schema.
 - Domain models live beside their query code under `src/app`.
 - `scripts/dev.sh` starts the pinned local server; production uses
   `deploy/surrealdb.Dockerfile`.
@@ -23,16 +24,28 @@ SURREALDB_USERNAME
 SURREALDB_PASSWORD
 ```
 
-`Data::db()` initializes lazily, uses an eight-second connection timeout,
-selects the configured namespace and database, applies `src/schema.surql`,
-applies/verifies diary migrations, and verifies health. A failed
-initialization is not cached, so a later request can retry.
+`Data::db()` initializes lazily, uses eight-second budgets for connection,
+authentication, namespace selection, direct-sync configuration, and health,
+and 60-second budgets for each schema/bootstrap stage. It applies
+`src/schema.surql`, the site migrations, and the diary migrations. Errors name
+the stage that failed. A failed initialization is not cached, so a later
+request can retry.
 
 ## Schema bootstrap
 
-The app executes the committed `DEFINE ... OVERWRITE` statements on its first
-data-backed connection. Every response is checked for statement-level errors.
-Definitions are idempotent and do not erase records.
+The app reconciles the committed table and field `DEFINE ... OVERWRITE`
+statements on its first data-backed connection. Every response is checked for
+statement-level errors. These definitions are idempotent and do not erase
+records.
+
+Indexes are deliberately excluded from that reconciliation. On SurrealDB
+3.2.3, `DEFINE INDEX OVERWRITE` deletes and rebuilds the physical index even
+when its definition is unchanged. `src/data/schema_migrations.rs` applies the
+numbered files in `src/data/schema_migrations/` once and records immutable
+`site_schema_migrations` ledger rows. The baseline migration uses
+`IF NOT EXISTS`, adopting existing production indexes without rebuilding them.
+Add a new migration and bump `CURRENT_SCHEMA_EPOCH` for every later index
+change; use `OVERWRITE` only when that one-time rebuild is intentional.
 
 The diary is the exception to pure reconciliation because offline clients need
 an exact activation boundary. `src/data/diary_migrations.rs` applies its
@@ -43,8 +56,9 @@ behind the ledger fails initialization, so rollback across an epoch needs an
 explicit reverse migration. Diary adapters also recheck the ledger through
 `Data::diary_db()` on cached connections. Epoch deploys must drain the old web
 process before the new one applies a migration: the check fences later uses,
-not an already-running request. Other domains still change `src/schema.surql`
-and their Rust models/queries together.
+not an already-running request. Other domains still change table/field
+definitions in `src/schema.surql` and their Rust models/queries together;
+index changes go through the site migration ledger.
 
 ## Query rules
 

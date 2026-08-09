@@ -87,12 +87,15 @@ removes the access method again at the next boot.
 
 ## Clean database bootstrap
 
-The application applies the additive site definitions in `src/schema.surql`
-and the ordered diary migrations in `src/data/diary_migrations/` on its first
-data-backed database connection, checking every statement result. Applied
-diary epochs are recorded in `diary_schema_migrations`; a binary older than
-that ledger refuses the diary store, including through an already-cached
-connection.
+The application applies additive table/field definitions from
+`src/schema.surql`, ordered site index migrations from
+`src/data/schema_migrations/`, and ordered diary migrations from
+`src/data/diary_migrations/` on its first data-backed connection, checking
+every statement result. Site index epochs are recorded in
+`site_schema_migrations`; diary epochs are recorded in
+`diary_schema_migrations`. The index baseline adopts existing definitions with
+`IF NOT EXISTS`, because `DEFINE INDEX OVERWRITE` rebuilds an unchanged index
+on SurrealDB 3.2.3.
 
 A Diary Schema Epoch change requires a drained handoff: keep the web service
 at one replica, let Railway switch traffic off the preceding deployment, and

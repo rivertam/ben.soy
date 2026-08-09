@@ -309,7 +309,8 @@ connections only.
 Before Podrick's first non-dry run, make sure the existing workout archive is
 already imported. An empty database seeds the lift watermark at the epoch
 floor, so importing manual lifts afterward would announce the import. Both the
-web and Podrick binaries reconcile `src/schema.surql` when they first connect;
+web and Podrick binaries reconcile `src/schema.surql` and apply pending site
+and diary migrations when they first connect;
 deploying the web service first is still the clearest rollout because it makes
 the hidden page available before the history seed starts. Because `/podrick`
 used to be public and cacheable, ship the web change with `just deploy` (or

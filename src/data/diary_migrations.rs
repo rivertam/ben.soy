@@ -81,7 +81,7 @@ const LEDGER_SCHEMA: &str = "\
     DEFINE TABLE OVERWRITE diary_schema_migrations SCHEMAFULL PERMISSIONS NONE;
     DEFINE FIELD OVERWRITE epoch ON diary_schema_migrations TYPE int
         ASSERT $value >= 1 AND $value <= 65535;
-    DEFINE INDEX OVERWRITE diary_schema_migrations_epoch
+    DEFINE INDEX IF NOT EXISTS diary_schema_migrations_epoch
         ON diary_schema_migrations FIELDS epoch UNIQUE;";
 
 pub(super) async fn apply(db: &Db) -> Result<(), String> {

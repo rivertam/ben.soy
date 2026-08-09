@@ -5,7 +5,7 @@
 //! authenticates, selects the namespace/database, and reconciles the committed
 //! schema. A failed initialization is not cached, so later requests can retry.
 
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use surrealdb::{
     Surreal,
@@ -15,6 +15,7 @@ use surrealdb::{
 use tokio::sync::OnceCell;
 
 mod diary_migrations;
+mod schema_migrations;
 
 #[path = "app/analytics/models.rs"]
 pub mod analytics_models;
@@ -42,7 +43,8 @@ pub const PASSWORD_VAR: &str = "SURREALDB_PASSWORD";
 pub const DIRECT_SYNC_PUBLIC_KEY_VAR: &str = "DIARY_SYNC_JWT_PUBLIC_KEY";
 
 const SCHEMA: &str = include_str!("schema.surql");
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(8);
+const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
 pub struct DataConfig {
@@ -94,19 +96,7 @@ impl Data {
             Ok(config) => config,
             Err(variable) => return Err(DataError::Unconfigured(variable)),
         };
-        let db = self
-            .cell
-            .get_or_try_init(|| async {
-                tokio::time::timeout(CONNECT_TIMEOUT, connect(config))
-                    .await
-                    .map_err(|_| {
-                        DataError::Connect(format!(
-                            "initialization exceeded {} seconds",
-                            CONNECT_TIMEOUT.as_secs()
-                        ))
-                    })?
-            })
-            .await?;
+        let db = self.cell.get_or_try_init(|| connect(config)).await?;
         Ok(db.clone())
     }
 
@@ -143,30 +133,70 @@ fn required_env(variable: &'static str) -> Result<String, &'static str> {
 }
 
 pub async fn connect(config: &DataConfig) -> Result<Db, DataError> {
-    let db = any::connect(config.endpoint.as_str())
-        .await
-        .map_err(connect_error)?;
-    db.signin(Root {
-        username: config.username.clone(),
-        password: config.password.clone(),
+    let db = timed(CONNECTION_TIMEOUT, "connection", async {
+        any::connect(config.endpoint.as_str())
+            .await
+            .map_err(connect_error)
     })
-    .await
-    .map_err(connect_error)?;
-    db.use_ns(config.namespace.clone())
-        .use_db(config.database.clone())
+    .await?;
+    timed(CONNECTION_TIMEOUT, "authentication", async {
+        db.signin(Root {
+            username: config.username.clone(),
+            password: config.password.clone(),
+        })
         .await
-        .map_err(connect_error)?;
-    db.query(SCHEMA)
-        .await
-        .map_err(connect_error)?
-        .check()
-        .map_err(connect_error)?;
-    diary_migrations::apply(&db)
-        .await
-        .map_err(|error| DataError::Connect(format!("diary migration failed: {error}")))?;
-    define_direct_sync_access(&db).await?;
-    db.health().await.map_err(connect_error)?;
+        .map_err(connect_error)
+    })
+    .await?;
+    timed(CONNECTION_TIMEOUT, "namespace selection", async {
+        db.use_ns(config.namespace.clone())
+            .use_db(config.database.clone())
+            .await
+            .map_err(connect_error)
+    })
+    .await?;
+    timed(BOOTSTRAP_TIMEOUT, "schema reconciliation", async {
+        db.query(SCHEMA)
+            .await
+            .map_err(connect_error)?
+            .check()
+            .map_err(connect_error)
+            .map(|_| ())
+    })
+    .await?;
+    timed(BOOTSTRAP_TIMEOUT, "schema migrations", async {
+        schema_migrations::apply(&db)
+            .await
+            .map_err(|error| DataError::Connect(format!("schema migration failed: {error}")))
+    })
+    .await?;
+    timed(BOOTSTRAP_TIMEOUT, "diary migrations", async {
+        diary_migrations::apply(&db)
+            .await
+            .map_err(|error| DataError::Connect(format!("diary migration failed: {error}")))
+    })
+    .await?;
+    timed(
+        CONNECTION_TIMEOUT,
+        "diary direct-sync configuration",
+        async { define_direct_sync_access(&db).await },
+    )
+    .await?;
+    timed(CONNECTION_TIMEOUT, "health verification", async {
+        db.health().await.map_err(connect_error)
+    })
+    .await?;
     Ok(db)
+}
+
+async fn timed<T>(
+    timeout: Duration,
+    stage: &'static str,
+    future: impl Future<Output = Result<T, DataError>>,
+) -> Result<T, DataError> {
+    tokio::time::timeout(timeout, future).await.map_err(|_| {
+        DataError::Connect(format!("{stage} exceeded {} seconds", timeout.as_secs()))
+    })?
 }
 
 /// Reconcile the diary direct-sync access method with the environment, the
