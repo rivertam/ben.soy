@@ -18,8 +18,15 @@ use super::{
 };
 
 const DAY_SECONDS: i64 = 86_400;
-const BATCH: i64 = 256;
+/// Source rows scanned (or dirty keys drained) per leased round. Kept small so
+/// a single round cannot monopolize SurrealDB while the legacy dashboard and
+/// live event writes still share the same datastore.
+const BATCH: i64 = 32;
 const LEASE_SECONDS: i64 = 30;
+const CONFLICT_MARKER: &str = "Transaction conflict";
+const CONFLICT_ATTEMPTS: usize = 4;
+const BACKFILL_IDLE: Duration = Duration::from_secs(5);
+const BACKFILL_BACKOFF_CAP: Duration = Duration::from_secs(60);
 
 #[derive(Deserialize, SurrealValue)]
 struct EventKey {
@@ -47,16 +54,33 @@ struct BackfillState {
 pub fn start_backfill(db: Db) {
     tokio::spawn(async move {
         let owner = Uuid::new_v4().to_string();
+        let mut failures: u32 = 0;
         loop {
-            if let Err(error) = backfill_round(&db, &owner).await {
-                eprintln!("analytics facts: backfill round failed: {error}");
+            match backfill_round(&db, &owner).await {
+                Ok(()) => failures = 0,
+                Err(error) => {
+                    failures = failures.saturating_add(1);
+                    eprintln!("analytics facts: backfill round failed: {error}");
+                }
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            tokio::time::sleep(backfill_pause(failures)).await;
         }
     });
 }
 
+/// Refresh the visitor/day fact for a just-written event, when safe.
+///
+/// During scan/reconcile the leased backfill owns rebuilds. Live writes still
+/// mark the absolute key dirty through `DEFINE EVENT`, so skipping the request
+/// path here avoids racing the backfill and starving the legacy dashboard.
+/// Once phase is `ready`, this keeps facts fresh ahead of the reconciler.
 pub async fn rebuild_for_event(db: &Db, event_id: &str) -> anyhow::Result<()> {
+    let Some(state) = state(db).await? else {
+        return Ok(());
+    };
+    if state.phase != "ready" {
+        return Ok(());
+    }
     let mut response = db
         .query(
             "SELECT record::id(id) AS id, visitor_id, occurred_at
@@ -75,6 +99,26 @@ pub async fn rebuild_for_event(db: &Db, event_id: &str) -> anyhow::Result<()> {
 pub async fn rebuild_visitor_day(db: &Db, visitor_id: &str, utc_day: i64) -> anyhow::Result<()> {
     let floor = utc_day.saturating_mul(DAY_SECONDS);
     let ceiling = floor.saturating_add(DAY_SECONDS);
+    let mut attempts = 0;
+    loop {
+        match rebuild_visitor_day_once(db, visitor_id, utc_day, floor, ceiling).await {
+            Ok(()) => return Ok(()),
+            Err(error) if is_transaction_conflict(&error) && attempts + 1 < CONFLICT_ATTEMPTS => {
+                tokio::time::sleep(conflict_backoff(attempts)).await;
+                attempts += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn rebuild_visitor_day_once(
+    db: &Db,
+    visitor_id: &str,
+    utc_day: i64,
+    floor: i64,
+    ceiling: i64,
+) -> anyhow::Result<()> {
     for _ in 0..4 {
         // Read the dirty revision before the raw snapshot. The database
         // function compares it again immediately before replacement: a write
@@ -126,6 +170,33 @@ pub async fn rebuild_visitor_day(db: &Db, visitor_id: &str, utc_day: i64) -> any
         }
     }
     anyhow::bail!("analytics visitor-day kept changing during rebuild")
+}
+
+fn is_transaction_conflict(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains(CONFLICT_MARKER))
+}
+
+fn conflict_backoff(attempt: usize) -> Duration {
+    let base = 4_u64 << attempt.min(3);
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| u64::from(since.subsec_nanos()))
+        % base;
+    Duration::from_millis(base + jitter)
+}
+
+fn backfill_pause(failures: u32) -> Duration {
+    if failures == 0 {
+        return BACKFILL_IDLE;
+    }
+    let shift = failures.saturating_sub(1).min(4);
+    let millis = BACKFILL_IDLE
+        .as_millis()
+        .saturating_mul(1u128 << shift)
+        .min(BACKFILL_BACKOFF_CAP.as_millis());
+    Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX))
 }
 
 #[doc(hidden)]
@@ -663,7 +734,11 @@ mod tests {
         let applied: Option<bool> = response.take(0).unwrap();
         assert_eq!(applied, Some(false));
 
+        // Request-path rebuild stays quiet until backfill reaches ready; the
+        // absolute rebuild still converges the dirty key for live traffic.
         rebuild_for_event(&db, id).await.unwrap();
+        assert!(load_for_parity(&db, 86_400).await.unwrap().is_empty());
+        rebuild_visitor_day(&db, &visitor, 1).await.unwrap();
         let facts = load_for_parity(&db, 86_400).await.unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].events[0].count, 2);
@@ -674,10 +749,22 @@ mod tests {
         backfill_round(&db, "worker-a").await.unwrap();
         backfill_round(&db, "worker-a").await.unwrap();
         assert!(ready_for_parity(&db).await.unwrap());
+        // Once ready, the request path rebuilds again without changing counts.
+        rebuild_for_event(&db, id).await.unwrap();
         assert_eq!(record_parity(&db, 1).await.unwrap(), 1);
         assert_eq!(record_parity(&db, 2).await.unwrap(), 3);
         assert_eq!(record_parity(&db, 4).await.unwrap(), 7);
         assert_eq!(record_parity(&db, 8).await.unwrap(), 15);
         assert!(load(&db, 86_400).await.unwrap().is_some());
+    }
+
+    #[test]
+    fn backfill_pause_backs_off_on_repeated_failures() {
+        assert_eq!(backfill_pause(0), BACKFILL_IDLE);
+        assert_eq!(backfill_pause(1), Duration::from_secs(5));
+        assert_eq!(backfill_pause(2), Duration::from_secs(10));
+        assert_eq!(backfill_pause(3), Duration::from_secs(20));
+        assert_eq!(backfill_pause(5), BACKFILL_BACKOFF_CAP);
+        assert_eq!(backfill_pause(9), BACKFILL_BACKOFF_CAP);
     }
 }

@@ -52,8 +52,9 @@ epochs remain strictly version-fenced and do not share this rule.
 
 Analytics epoch 2 owns `analytics_visitor_days`, its rebuild function/event,
 and the leased backfill cursor. The background task starts only after bootstrap
-returns and facts do not become the dashboard source until all four supported
-windows have exact legacy parity. See `docs/analytics.md`.
+returns; while it is scanning or reconciling, request-path rebuilds stay off so
+live writes only dirty keys. Facts do not become the dashboard source until all
+four supported windows have exact legacy parity. See `docs/analytics.md`.
 
 The diary is the exception to pure reconciliation because offline clients need
 an exact activation boundary. `src/data/diary_migrations.rs` applies its
