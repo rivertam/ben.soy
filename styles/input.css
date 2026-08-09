@@ -12,6 +12,9 @@
 @import "./planes-form.css";
 @import "./planes-receipt.css";
 @import "./planes-charts.css";
+/* Last on purpose: theme overrides must win same-specificity ties against
+   every section file above. */
+@import "./themes.css";
 
 /*
  * The shell: "mill and oxide". Cool steel paper, iron ink, and one accent —

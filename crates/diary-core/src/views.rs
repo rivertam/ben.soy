@@ -381,6 +381,10 @@ pub async fn entry_detail(entry: DiaryEntry) -> Result {
 /// and drags server-only context). Asset hrefs arrive as plain strings
 /// (resolved server-side into the /diary-sync.js loader); no Asset
 /// machinery runs on wasm.
+///
+/// Deliberately unthemed: the shell's theme boot script and switcher stay
+/// server-side too, so an offline render comes up in the default mill and
+/// oxide whatever `bens-theme` says. Cosmetic only, and only offline.
 #[component]
 pub async fn offline_page(
     title: &str,

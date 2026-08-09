@@ -47,7 +47,9 @@
 }
 
 .analytics-range-options a[aria-current="page"] {
-  color: white;
+  /* Card, not white: themes swap the accent, and card is the tone every
+     palette keeps contrasted against it. */
+  color: var(--color-card);
   background: var(--color-oxide);
 }
 
@@ -406,7 +408,7 @@
   border-radius: 0.35rem;
   background:
     radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--color-steel) 7%, transparent), transparent 60%),
-    color-mix(in srgb, var(--color-page) 72%, white);
+    color-mix(in srgb, var(--color-page) 72%, var(--color-card));
 }
 
 .analytics-atlas {
@@ -835,14 +837,17 @@
   color: white;
   font-family: var(--font-meta);
   font-size: 0.68rem;
-  background: color-mix(in srgb, var(--color-oxide) 75%, #202930);
+  /* Frozen house rust, not var(--color-oxide): this panel is an
+     art-directed dark zone, and bright theme accents (terminal's amber)
+     would sink the white label below contrast. */
+  background: color-mix(in srgb, #b7410e 75%, #202930);
   cursor: pointer;
 }
 
 .analytics-identify button:hover,
 .analytics-identify button:focus-visible {
   color: white;
-  background: var(--color-oxide);
+  background: #b7410e;
 }
 
 .analytics-honeypot {

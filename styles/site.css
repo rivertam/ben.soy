@@ -520,3 +520,215 @@ body[data-nav-hidden='true'] {
   text-decoration-thickness: 0.1em;
   text-underline-offset: 0.3em;
 }
+
+/*
+ * Theme switcher: a paint-chip rack pinned to the corner. A <details> like
+ * the nav dropdown, but floating, so theme.js adds click-away closing on
+ * top of the CSS-only open/close. Every surface reads the live tokens, so
+ * the switcher itself rethemes with the page; each menu row's swatch dot
+ * carries its own data-theme attribute and previews that palette (the
+ * blocks in themes.css use bare attribute selectors for exactly this).
+ */
+.corner-rack {
+  position: fixed;
+  right: 1rem;
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0rem));
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.theme-dd {
+  position: relative;
+}
+
+/* The transport: appears whenever this page has music to control. The
+   pill toggles; the volume slider slides out of it on hover or focus. */
+.band-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.band-volume {
+  width: 0;
+  opacity: 0;
+  margin: 0;
+  accent-color: var(--color-oxide);
+  transition:
+    width 180ms ease,
+    opacity 180ms ease,
+    margin 180ms ease;
+}
+
+.band-wrap:hover .band-volume,
+.band-wrap:focus-within .band-volume {
+  width: 5.5rem;
+  opacity: 1;
+  margin-right: 0.5rem;
+}
+
+.band-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  font-family: var(--font-meta);
+  font-size: 0.9rem;
+  line-height: 1;
+  color: var(--color-ink2);
+  background: var(--color-card);
+  border: 1px solid var(--color-hairline);
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-ink) 10%, transparent);
+}
+
+.band-pill:hover,
+.band-pill:focus-visible {
+  color: var(--color-oxide);
+  border-color: color-mix(in srgb, var(--color-oxide) 45%, var(--color-hairline));
+}
+
+/* Pages that bring their own band (/podrick) get the ♪ menu row under
+   every theme, not just the whimsical two. */
+body:has([data-page-band]) .theme-music {
+  display: flex;
+}
+
+/* On viewports where the pill would sit over the footer's right-aligned
+   last line (the login/sign-out control), give the footer clearance so
+   nothing interactive hides under it. */
+@media (max-width: 68rem) {
+  footer {
+    padding-bottom: 4.6rem;
+  }
+}
+
+.theme-dd > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  list-style: none;
+  user-select: none;
+  cursor: pointer;
+  padding: 0.4rem 0.8rem;
+  font-family: var(--font-meta);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  color: var(--color-ink2);
+  background: var(--color-card);
+  border: 1px solid var(--color-hairline);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-ink) 10%, transparent);
+}
+
+.theme-dd > summary::-webkit-details-marker {
+  display: none;
+}
+
+.theme-dd > summary:hover,
+.theme-dd > summary:focus-visible {
+  color: var(--color-oxide);
+  border-color: color-mix(in srgb, var(--color-oxide) 45%, var(--color-hairline));
+}
+
+.theme-dd-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.6rem);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 13.5rem;
+  max-height: min(26rem, 70vh);
+  overflow-y: auto;
+  padding: 0.5rem;
+  background: var(--color-page);
+  border: 1px solid var(--color-hairline);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-ink) 8%, transparent);
+}
+
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  font-family: var(--font-meta);
+  font-size: 0.78rem;
+  text-align: left;
+  color: var(--color-ink2);
+  background: transparent;
+  border: 0;
+  border-radius: 0.35rem;
+  cursor: pointer;
+}
+
+.theme-option:hover,
+.theme-option:focus-visible {
+  color: var(--color-oxide);
+  background: color-mix(in srgb, var(--color-oxide) 7%, transparent);
+}
+
+/* The worn theme: oxidized, and its dot gets the full-ink ring. */
+.theme-option[aria-pressed='true'] {
+  color: var(--color-oxide);
+  font-weight: 700;
+}
+
+.theme-option[aria-pressed='true'] .theme-dot {
+  border-color: currentColor;
+}
+
+/* The tune toggle: last row, fenced off from the paint chips. Hidden by
+   default — themes.css reveals it under the especially whimsical themes,
+   which are the only ones that carry a tune. Markup is identical for
+   every viewer either way (the HTML is edge-cached). */
+.theme-music {
+  display: none;
+  margin-top: 0.35rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--color-hairline);
+  border-radius: 0 0 0.35rem 0.35rem;
+  color: var(--color-muted);
+}
+
+/* The big top: marks an especially whimsical theme in the menu. */
+.theme-whimsy {
+  margin-left: auto;
+  padding-left: 0.4rem;
+  font-size: 0.85em;
+}
+
+.theme-music[aria-pressed='true'] {
+  color: var(--color-oxide);
+  font-weight: 700;
+}
+
+.theme-music-note {
+  flex: none;
+  width: 0.95rem;
+  text-align: center;
+}
+
+/*
+ * A swatch dot is that theme's page torn over its accent. The dot resolves
+ * the tokens against ITS OWN data-theme attribute, not the page's — the
+ * whole trick of the menu.
+ */
+.theme-dot {
+  flex: none;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--color-ink) 30%, var(--color-hairline));
+  background: linear-gradient(
+    135deg,
+    var(--color-page) 0% 48%,
+    var(--color-oxide) 48% 100%
+  );
+}

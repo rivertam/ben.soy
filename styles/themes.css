@@ -1,0 +1,465 @@
+/*
+ * The theme rack. Each block reskins the shell by overriding the @theme
+ * tokens from input.css under a [data-theme] attribute — variables and
+ * decorations only, never layout. content/themes.rs is the registry the
+ * switcher menu renders from; its tests hold the two files in sync.
+ *
+ * Selectors stay bare `[data-theme="…"]` (never `html[data-theme…]`): the
+ * switcher's swatch dots carry the attribute themselves so each menu row
+ * previews its own palette, and an html-scoped selector would break that.
+ *
+ * These rules are unlayered on purpose — they must beat Tailwind's
+ * `@layer theme` :root defaults and the section files' surface rules.
+ */
+
+/* ── mill & oxide — the house finish ─────────────────────────────────────
+ * Worn as the ABSENCE of data-theme on <html>; this block exists so swatch
+ * dots can wear it, and restates input.css exactly. Change palette there,
+ * mirror it here. */
+[data-theme="oxide"] {
+  color-scheme: light;
+  --color-page: #f4f5f7;
+  --color-card: #ffffff;
+  --color-ink: #1d2126;
+  --color-ink2: #4c545e;
+  --color-muted: #8a929c;
+  --color-hairline: #dde1e6;
+  --color-oxide: #b7410e;
+  --color-oxide-hot: #d24a10;
+  --color-patina: #3e7a6c;
+  --color-steel: #4a6d8c;
+  --color-brass: #a3762a;
+  --font-display: "Zilla Slab", "Rockwell", serif;
+  --font-body: "Fira Sans", "Segoe UI", sans-serif;
+  --font-meta: "Fira Mono", ui-monospace, monospace;
+}
+
+/* Even the house finish gets one move: seals press into the paper. */
+[data-theme="oxide"] .stamp-seal,
+:root:not([data-theme]) .stamp-seal {
+  transition: transform 120ms ease;
+}
+
+[data-theme="oxide"] .stamp-seal:hover,
+:root:not([data-theme]) .stamp-seal:hover {
+  transform: rotate(-2deg) scale(0.96);
+}
+
+/* ── night shift — dark mode, designed rather than inverted ──────────────
+ * The same mill with the lights off: iron-dark paper (off pure black so
+ * hairlines still read as material), lamplit ink at 14.4:1, and oxide
+ * brightened from rust to ember — at night links don't corrode, they catch.
+ * Fonts stay the house faces. */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-page: #15171b;
+  --color-card: #1d2026;
+  --color-ink: #e8e6e1;
+  --color-ink2: #b0ada6;
+  --color-muted: #8b887f;
+  --color-hairline: #2e323a;
+  --color-oxide: #e0673a;
+  --color-oxide-hot: #ff8a55;
+  --color-patina: #6fbf98;
+  --color-steel: #8fa3b8;
+  --color-brass: #cfa75f;
+}
+
+/* Banked coals: a furnace glow along the bottom edge, damped for the night
+   but never out. Breathes on a slow cycle; reduced-motion stills it. */
+[data-theme="dark"] body::after {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5rem;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(to top, rgb(224 103 58 / 8%), transparent);
+  animation: banked-coals 7s ease-in-out infinite alternate;
+}
+
+@keyframes banked-coals {
+  from {
+    opacity: 0.5;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Smolder hover: the base 160ms color shift carries over; the glow is new. */
+[data-theme="dark"] a:hover,
+[data-theme="dark"] a:focus-visible {
+  text-shadow: 0 0 8px rgb(224 103 58 / 45%);
+}
+
+/* Gauge lamps: the entry seals read as backlit dials on a dark panel. */
+[data-theme="dark"] .stamp-seal {
+  box-shadow: 0 0 10px rgb(224 103 58 / 30%);
+}
+
+/* ── terminal — amber phosphor, the log at 60 Hz ─────────────────────────
+ * For the man who built a TUI crossword engine before solving the puzzle:
+ * everything in Fira Mono on one warm tube. P3 amber phosphor is literally
+ * in the rust-orange family, so the palette pun survives at 10.4:1. */
+[data-theme="terminal"] {
+  color-scheme: dark;
+  --color-page: #141110;
+  --color-card: #1d1815;
+  --color-ink: #f2b661;
+  --color-ink2: #c9974a;
+  --color-muted: #a17b3c;
+  --color-hairline: #33291c;
+  --color-oxide: #ffcf70;
+  --color-oxide-hot: #ffe9bb;
+  --color-patina: #7ddb84;
+  --color-steel: #b5ad9c;
+  --color-brass: #d98e3f;
+  --font-display: "Fira Mono", "Courier New", monospace;
+  --font-body: "Fira Mono", "Courier New", monospace;
+  --font-meta: "Fira Mono", "Courier New", monospace;
+}
+
+/* Tube glass: a centered phosphor wash under fine scanlines. */
+[data-theme="terminal"] body {
+  background-image:
+    radial-gradient(
+      ellipse 120% 80% at 50% 35%,
+      rgb(255 176 0 / 5%),
+      transparent 70%
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgb(0 0 0 / 14%) 0 1px,
+      transparent 1px 3px
+    );
+}
+
+/* Screen curvature: glass falloff darkening the corners. Negative
+   z-index like a drafting grid: it dims the tube behind the text, never
+   the phosphor itself, so corner text keeps its contrast. */
+[data-theme="terminal"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 62%,
+    rgb(0 0 0 / 28%) 100%
+  );
+}
+
+/* Phosphor persistence: glow snaps on fast, decays slow when you leave —
+   hover-oxidation reinterpreted as afterglow. */
+[data-theme="terminal"] a {
+  transition:
+    color 160ms ease,
+    text-decoration-color 160ms ease,
+    text-shadow 1.2s ease-out;
+}
+
+[data-theme="terminal"] a:hover,
+[data-theme="terminal"] a:focus-visible {
+  transition:
+    color 160ms ease,
+    text-decoration-color 160ms ease,
+    text-shadow 120ms ease-in;
+  text-shadow: 0 0 7px rgb(255 207 112 / 55%);
+}
+
+/* The prompt never left: a block cursor blinks after every display title.
+   The homepage hero is exempt like clown's nose — its word-stack span is
+   sized by the longest cycling word, which would strand the cursor mid-air
+   (and the status line below already blinks its own caret). */
+[data-theme="terminal"] h1:not(.log-hero)::after {
+  content: "\258A";
+  margin-left: 0.15em;
+  color: var(--color-oxide);
+  animation: cursor-blink 1.1s steps(1) infinite;
+}
+
+@keyframes cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Reverse video: selection inverts like a terminal highlight. */
+[data-theme="terminal"] ::selection {
+  background: var(--color-ink);
+  color: var(--color-page);
+}
+
+/* Power-on: one bright horizontal line unfolding into the picture, every
+   time the set is switched on. One-shot — the animation runs when the
+   attribute lands and never again until it lands again. */
+[data-theme="terminal"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: #ffe9bb;
+  opacity: 0;
+  animation: crt-power-on 0.45s ease-out;
+}
+
+@keyframes crt-power-on {
+  0% {
+    opacity: 0.85;
+    transform: scaleY(0.004);
+  }
+  55% {
+    opacity: 0.3;
+    transform: scaleY(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scaleY(1);
+  }
+}
+
+/* ── felix mode — POV: you're about to throw a ball ──────────────────────
+ * A Carolina Dog palette: dog-bed fleece, espresso ink (13.3:1), and an
+ * accent of week-old-tennis-ball olive — true chartreuse cannot pass
+ * contrast, and Felix would not care. */
+[data-theme="felix"] {
+  color-scheme: light;
+  --color-page: #faf3e4;
+  --color-card: #fffcf5;
+  --color-ink: #33261a;
+  --color-ink2: #5f4c38;
+  --color-muted: #83704f;
+  --color-hairline: #e8dcc4;
+  --color-oxide: #6b7a00;
+  --color-oxide-hot: #4e5a02;
+  --color-patina: #3f7d2c;
+  --color-steel: #4c6e94;
+  --color-brass: #a1731f;
+  --font-display: "Trebuchet MS", "Lucida Grande", Tahoma, sans-serif;
+  --font-body: Verdana, Geneva, Tahoma, sans-serif;
+  --font-meta: "Courier New", Courier, monospace;
+}
+
+/* The cursor is a tennis ball, which makes every link a game of fetch. */
+[data-theme="felix"] body,
+[data-theme="felix"] a,
+[data-theme="felix"] button,
+[data-theme="felix"] summary {
+  cursor:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'><circle cx='11' cy='11' r='9.5' fill='%23c3d24b' stroke='%238a9431' stroke-width='1'/><path d='M3.5 5.5a9.5 9.5 0 0 1 0 11M18.5 5.5a9.5 9.5 0 0 0 0 11' fill='none' stroke='%23fdf9e6' stroke-width='1.8'/></svg>")
+      11 11,
+    auto;
+}
+
+/* Balls mid-flight: sparse chartreuse dots on the fleece, park at golden
+   hour. Low alpha so prose reads straight through. */
+[data-theme="felix"] body {
+  background-image:
+    radial-gradient(circle at 18% 22%, rgb(154 205 50 / 9%) 0 0.55rem, transparent 0.6rem),
+    radial-gradient(circle at 73% 9%, rgb(154 205 50 / 7%) 0 0.4rem, transparent 0.45rem),
+    radial-gradient(circle at 89% 64%, rgb(154 205 50 / 8%) 0 0.5rem, transparent 0.55rem),
+    radial-gradient(circle at 34% 81%, rgb(154 205 50 / 7%) 0 0.45rem, transparent 0.5rem);
+  background-size: 52rem 44rem;
+}
+
+/* Paw-stamped rail: the engineering logbook has been walked through. */
+[data-theme="felix"] .rail-stamp::before {
+  content: "\1F43E";
+  margin-right: 0.35em;
+  font-size: 0.85em;
+  opacity: 0.5;
+  filter: sepia(0.4);
+}
+
+/* Links wag: the underline oscillates like a tail instead of corroding.
+   The global reduced-motion kill switch stills it. */
+[data-theme="felix"] a:hover {
+  animation: felix-wag 0.45s ease-in-out infinite;
+}
+
+@keyframes felix-wag {
+  0%,
+  100% {
+    text-underline-offset: 0.22em;
+  }
+  50% {
+    text-underline-offset: 0.34em;
+  }
+}
+
+/* The switcher's swatch dot is, of course, the ball. It bounces. */
+[data-theme="felix"] .theme-dd > summary > .theme-dot {
+  animation: ball-bounce 2.8s cubic-bezier(0.28, 0, 0.6, 1) infinite;
+}
+
+@keyframes ball-bounce {
+  0%,
+  24%,
+  100% {
+    transform: translateY(0) scaleY(1);
+  }
+  8% {
+    transform: translateY(-0.3rem) scaleY(1);
+  }
+  15% {
+    transform: translateY(0) scaleY(0.82);
+  }
+  19% {
+    transform: translateY(-0.12rem) scaleY(1);
+  }
+}
+
+/* Especially whimsical: felix mode carries a tune, so the music row
+   appears while it's worn. */
+[data-theme="felix"] .theme-music {
+  display: flex;
+}
+
+/* The chaser: Felix (cut from the 2023 sprint photo) trails the
+   tennis-ball cursor; theme.js drives his transform each frame and ends
+   the chase with the ball in his mouth. Unscoped base styles so the img
+   never flashes unstyled between theme switches — theme.js hides it
+   outside felix mode. Below the switcher (z-40), above content. */
+.felix-chaser {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 8.15rem;
+  width: auto;
+  z-index: 30;
+  pointer-events: none;
+  filter: drop-shadow(0 0.4rem 0.5rem rgb(51 38 26 / 25%));
+  will-change: transform;
+}
+
+/* Ghost paw: one huge, nearly invisible print haunting the lower corner,
+   like a watermark in the album. */
+[data-theme="felix"] body::after {
+  content: "\1F43E";
+  position: fixed;
+  right: -0.5rem;
+  bottom: -1.5rem;
+  z-index: 0;
+  font-size: 9rem;
+  opacity: 0.05;
+  pointer-events: none;
+}
+
+/* ── clown mode — the contrast ratios remain, regrettably, compliant ─────
+ * Comic Sans set on a fastidiously compliant grid: circus-midnight violet
+ * ink at 16.8:1, nose-red accent at 5.6:1. The tension is the whole joke.
+ * Selecting it honks (theme.js); we are not sorry. */
+[data-theme="clown"] {
+  color-scheme: light;
+  --color-page: #fffdf7;
+  --color-card: #ffffff;
+  --color-ink: #26123b;
+  --color-ink2: #53406b;
+  --color-muted: #7d6d92;
+  --color-hairline: #ecdff0;
+  --color-oxide: #c81e2b;
+  --color-oxide-hot: #a11220;
+  --color-patina: #157a3d;
+  --color-steel: #2f6bb0;
+  --color-brass: #b0801c;
+  --font-display: "Comic Sans MS", "Comic Sans", "Chalkboard SE", "Comic Neue", cursive;
+  --font-body: "Comic Sans MS", "Comic Sans", "Chalkboard SE", "Comic Neue", cursive;
+  --font-meta: "Comic Sans MS", "Comic Sans", "Chalkboard SE", "Comic Neue", cursive;
+}
+
+/* Big-top polka dots: four colors of confetti, every one under 6% alpha. */
+[data-theme="clown"] body {
+  background-image:
+    radial-gradient(circle at 12% 18%, rgb(200 30 43 / 5%) 0 0.5rem, transparent 0.55rem),
+    radial-gradient(circle at 62% 34%, rgb(47 107 176 / 5%) 0 0.6rem, transparent 0.65rem),
+    radial-gradient(circle at 85% 12%, rgb(21 122 61 / 5%) 0 0.45rem, transparent 0.5rem),
+    radial-gradient(circle at 38% 76%, rgb(176 128 28 / 6%) 0 0.55rem, transparent 0.6rem),
+    radial-gradient(circle at 91% 68%, rgb(200 30 43 / 4%) 0 0.5rem, transparent 0.55rem);
+  background-size: 34rem 30rem;
+}
+
+/* The nose: every display title wears a glossy pure-CSS red nose. The
+   homepage hero is exempt — its word-stack span is sized by the longest
+   cycling word, which would leave the nose floating in mid-air. */
+[data-theme="clown"] h1:not(.log-hero)::after {
+  content: "";
+  display: inline-block;
+  width: 0.42em;
+  height: 0.42em;
+  margin-left: 0.16em;
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, #ff8d94, #c81e2b 58%, #8f0f1a);
+  vertical-align: baseline;
+}
+
+/* Links honk instead of oxidize: the underline goes wavy nose-red. */
+[data-theme="clown"] a:hover,
+[data-theme="clown"] a:focus-visible {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--color-oxide);
+}
+
+/* Ticket-stub seals: 'entry № 0042' prints as an ADMIT ONE stub. */
+[data-theme="clown"] .stamp-seal {
+  border: 1px dashed var(--color-oxide);
+  border-radius: 3px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgb(200 30 43 / 6%) 0 0.5rem,
+    transparent 0.5rem 1rem
+  );
+  transform: rotate(1deg);
+}
+
+/* Especially whimsical: clown mode carries a tune, so the music row
+   appears while it's worn. */
+[data-theme="clown"] .theme-music {
+  display: flex;
+}
+
+/* The switcher pill juggles, gently. Reduced-motion cancels the act. */
+[data-theme="clown"] .theme-dd > summary {
+  animation: clown-bob 2.6s ease-in-out infinite;
+}
+
+/* Section titles wiggle when poked. Once per poke; dignity is preserved
+   by the reduced-motion kill switch, and only there. */
+[data-theme="clown"] h2:hover,
+[data-theme="clown"] h3:hover {
+  animation: clown-wiggle 0.4s ease-in-out;
+}
+
+@keyframes clown-wiggle {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  30% {
+    transform: rotate(-1.2deg);
+  }
+  70% {
+    transform: rotate(1.2deg);
+  }
+}
+
+@keyframes clown-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+  50% {
+    transform: translateY(-0.18rem) rotate(1.4deg);
+  }
+}

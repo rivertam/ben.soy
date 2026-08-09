@@ -130,7 +130,8 @@ body.swing-lightbox-open {
   max-height: none;
   margin: 0;
   padding: 0;
-  color: var(--color-page);
+  /* Frozen like felix's: the lightbox is a dark room under every theme. */
+  color: #f4f5f7;
   background: #090b0d;
   border: 0;
 }
@@ -197,8 +198,8 @@ body.swing-lightbox-open {
 .swing-lightbox-nav:hover:not(:disabled),
 .swing-lightbox-nav:focus-visible:not(:disabled) {
   color: #090b0d;
-  background: var(--color-page);
-  border-color: var(--color-page);
+  background: #f4f5f7;
+  border-color: #f4f5f7;
 }
 
 .swing-lightbox-close:focus-visible,

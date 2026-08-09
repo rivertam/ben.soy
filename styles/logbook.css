@@ -187,12 +187,12 @@
   white-space: nowrap;
 }
 
-/* Serial stamps sit between hairline and muted; the hex has no theme token
-   (it exists only here and in the design source). */
+/* Serial stamps sit between hairline and muted — mixed from both so every
+   theme keeps that relationship (#c5cbd2 vs the old #c6ccd3 hex, one step). */
 .log-serial {
   font-family: var(--font-meta);
   font-size: 0.6875rem;
-  color: #c6ccd3;
+  color: color-mix(in srgb, var(--color-hairline) 73%, var(--color-muted));
 }
 
 /* Mobile: date and serial share one eyebrow line above the entry. */

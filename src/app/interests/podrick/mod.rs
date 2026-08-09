@@ -15,6 +15,7 @@ use benjisponge::data::Data;
 use jiff::Timestamp;
 use topcoat::{
     Result,
+    asset::{Asset, asset},
     context::{Cx, app_context},
     router::{HeaderValue, error::redirect, header, page, query_params, uri},
     view::view,
@@ -29,6 +30,15 @@ use super::super::{login::viewer, not_found::not_found_page};
 
 const PATH: &str = "/podrick";
 const LOGIN_REDIRECT: &str = "/login?next=%2Fpodrick";
+
+/// The anthem. An AI-written single that plays on arrival (as far as
+/// autoplay policy allows — pants-off.js holds the graceful fallback),
+/// under every theme; its data-page-band attribute tells the theme tune
+/// engine this page brought its own band. The asset URL is unauthenticated
+/// like every hashed asset, which matches the hidden-page contract: the
+/// PAGE is gated, the repo and its bytes were never secret.
+const ANTHEM_MP3: Asset = asset!("./pants-off-oclock.mp3");
+const ANTHEM_JS: Asset = asset!("./pants-off.js");
 
 #[query_params(error = redirect("?"))]
 struct PodrickQuery {
@@ -74,6 +84,29 @@ async fn podrick(cx: &Cx) -> Result {
             runtime: false,
             analytics: false,
             page_head(stamp: meta.stamp, title: meta.title, lede: meta.teaser)
+
+            rail_section(
+                class: "mt-8",
+                stamp: "anthem",
+                <div class="flex flex-wrap items-baseline gap-x-4 gap-y-2">
+                    // data-music-toggle: the chip is another view of the
+                    // site-wide music preference (with the corner pill and
+                    // the switcher's ♪ row); theme.js drives playback.
+                    <button
+                        type="button"
+                        id="anthem-toggle"
+                        class="chip chip-oxide cursor-pointer"
+                        data-music-toggle=""
+                        aria-pressed="false"
+                    >"▶ pants off o'clock"</button>
+                </div>
+                // preload=metadata, not none: Chromium's deferred-load path
+                // (none + play()) can wedge at readyState 0; metadata keeps
+                // the arrival fetch to headers while play() starts from the
+                // reliable ready state.
+                <audio id="anthem" data-page-band="" preload="metadata" src=(ANTHEM_MP3)></audio>
+                <script type="module" src=(ANTHEM_JS)></script>
+            )
 
             rail_section(
                 class: "mt-8",

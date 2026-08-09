@@ -8,17 +8,22 @@ use topcoat::{
     context::{Cx, app_context},
     font::{Font, fontsource::fontsource_font},
     router::{HeaderValue, header},
-    view::{View, component, view},
+    view::{Unescaped, View, component, view},
 };
 
 use crate::app::login::viewer;
 use crate::components::link_label;
-use crate::content::{access, interests::INTERESTS, logbook::LOG};
+use crate::content::{access, interests::INTERESTS, logbook::LOG, themes};
 
 pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
 pub const FIRA_SANS: Font = fontsource_font!(FIRA_SANS, host: Asset);
 pub const FIRA_MONO: Font = fontsource_font!(FIRA_MONO, host: Asset);
 const KALAM: Font = fontsource_font!(KALAM, weight: 700, style: Normal, subset: Latin, host: Asset);
+/// Clown mode's font. Linked on every page but fetched only when a
+/// `[data-theme="clown"]` stack actually uses it (@font-face is lazy), so
+/// the joke lands on Linux too — fontconfig maps Comic Sans to Noto Sans,
+/// which is nobody's idea of funny.
+const COMIC_NEUE: Font = fontsource_font!(COMIC_NEUE, host: Asset);
 /// The site stylesheet's ONE declaration — `stylesheet!()` is an `asset!`
 /// underneath, and a second invocation anywhere registers a duplicate
 /// serving route that panics at router build (which `just check` never
@@ -26,6 +31,15 @@ const KALAM: Font = fontsource_font!(KALAM, weight: 700, style: Normal, subset: 
 /// so the service worker's offline SSR can link the same stylesheet.
 pub const SITE_CSS: Asset = topcoat::tailwind::stylesheet!();
 const ANALYTICS_JS: Asset = asset!("./analytics.js");
+const THEME_JS: Asset = asset!("./theme.js");
+/// Clown mode's band: a Pixabay circus track (their license permits this
+/// use without attribution). Fetched only when the tune actually starts —
+/// theme.js reads the hashed URL off the ♪ row's data attribute.
+const CIRCUS_MP3: Asset = asset!("./circus.mp3");
+/// Felix mode's chaser: Felix himself, cut out of the 2023 sprint photo,
+/// who trails the tennis-ball cursor and eventually catches it. Same
+/// data-attribute delivery as the mp3; only fetched in felix mode.
+const FELIX_CHASER: Asset = asset!("./felix-chaser.webp");
 const FAVICON_16: Asset = asset!("./favicon/favicon-16.png");
 const FAVICON_32: Asset = asset!("./favicon/favicon-32.png");
 const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
@@ -109,6 +123,10 @@ pub async fn shell(
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <meta name="referrer" content="strict-origin-when-cross-origin">
                 <title>(title)</title>
+                // Applies the stored theme before the stylesheet arrives so
+                // first paint is already in costume (content/themes.rs owns
+                // the script; theme.js handles the clicks).
+                <script>(Unescaped::new_unchecked(themes::THEME_BOOT_JS))</script>
                 topcoat::dev::script()
                 if runtime {
                     topcoat::runtime::script()
@@ -116,6 +134,7 @@ pub async fn shell(
                 if analytics {
                     <script defer="" src=(ANALYTICS_JS)></script>
                 }
+                <script defer="" src=(THEME_JS)></script>
                 <link rel="stylesheet" href=(SITE_CSS)>
                 topcoat::font::link(font: ZILLA_SLAB)
                 topcoat::font::link(font: FIRA_SANS)
@@ -123,6 +142,10 @@ pub async fn shell(
                 if marker_font {
                     topcoat::font::link(font: KALAM)
                 }
+                // preload: false — the @font-face stylesheet rides along,
+                // but the woff2 bytes only download once a clown-mode stack
+                // actually uses the family.
+                topcoat::font::link(font: COMIC_NEUE, preload: false)
                 // Hashed PNGs for browsers; app/favicon.rs serves /favicon.ico
                 // for the non-HTML clients that guess the path.
                 <link rel="icon" type="image/png" sizes="32x32" href=(FAVICON_32)>
@@ -216,7 +239,94 @@ pub async fn shell(
                         </p>
                     }
                 </footer>
+                corner_rack()
             </body>
         </html>
+    }
+}
+
+/// The fixed bottom-right rack: the transport (visible whenever the page
+/// has a music source — a whimsical theme's tune or a page band like
+/// /podrick's anthem; theme.js unhides it and paints ▶/⏸ from the real
+/// state) beside the theme switcher. The volume slider slides out on
+/// hover/focus and scales every sound the site makes. Music controls all
+/// carry `data-music-toggle`, so the pill, the menu's ♪ row, and any page
+/// chip are views of the one remembered preference.
+#[component]
+async fn corner_rack() -> Result {
+    view! {
+        <div class="corner-rack">
+            <div class="band-wrap" hidden="">
+                <input
+                    type="range"
+                    class="band-volume"
+                    min="0"
+                    max="100"
+                    value="50"
+                    aria-label="music volume"
+                >
+                <button
+                    type="button"
+                    class="band-pill"
+                    data-music-toggle=""
+                    aria-pressed="false"
+                    title="pause / play the music"
+                >"♪"</button>
+            </div>
+            theme_switcher()
+        </div>
+    }
+}
+
+/// The paint-chip rack in the corner: one row per registry entry, each row's
+/// swatch dot wearing its own theme via `data-theme` (themes.css resolves
+/// tokens against the dot itself). Server renders every row unpressed —
+/// the HTML is cached for anonymous viewers, so the live choice is applied
+/// client-side: the boot script sets `data-theme` before paint and theme.js
+/// corrects `aria-pressed` on load.
+#[component]
+async fn theme_switcher() -> Result {
+    view! {
+        <details class="theme-dd">
+            <summary aria-label="change the site theme">
+                <span class="theme-dot" aria-hidden="true"></span>
+                "theme"
+            </summary>
+            <div class="theme-dd-menu" role="group" aria-label="site themes">
+                for theme in themes::THEMES.iter() {
+                    <button
+                        type="button"
+                        class="theme-option"
+                        data-set-theme=(theme.id)
+                        aria-pressed="false"
+                        title=(theme.blurb)
+                    >
+                        <span class="theme-dot" data-theme=(theme.id) aria-hidden="true"></span>
+                        (theme.label)
+                        if theme.whimsical {
+                            // The big top marks the especially whimsical.
+                            <span class="theme-whimsy" aria-hidden="true">"🎪"</span>
+                            <span class="sr-only">"(especially whimsical)"</span>
+                        }
+                    </button>
+                }
+                // The especially whimsical themes carry a tune, on by
+                // default; the row only appears while one is worn
+                // (themes.css reveals it) and is the opt-out, remembered
+                // per browser.
+                <button
+                    type="button"
+                    class="theme-option theme-music"
+                    data-music-toggle=""
+                    data-clown-tune=(CIRCUS_MP3)
+                    data-felix-chaser=(FELIX_CHASER)
+                    aria-pressed="false"
+                    title="the big top comes with a band; silence it here"
+                >
+                    <span class="theme-music-note" aria-hidden="true">"♪"</span>
+                    "music"
+                </button>
+            </div>
+        </details>
     }
 }
