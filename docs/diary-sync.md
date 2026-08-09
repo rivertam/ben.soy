@@ -259,10 +259,13 @@ everything else stays `no-store` for cookie-bearing requests.
 
 ## Building
 
-- `just wasm` — needs `rustup target add wasm32-unknown-unknown` and
+- `just wasm` — needs `rustup target add wasm32-unknown-unknown`,
+  `clang` on `PATH` (`ring`, via surrealdb, compiles C for wasm32; gcc
+  has no wasm backend), and
   `cargo install wasm-bindgen-cli --version 0.2.126 --locked`. The CLI
   version MUST equal diary-worker's pinned `wasm-bindgen` crate version;
-  mismatches fail loudly at bindgen time.
+  mismatches fail loudly at bindgen time. The Docker `wasm-builder` stage
+  installs `clang` for the same reason.
 - `.cargo/config.toml` passes `--cfg getrandom_backend="wasm_js"` for the
   wasm target only (getrandom refuses to guess a randomness source there).
 - `[profile.wasm]` (in the worker's own manifest) is size-first

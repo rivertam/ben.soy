@@ -28,8 +28,9 @@ RUN topcoat asset bundle --release --bin benjisponge
 # in parallel with the site build above. The CLI version must match
 # diary-worker's pinned wasm-bindgen crate exactly.
 FROM rust:1.97-slim AS wasm-builder
+# clang: ring (via surrealdb) compiles C for wasm32; gcc has no wasm backend.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl patch \
+    ca-certificates clang curl patch \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-unknown-unknown
 RUN cargo install wasm-bindgen-cli --version 0.2.126 --locked
