@@ -109,15 +109,20 @@ failure is logged and deferred to the dirty reconciler rather than failing the
 beacon. A compare-and-replace check rejects a raw snapshot if another event
 advanced the revision on either side of its read, preventing an older concurrent
 rebuild from winning last. Deletes are ignored, so a later raw-retention policy
-cannot subtract retained facts. A background worker with a 30-second database
-lease and persisted `(occurred_at, UUID)` cursor backfills in small batches with
-exponential backoff on datastore errors. It runs after database initialization,
-advances through scan and final reconciliation phases, and keeps processing
-dirty keys after readiness; it never blocks a data-backed route from opening.
+cannot subtract retained facts. The background worker is **opt-in** via
+`ANALYTICS_FACTS_BACKFILL=1`: with a 30-second database lease and persisted
+`(occurred_at, UUID)` cursor it backfills in small batches with exponential
+backoff on datastore errors. It starts after database initialization when
+enabled, advances through scan and final reconciliation phases, and keeps
+processing dirty keys after readiness; it never blocks a data-backed route from
+opening.
 
-Until reconciliation completes, each render performs the legacy three-second
-raw snapshot. The first request for each of the four windows then compares the
-fact and legacy dashboards structurally and persists a four-bit parity mask.
+Until reconciliation completes (or while the worker is idle), each render
+performs the legacy raw snapshot: one bounded events query plus a prior-session
+probe over only the idle window before cutoff, with the window ∩ prior
+intersection done in Rust. The first request for each of the four windows then
+compares the fact and legacy dashboards structurally and persists a four-bit
+parity mask.
 Only mask 15 activates fact-only reads. Any fact query or decode failure falls
 back to the raw snapshot. Fact loads include the requested UTC days and the
 preceding UTC day; only pageviews in the exact prior 30-minute slice contribute

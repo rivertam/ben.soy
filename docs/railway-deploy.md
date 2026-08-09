@@ -82,6 +82,14 @@ Flag-on also needs the `db.` Tunnel hostname
 ([cloudflare-deploy.md](cloudflare-deploy.md)); unsetting the variables
 removes the access method again at the next boot.
 
+Analytics visitor-day backfill ([analytics.md](analytics.md)) is similarly
+opt-in on the web service — leave it unset so the legacy raw dashboard stays
+healthy; set it only when deliberately finishing the fact rollout:
+
+```text
+ANALYTICS_FACTS_BACKFILL=1   # leased scan/reconcile worker; off when unset
+```
+
 `HOST=0.0.0.0` is baked into the web image; Railway injects `PORT`. Pin it to
 `8080` so the Tunnel origin stays stable.
 
