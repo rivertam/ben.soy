@@ -291,6 +291,49 @@ DEFINE FIELD OVERWRITE utm_campaign ON analytics_events TYPE option<string>
         AND string::matches($value, '^[^\\x00-\\x1F\\x7F]*$')
     );
 
+-- Exact analytics read model. The JSON payload contains grouped event facts,
+-- never raw request rows; its Rust shape is AnalyticsVisitorDay. Keeping the
+-- payload opaque lets additive fact fields roll out without a destructive
+-- database rewrite while the indexed day/visitor envelope stays strict.
+DEFINE TABLE OVERWRITE analytics_visitor_days SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON analytics_visitor_days TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE utc_day ON analytics_visitor_days TYPE int
+    ASSERT $value >= 0 AND $value <= 2932896;
+DEFINE FIELD OVERWRITE visitor_id ON analytics_visitor_days TYPE string
+    ASSERT string::matches($value, '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE payload ON analytics_visitor_days TYPE string
+    ASSERT string::len($value) >= 2;
+DEFINE FIELD OVERWRITE rebuilt_at ON analytics_visitor_days TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
+-- One durable cursor and lease. `phase` advances scan -> reconcile -> ready;
+-- the background worker owns all transitions and never delays bootstrap.
+DEFINE TABLE OVERWRITE analytics_fact_backfill SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE cursor_at ON analytics_fact_backfill TYPE int
+    ASSERT $value >= -1 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE cursor_id ON analytics_fact_backfill TYPE string;
+DEFINE FIELD OVERWRITE phase ON analytics_fact_backfill TYPE string
+    ASSERT $value IN ['scan', 'reconcile', 'ready'];
+DEFINE FIELD OVERWRITE lease_owner ON analytics_fact_backfill TYPE option<string>;
+DEFINE FIELD OVERWRITE lease_until ON analytics_fact_backfill TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE updated_at ON analytics_fact_backfill TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE parity_mask ON analytics_fact_backfill TYPE int
+    ASSERT $value >= 0 AND $value <= 15;
+
+-- Database events cannot serialize the versioned Rust payload themselves.
+-- They synchronously mark the absolute visitor/day source dirty; the request
+-- write rebuilds that row before returning, and the leased reconciler repairs
+-- writes made by maintenance clients or interrupted requests.
+DEFINE TABLE OVERWRITE analytics_fact_dirty SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE utc_day ON analytics_fact_dirty TYPE int;
+DEFINE FIELD OVERWRITE visitor_id ON analytics_fact_dirty TYPE string;
+DEFINE FIELD OVERWRITE touched_at ON analytics_fact_dirty TYPE int;
+DEFINE FIELD OVERWRITE revision ON analytics_fact_dirty TYPE int
+    ASSERT $value >= 1;
+
 DEFINE TABLE OVERWRITE analytics_visitor_aliases SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON analytics_visitor_aliases TYPE string
     ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');

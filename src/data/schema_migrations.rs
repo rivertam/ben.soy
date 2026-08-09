@@ -7,17 +7,23 @@
 
 use super::Db;
 
-const CURRENT_SCHEMA_EPOCH: u16 = 1;
+const CURRENT_SCHEMA_EPOCH: u16 = 2;
 
 struct Migration {
     epoch: u16,
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    epoch: 1,
-    sql: include_str!("schema_migrations/0001_indexes.surql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        epoch: 1,
+        sql: include_str!("schema_migrations/0001_indexes.surql"),
+    },
+    Migration {
+        epoch: 2,
+        sql: include_str!("schema_migrations/0002_analytics_visitor_days.surql"),
+    },
+];
 
 const LEDGER_SCHEMA: &str = "\
     DEFINE TABLE OVERWRITE site_schema_migrations SCHEMAFULL PERMISSIONS NONE;
@@ -48,7 +54,7 @@ pub(super) async fn apply(db: &Db) -> Result<(), String> {
             ));
         }
     }
-    if applied.last().copied() == Some(CURRENT_SCHEMA_EPOCH) {
+    if applied.contains(&CURRENT_SCHEMA_EPOCH) {
         Ok(())
     } else {
         Err(format!(
@@ -94,16 +100,10 @@ fn validate_registry() -> Result<(), String> {
     }
 }
 
-fn validate_ledger(applied: &[u16]) -> Result<(), String> {
-    if let Some(epoch) = applied
-        .iter()
-        .copied()
-        .find(|epoch| *epoch > CURRENT_SCHEMA_EPOCH)
-    {
-        return Err(format!(
-            "database site schema epoch {epoch} is newer than this binary's {CURRENT_SCHEMA_EPOCH}"
-        ));
-    }
+pub(super) fn validate_ledger(applied: &[u16]) -> Result<(), String> {
+    // Site epochs are additive. An older binary may use a database whose
+    // contiguous ledger has newer entries; this is what keeps rollback to the
+    // epoch-1 binary possible. Diary epochs remain separately exact-fenced.
     let expected: Vec<u16> = (1..=applied.last().copied().unwrap_or(0)).collect();
     if applied == expected {
         Ok(())
@@ -149,7 +149,7 @@ mod tests {
         apply(&db).await.unwrap();
         apply(&db).await.unwrap();
 
-        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1]);
+        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2]);
         db.query("INFO FOR INDEX analytics_events_kind_time ON analytics_events")
             .await
             .unwrap()
@@ -168,7 +168,7 @@ mod tests {
             .iter()
             .map(|migration| migration.sql.matches("DEFINE INDEX IF NOT EXISTS").count())
             .sum::<usize>();
-        assert_eq!(indexes, 17);
+        assert_eq!(indexes, 19);
         assert!(MIGRATIONS.iter().all(|migration| {
             !migration
                 .sql

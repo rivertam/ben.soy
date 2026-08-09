@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use surrealdb::types::SurrealValue;
 use uuid::Uuid;
 
-use benjisponge::data::{Db, analytics_models::AnalyticsEvent};
+use benjisponge::data::{Db, analytics_facts, analytics_models::AnalyticsEvent};
 
 use super::input::ValidatedEvent;
 
@@ -136,6 +136,9 @@ pub async fn insert_event(
 ) -> anyhow::Result<bool> {
     if event_exists(db, &event.id).await? {
         update_engagement(db, visitor_hash, &event, occurred_at).await?;
+        analytics_facts::rebuild_for_event(db, &event.id)
+            .await
+            .context("analytics visitor-day rebuild failed")?;
         return Ok(false);
     }
 
@@ -220,8 +223,8 @@ pub async fn insert_event(
         }
     })
     .await;
-    match insert {
-        Ok(_) => Ok(true),
+    let inserted = match insert {
+        Ok(_) => true,
         Err(error) => {
             if !event_exists(db, &event_id).await? {
                 return Err(error.into());
@@ -229,9 +232,13 @@ pub async fn insert_event(
             if let Some(update) = engagement_retry {
                 update_engagement_values(db, visitor_hash, &update, occurred_at).await?;
             }
-            Ok(false)
+            false
         }
-    }
+    };
+    analytics_facts::rebuild_for_event(db, &event_id)
+        .await
+        .context("analytics visitor-day rebuild failed")?;
+    Ok(inserted)
 }
 
 async fn event_exists(db: &Db, id: &str) -> surrealdb::Result<bool> {

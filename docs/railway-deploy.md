@@ -118,6 +118,26 @@ For a new production database:
 The same migrations preserve an existing diary in place. Upgrade the pinned
 database image deliberately and take a volume backup first.
 
+### Analytics epoch 2 preparation and rollout
+
+Before applying analytics epoch 2, upgrade the Railway plan as needed and
+resize the SurrealDB volume to 20 GB. Set
+`SURREAL_ROCKSDB_WAL_SIZE_LIMIT=128` on the database service and restart it;
+verify the archived WAL directory falls from its historical 4.39 GiB to about
+128 MiB or less. Then verify database health and record counts, Spire, lifting,
+diary, a fresh analytics event, and that application logs have no cookie
+warning.
+
+Deploy the analytics change with one web replica and Podrick paused. Warm a
+data-backed route, then watch the identifier-free `analytics facts` logs for a
+completed scan, reconciliation, and exact parity mask 15 across 7/30/90/365
+day requests. Exercise fresh pageview, outbound, and engagement writes and
+confirm propagation. The 365-day fact load must stay inside the existing
+three-second dashboard budget. Restart Podrick at the same commit only after
+those checks pass. Raw events are retained; rollback to the patched epoch-1
+binary remains available because site migrations accept newer contiguous
+additive ledger epochs. Diary migrations are still exact-fenced.
+
 `just sync-spire` discovers both games on Linux: Slay the Spire 1 below the
 Steam install's `SlayTheSpire/runs` character directories, and Slay the Spire
 2 below its local and Steam Cloud history directories. `--history-dir <path>`

@@ -6,7 +6,10 @@ use std::{
 };
 
 use anyhow::Context;
-use benjisponge::data::{Db, analytics_models::AnalyticsEvent};
+use benjisponge::data::{
+    Db, analytics_facts,
+    analytics_models::{AnalyticsEvent, AnalyticsVisitorDay},
+};
 use serde::Deserialize;
 use surrealdb::types::SurrealValue;
 use tokio::time::timeout;
@@ -60,7 +63,7 @@ impl Window {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Dashboard {
     pub overview: Overview,
     pub performance: Performance,
@@ -76,7 +79,7 @@ pub struct Dashboard {
     pub campaigns: Vec<Campaign>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Overview {
     pub pageviews: i64,
     pub visitors: i64,
@@ -87,7 +90,7 @@ pub struct Overview {
     pub single_page_percent: i64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Performance {
     pub attention_seconds: i64,
     pub scroll_percent: i64,
@@ -98,7 +101,7 @@ pub struct Performance {
     pub samples: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Day {
     pub date: String,
     pub views: i64,
@@ -106,7 +109,7 @@ pub struct Day {
     pub engaged_seconds: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Page {
     pub path: String,
     pub views: i64,
@@ -115,20 +118,20 @@ pub struct Page {
     pub scroll_percent: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Count {
     pub label: String,
     pub count: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Cohort {
     pub label: String,
     pub views: i64,
     pub visitors: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Technology {
     pub dimension: String,
     pub label: String,
@@ -136,7 +139,7 @@ pub struct Technology {
     pub visitors: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Journey {
     pub from: String,
     pub to: String,
@@ -144,7 +147,7 @@ pub struct Journey {
     pub visitors: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Campaign {
     pub source: String,
     pub campaign: String,
@@ -159,6 +162,52 @@ struct SnapshotRows {
 }
 
 pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
+    let current = current_timestamp()?;
+    match analytics_facts::load(db, cutoff).await {
+        Ok(Some(facts)) => return aggregate_facts(&facts, cutoff, current),
+        Ok(None) => {}
+        Err(error) => eprintln!("analytics facts: ready load failed; using raw snapshot: {error}"),
+    }
+
+    let raw = load_raw(db, cutoff, current).await?;
+    if analytics_facts::ready_for_parity(db).await.unwrap_or(false) {
+        match analytics_facts::load_for_parity(db, cutoff)
+            .await
+            .and_then(|facts| aggregate_facts(&facts, cutoff, current))
+        {
+            Ok(fact) if fact == raw => {
+                let days = current.div_euclid(86_400) - cutoff.div_euclid(86_400) + 1;
+                let bit = match days {
+                    7 => 1,
+                    30 => 2,
+                    90 => 4,
+                    365 => 8,
+                    _ => 0,
+                };
+                if bit != 0 {
+                    match analytics_facts::record_parity(db, bit).await {
+                        Ok(mask) => eprintln!(
+                            "analytics facts: exact parity confirmed for {days} days (mask {mask}/15)"
+                        ),
+                        Err(error) => {
+                            eprintln!("analytics facts: could not persist parity: {error}")
+                        }
+                    }
+                }
+            }
+            Ok(_) => eprintln!(
+                "analytics facts: parity mismatch for cutoff day {}",
+                cutoff.div_euclid(86_400)
+            ),
+            Err(error) => {
+                eprintln!("analytics facts: parity load failed; using raw snapshot: {error}")
+            }
+        }
+    }
+    Ok(raw)
+}
+
+async fn load_raw(db: &Db, cutoff: i64, current: i64) -> anyhow::Result<Dashboard> {
     // `prior_sessions` only needs the idle window before `$cutoff`. A session
     // id that survives across the boundary must have had activity inside that
     // window (see `SESSION_IDLE_SECONDS`); scanning unbounded history made the
@@ -204,20 +253,56 @@ pub async fn load(db: &Db, cutoff: i64) -> anyhow::Result<Dashboard> {
     })
     .await
     .context("analytics snapshot exceeded three seconds")??;
-    let current = i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system clock predates the Unix epoch")?
-            .as_secs(),
-    )
-    .context("current timestamp exceeds i64")?;
-
     Ok(aggregate(
         &snapshot.events,
         &snapshot.prior_sessions.into_iter().collect(),
         cutoff,
         current,
     ))
+}
+
+fn current_timestamp() -> anyhow::Result<i64> {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock predates the Unix epoch")?
+            .as_secs(),
+    )
+    .context("current timestamp exceeds i64")
+}
+
+fn aggregate_facts(
+    facts: &[AnalyticsVisitorDay],
+    cutoff: i64,
+    current: i64,
+) -> anyhow::Result<Dashboard> {
+    let cutoff_day = cutoff.div_euclid(86_400);
+    let prior_floor = cutoff.saturating_sub(super::db::SESSION_IDLE_SECONDS);
+    let mut prior_sessions = HashSet::new();
+    let mut events = Vec::new();
+    for fact in facts {
+        for grouped in &fact.events {
+            if grouped.event.visitor_id != fact.visitor_id {
+                anyhow::bail!("analytics visitor-day payload has a mismatched visitor");
+            }
+            if fact.utc_day < cutoff_day {
+                if grouped.event.kind == "pageview" && grouped.last_occurred_at >= prior_floor {
+                    prior_sessions.insert(grouped.event.session_id.clone());
+                }
+                continue;
+            }
+            let count =
+                usize::try_from(grouped.count).context("analytics fact count exceeds usize")?;
+            for ordinal in 0..count {
+                let mut event = grouped.event.clone();
+                if ordinal > 0 {
+                    event.id = format!("{}~{ordinal}", event.id);
+                }
+                events.push(event);
+            }
+        }
+    }
+    Ok(aggregate(&events, &prior_sessions, cutoff, current))
 }
 
 fn aggregate(
@@ -888,6 +973,112 @@ mod tests {
         assert_eq!(dashboard.channels.len(), 1);
         assert_eq!(dashboard.channels[0].label, "direct");
         assert_eq!(dashboard.channels[0].count, 1);
+    }
+
+    #[test]
+    fn visitor_day_facts_match_raw_for_every_dashboard_window() {
+        let current = 1_735_776_000; // 2025-01-02 UTC
+        let mut events = Vec::new();
+        for offset in [0, 6, 29, 89, 364] {
+            let at = current - offset * 86_400;
+            for visitor in 0..3 {
+                let mut pageview = event(
+                    &format!("p-{offset}-{visitor}"),
+                    &format!("v{visitor}"),
+                    &format!("s-{offset}-{visitor}"),
+                    at,
+                    "pageview",
+                    "/resume",
+                );
+                pageview.country_code = Some("US".into());
+                pageview.local_weekday = Some(offset.rem_euclid(7));
+                pageview.local_hour = Some(0);
+                pageview.referrer_kind = "search".into();
+                pageview.referrer_host = Some("search.example".into());
+                pageview.utm_source = Some("test".into());
+                pageview.utm_campaign = Some("exact".into());
+                events.push(pageview);
+
+                let mut engagement = event(
+                    &format!("e-{offset}-{visitor}"),
+                    &format!("v{visitor}"),
+                    &format!("s-{offset}-{visitor}"),
+                    at + 1,
+                    "engagement",
+                    "/resume",
+                );
+                engagement.engagement_seconds = Some(0);
+                engagement.scroll_percent = Some(90 + visitor);
+                engagement.lcp_milliseconds = Some(100 + visitor);
+                events.push(engagement);
+            }
+        }
+
+        // One session straddles midnight and two pageviews share a second;
+        // event id is the deterministic acquisition tie-breaker.
+        let boundary = current - 29 * 86_400;
+        events.push(event(
+            "z",
+            "cross",
+            "cross-session",
+            boundary - 1,
+            "pageview",
+            "/",
+        ));
+        events.push(event(
+            "b",
+            "cross",
+            "cross-session",
+            boundary,
+            "pageview",
+            "/thoughts",
+        ));
+        events.push(event(
+            "a",
+            "cross",
+            "cross-session",
+            boundary,
+            "pageview",
+            "/resume",
+        ));
+
+        let mut by_visitor_day: BTreeMap<(String, i64), Vec<AnalyticsEvent>> = BTreeMap::new();
+        for event in events.iter().cloned() {
+            by_visitor_day
+                .entry((
+                    event.visitor_id.clone(),
+                    event.occurred_at.div_euclid(86_400),
+                ))
+                .or_default()
+                .push(event);
+        }
+        let facts: Vec<AnalyticsVisitorDay> = by_visitor_day
+            .into_iter()
+            .map(|((visitor, day), rows)| analytics_facts::compact(day, &visitor, rows).unwrap())
+            .collect();
+
+        for days in [7, 30, 90, 365] {
+            let cutoff = current - (days - 1) * 86_400;
+            let prior_floor = cutoff - super::super::db::SESSION_IDLE_SECONDS;
+            let current_sessions: HashSet<&str> = events
+                .iter()
+                .filter(|event| event.kind == "pageview" && event.occurred_at >= cutoff)
+                .map(|event| event.session_id.as_str())
+                .collect();
+            let prior: HashSet<String> = events
+                .iter()
+                .filter(|event| {
+                    event.kind == "pageview"
+                        && event.occurred_at < cutoff
+                        && event.occurred_at >= prior_floor
+                        && current_sessions.contains(event.session_id.as_str())
+                })
+                .map(|event| event.session_id.clone())
+                .collect();
+            let raw = aggregate(&events, &prior, cutoff, current);
+            let from_facts = aggregate_facts(&facts, cutoff, current).unwrap();
+            assert_eq!(from_facts, raw, "{days}-day differential");
+        }
     }
 
     fn event(

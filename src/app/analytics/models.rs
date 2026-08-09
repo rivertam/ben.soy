@@ -46,6 +46,68 @@ pub struct AnalyticsEvent {
     pub utm_campaign: Option<String>,
 }
 
+/// A run of otherwise-identical events inside one visitor's UTC day.
+///
+/// `first` retains the deterministic `(occurred_at, event id)` ordering used
+/// for acquisition, while `last_occurred_at` is the exact boundary marker
+/// needed to recognize a session crossing midnight. Repeated rows are folded
+/// into `count`; the dashboard expands these compact facts only in memory so
+/// its established aggregation remains the single semantic implementation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AnalyticsEventFact {
+    pub event: AnalyticsEvent,
+    pub last_occurred_at: i64,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AnalyticsSessionFact {
+    pub session_id: String,
+    pub pageviews: u64,
+    pub first_pageview: AnalyticsEvent,
+    pub last_pageview_at: i64,
+}
+
+/// A count grouped on one public dashboard dimension. `secondary` is used by
+/// journeys; local clocks use `weekday:hour` as the key.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AnalyticsDimensionFact {
+    pub dimension: String,
+    pub key: String,
+    pub secondary: Option<String>,
+    pub count: u64,
+}
+
+/// Exact per-page sums and explicit denominators for optional engagement
+/// measurements. Zero is a sample; only `None` omits one from its denominator.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AnalyticsEngagementFact {
+    pub page_path: String,
+    pub events: u64,
+    pub engagement_seconds_sum: i128,
+    pub engagement_seconds_samples: u64,
+    pub scroll_percent_sum: i128,
+    pub scroll_percent_samples: u64,
+    pub finish_count: u64,
+    pub lcp_milliseconds_sum: i128,
+    pub lcp_milliseconds_samples: u64,
+    pub cls_thousandths_sum: i128,
+    pub cls_thousandths_samples: u64,
+    pub navigation_milliseconds_sum: i128,
+    pub navigation_milliseconds_samples: u64,
+}
+
+/// Exact, compact read model for one anonymous visitor on one UTC day.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AnalyticsVisitorDay {
+    pub utc_day: i64,
+    pub visitor_id: String,
+    pub sessions: Vec<AnalyticsSessionFact>,
+    pub dimensions: Vec<AnalyticsDimensionFact>,
+    pub engagement: Vec<AnalyticsEngagementFact>,
+    pub events: Vec<AnalyticsEventFact>,
+}
+
 /// Maps a hardened session cookie to the stable anonymous visitor selected
 /// during its first event.
 ///

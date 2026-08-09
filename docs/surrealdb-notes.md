@@ -45,7 +45,15 @@ numbered files in `src/data/schema_migrations/` once and records immutable
 `site_schema_migrations` ledger rows. The baseline migration uses
 `IF NOT EXISTS`, adopting existing production indexes without rebuilding them.
 Add a new migration and bump `CURRENT_SCHEMA_EPOCH` for every later index
-change; use `OVERWRITE` only when that one-time rebuild is intentional.
+change; use `OVERWRITE` only when that one-time rebuild is intentional. Site
+epochs are contiguous and additive: an older binary accepts newer ledger rows
+so an epoch-1 rollback can continue using its old raw analytics loader. Diary
+epochs remain strictly version-fenced and do not share this rule.
+
+Analytics epoch 2 owns `analytics_visitor_days`, its rebuild function/event,
+and the leased backfill cursor. The background task starts only after bootstrap
+returns and facts do not become the dashboard source until all four supported
+windows have exact legacy parity. See `docs/analytics.md`.
 
 The diary is the exception to pure reconciliation because offline clients need
 an exact activation boundary. `src/data/diary_migrations.rs` applies its

@@ -83,10 +83,41 @@ indexes live in the forward-only migrations under
 `src/data/schema_migrations/`. Rust row shapes live in
 `src/app/analytics/models.rs`.
 
-Dashboard windows are 7, 30, 90, or 365 UTC days. Each render performs one
-database statement with a three-second application-side timeout. It returns
-the bounded event rows plus scalar markers for matching sessions whose first
-pageview predates the window, then aggregates every panel in Rust. The markers
+Dashboard windows are 7, 30, 90, or 365 UTC days. Epoch 2 adds the exact
+`analytics_visitor_days` read model, one compact JSON fact payload per
+`[utc_day, visitor_id]`, indexed by day. Payload rows group otherwise-identical
+events and retain their exact count, deterministic first `(timestamp, UUID)`,
+and last timestamp. This preserves session, acquisition, optional-metric
+denominator, suppression, and half-up rounding semantics without reading one
+raw event row per dashboard request.
+
+Each payload also stores explicit per-session pageview/first-acquisition/last
+facts, grouped page/country/technology/local-hour/journey/outbound counts, and
+per-page engagement sums, finish counts, and denominators for every optional
+metric. During rollout the grouped event facts feed the unchanged legacy Rust
+aggregator; the explicit projections make the persisted contract independently
+auditable and available for a later allocation-free aggregator.
+
+An additive migration installs `fn::analytics::rebuild_visitor_day`, a raw
+`(visitor_id, occurred_at)` lookup index, and a synchronous create/update event.
+The event increments the absolute visitor/day key's dirty revision; the request
+path rebuilds and replaces its complete payload before returning. A
+compare-and-replace check rejects a raw snapshot if another event advanced the
+revision on either side of its read, preventing an older concurrent rebuild
+from winning last. Deletes are ignored, so a
+later raw-retention policy cannot subtract retained facts. A background worker
+with a 30-second database lease and persisted `(occurred_at, UUID)` cursor
+backfills in bounded batches. It runs after database initialization, advances
+through scan and final reconciliation phases, and keeps processing dirty keys
+after readiness; it never blocks a data-backed route from opening.
+
+Until reconciliation completes, each render performs the legacy three-second
+raw snapshot. The first request for each of the four windows then compares the
+fact and legacy dashboards structurally and persists a four-bit parity mask.
+Only mask 15 activates fact-only reads. Any fact query or decode failure falls
+back to the raw snapshot. Fact loads include the requested UTC days and the
+preceding UTC day; only pageviews in the exact prior 30-minute slice contribute
+boundary session markers. The markers
 keep acquisition cohorts from counting a session again when it straddles a
 window boundary; the prior-session probe only looks back one idle window
 (30 minutes), which is enough because a surviving session id must have had
@@ -94,9 +125,10 @@ activity inside that gap or it would already have rotated. An unhealthy
 database falls back to the standby card. Only canonical range URLs execute
 the query, preventing arbitrary query strings from bypassing shared caching.
 
-Raw anonymous events, current session cursors, cookie aliases, and voluntary
-identities are retained until deliberately removed. Public reads are bounded to
-365 days; no raw data is rewritten into lossy rollups.
+Raw anonymous events remain the source of truth and rollback path and are
+retained until a separate retention change. Public reads are bounded to 365
+days. Logs report batch progress, fact row counts, parity windows, and latency,
+never visitor or session identifiers.
 
 ## Write hardening
 
