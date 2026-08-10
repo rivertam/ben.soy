@@ -1,0 +1,27 @@
+/* ── mill & oxide ───────────────────────────────────────────────────────── */
+[data-theme="oxide"] {
+  color-scheme: light;
+  --color-page: #f4f5f7;
+  --color-card: #ffffff;
+  --color-ink: #1d2126;
+  --color-ink2: #4c545e;
+  --color-muted: #8a929c;
+  --color-hairline: #dde1e6;
+  --color-oxide: #b7410e;
+  --color-oxide-hot: #d24a10;
+  --color-patina: #3e7a6c;
+  --color-steel: #4a6d8c;
+  --color-brass: #a3762a;
+  --font-display: "Zilla Slab", "Rockwell", serif;
+  --font-body: "Fira Sans", "Segoe UI", sans-serif;
+  --font-meta: "Fira Mono", ui-monospace, monospace;
+}
+
+/* Seals press into the paper. */
+[data-theme="oxide"] .stamp-seal {
+  transition: transform 120ms ease;
+}
+
+[data-theme="oxide"] .stamp-seal:hover {
+  transform: rotate(-2deg) scale(0.96);
+}

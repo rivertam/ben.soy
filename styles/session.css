@@ -1,0 +1,207 @@
+/*
+ * The site's default session shell is core chrome, not theme lifecycle.
+ * Fresh HTML carries no data-theme; choosing an alternate appearance adds
+ * that attribute and these scoped layout rules stand down. Rust renders the
+ * pane, windows, and status-line message; browser/session*.js supplies only
+ * client-local controls.
+ */
+
+/* The ordinary header stands down; the status bar is the default nav. */
+:root:not([data-theme]) body > header {
+  display: none;
+}
+
+/* Clearance for the fixed bar, and room for the appearance rack above it. */
+:root:not([data-theme]) body {
+  padding-bottom: 2.6rem;
+}
+
+:root:not([data-theme]) .corner-rack {
+  bottom: calc(3.2rem + env(safe-area-inset-bottom, 0rem));
+}
+
+/* The content column is a pane. Immersive pages stay unframed. */
+:root:not([data-theme]) body:not([data-nav-hidden="true"]) main {
+  position: relative;
+  width: calc(100% - 0.9rem);
+  border: 1px solid var(--tmux-border);
+  margin-top: 1.25rem;
+  padding-top: 1.5rem;
+}
+
+:root:not([data-theme]) body:not([data-nav-hidden="true"]) main::before {
+  content: attr(data-session-title);
+  position: absolute;
+  top: -0.8em;
+  left: 1rem;
+  padding: 0 0.5em;
+  background: var(--color-page);
+  font-family: var(--font-meta);
+  font-size: 0.72rem;
+  color: var(--color-muted);
+}
+
+/* Alternate finishes leave the status bar in the DOM but hidden. */
+.tmux-bar {
+  display: none;
+}
+
+:root:not([data-theme]) .tmux-bar {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.22rem 0.55rem calc(0.22rem + env(safe-area-inset-bottom, 0rem));
+  background: var(--tmux-bar);
+  border-top: 1px solid var(--tmux-border);
+  font-family: var(--font-meta);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+:root:not([data-theme]) .tmux-session {
+  flex: none;
+  padding: 0 0.55em;
+  border-radius: 2px;
+  background: var(--tmux-violet);
+  color: var(--tmux-coal);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+:root:not([data-theme]) .tmux-session:hover,
+:root:not([data-theme]) .tmux-session:focus-visible {
+  background: color-mix(in srgb, var(--tmux-violet) 80%, white);
+  color: var(--tmux-coal);
+}
+
+:root:not([data-theme]) .tmux-windows {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 0.2rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+:root:not([data-theme]) .tmux-windows::-webkit-scrollbar {
+  display: none;
+}
+
+/* Phones shed the strip, but the anchors remain for prefix-number jumps. */
+@media (max-width: 40rem) {
+  :root:not([data-theme]) .tmux-windows {
+    display: none;
+  }
+}
+
+:root:not([data-theme]) .tmux-window {
+  flex: none;
+  padding: 0 0.5em;
+  border-radius: 2px;
+  color: var(--color-muted);
+  text-decoration: none;
+}
+
+:root:not([data-theme]) .tmux-window:hover,
+:root:not([data-theme]) .tmux-window:focus-visible {
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-ink) 12%, transparent);
+}
+
+:root:not([data-theme]) .tmux-window[aria-current] {
+  background: var(--tmux-lime);
+  color: var(--tmux-coal);
+  font-weight: 700;
+}
+
+:root:not([data-theme]) .tmux-status-right {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
+}
+
+:root:not([data-theme]) .tmux-keys {
+  color: var(--color-muted);
+}
+
+@media (max-width: 64rem) {
+  :root:not([data-theme]) .tmux-keys {
+    display: none;
+  }
+}
+
+:root:not([data-theme]) .tmux-host {
+  color: var(--tmux-lime);
+}
+
+:root:not([data-theme]) .tmux-clock {
+  color: var(--color-brass);
+}
+
+.tmux-prefix {
+  display: none;
+}
+
+:root:not([data-theme]) .tmux-bar[data-prefix-armed] .tmux-prefix {
+  display: inline;
+  padding: 0 0.45em;
+  border-radius: 2px;
+  background: var(--tmux-pink);
+  color: var(--tmux-coal);
+  font-weight: 700;
+}
+
+/* A server-rendered display-message surface, currently used for Vimium. */
+:root:not([data-theme]) .tmux-note {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  padding: 0 0.6rem;
+  background: var(--color-oxide);
+  border: 0;
+  color: var(--tmux-coal);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.tmux-note[hidden] {
+  display: none;
+}
+
+/* The prompt never left: a block cursor follows display titles. */
+:root:not([data-theme]) h1:not(.log-hero):not(.felix-hero-title)::after {
+  content: "\258A";
+  margin-left: 0.15em;
+  color: var(--color-oxide);
+  animation: cursor-blink 1.1s steps(1) infinite;
+}
+
+@keyframes cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+:root:not([data-theme]) ::selection {
+  background: var(--color-ink);
+  color: var(--color-page);
+}

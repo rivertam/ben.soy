@@ -12,7 +12,7 @@ use super::links::{link_label, split_link_label};
 #[component]
 pub async fn index_card(stamp: &str, href: String, title: &str, teaser: &str) -> Result {
     view! {
-        <article class="rail-row">
+        <article class="rail-row" data-rail-href=(href.as_str())>
             <p class="rail-stamp">(stamp)</p>
             <div class="min-w-0">
                 <h2 class="font-display text-2xl leading-snug font-semibold">

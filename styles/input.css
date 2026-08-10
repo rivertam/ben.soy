@@ -11,32 +11,30 @@
 @import "./planes-form.css";
 @import "./planes-receipt.css";
 @import "./planes-charts.css";
-/* Last on purpose: theme overrides must win same-specificity ties against
-   every section file above. */
+/* Core session chrome and theme packages are last so their surface rules and
+   tokens win same-specificity ties against every section above. */
+@import "./session.css";
 @import "./themes.css";
 
 /*
- * The shell: "mill and oxide". Cool steel paper, iron ink, and one accent —
- * the color literally named rust. Type is the Mozilla lineage Rust grew up
- * in: Zilla Slab display, Fira Sans body, Fira Mono metadata.
+ * The shell is the tmux session this site is written in. Optional finishes
+ * override these tokens through data-theme; no attribute means the default.
  */
 @theme {
-  --color-page: #f4f5f7;
-  --color-card: #ffffff;
-  --color-ink: #1d2126;
-  --color-ink2: #4c545e;
-  --color-muted: #8a929c;
-  --color-hairline: #dde1e6;
-  --color-oxide: #b7410e;
-  --color-oxide-hot: #d24a10;
-  --color-patina: #3e7a6c;
-  /* Mill metals for data surfaces (the planes charts): machined steel and
-     brass fittings. Named for the shop floor, not the Tailwind palette. */
-  --color-steel: #4a6d8c;
-  --color-brass: #a3762a;
+  --color-page: #2e3626;
+  --color-card: #37402c;
+  --color-ink: #d2dab0;
+  --color-ink2: #aebb87;
+  --color-muted: #8b9a68;
+  --color-hairline: #465232;
+  --color-oxide: #e8a33d;
+  --color-oxide-hot: #f6c464;
+  --color-patina: #a9c25c;
+  --color-steel: #7fa9d0;
+  --color-brass: #d9b13f;
 
-  --font-display: "Zilla Slab", "Rockwell", serif;
-  --font-body: "Fira Sans", "Segoe UI", sans-serif;
+  --font-display: "Fira Mono", "Courier New", monospace;
+  --font-body: "Fira Mono", "Courier New", monospace;
   --font-meta: "Fira Mono", ui-monospace, monospace;
 }
 

@@ -1,0 +1,57 @@
+/* ── night shift — dark mode, designed rather than inverted ──────────────
+ * The same mill with the lights off: iron-dark paper (off pure black so
+ * hairlines still read as material), lamplit ink at 14.4:1, and oxide
+ * brightened from rust to ember — at night links don't corrode, they catch.
+ * Fonts stay the house faces. */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-page: #15171b;
+  --color-card: #1d2026;
+  --color-ink: #e8e6e1;
+  --color-ink2: #b0ada6;
+  --color-muted: #8b887f;
+  --color-hairline: #2e323a;
+  --color-oxide: #e0673a;
+  --color-oxide-hot: #ff8a55;
+  --color-patina: #6fbf98;
+  --color-steel: #8fa3b8;
+  --color-brass: #cfa75f;
+  --font-display: "Zilla Slab", "Rockwell", serif;
+  --font-body: "Fira Sans", "Segoe UI", sans-serif;
+  --font-meta: "Fira Mono", ui-monospace, monospace;
+}
+
+/* Banked coals: a furnace glow along the bottom edge, damped for the night
+   but never out. Breathes on a slow cycle; reduced-motion stills it. */
+[data-theme="dark"] body::after {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5rem;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(to top, rgb(224 103 58 / 8%), transparent);
+  animation: banked-coals 7s ease-in-out infinite alternate;
+}
+
+@keyframes banked-coals {
+  from {
+    opacity: 0.5;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Smolder hover: the base 160ms color shift carries over; the glow is new. */
+[data-theme="dark"] a:hover,
+[data-theme="dark"] a:focus-visible {
+  text-shadow: 0 0 8px rgb(224 103 58 / 45%);
+}
+
+/* Gauge lamps: the entry seals read as backlit dials on a dark panel. */
+[data-theme="dark"] .stamp-seal {
+  box-shadow: 0 0 10px rgb(224 103 58 / 30%);
+}

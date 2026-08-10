@@ -86,6 +86,63 @@
   }
 }
 
+/* Structural keyboard navigation is part of the site, not the tmux palette.
+ * Every .rail-row participates automatically; data-rail-item adapts other
+ * row shapes such as the log timeline and home directory listing. */
+[data-rail-current] {
+  position: relative;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--color-ink) 11%, transparent);
+  box-shadow: 0 0 0 0.55rem color-mix(in srgb, var(--color-ink) 11%, transparent);
+  scroll-margin-block: 4.5rem;
+}
+
+[data-rail-current]::after {
+  content: "\276F";
+  position: absolute;
+  top: 0;
+  left: -1.15rem;
+  color: var(--color-oxide);
+}
+
+.netrw [data-rail-current] {
+  box-shadow:
+    -0.55rem 0 0 color-mix(in srgb, var(--color-ink) 11%, transparent),
+    0.55rem 0 0 color-mix(in srgb, var(--color-ink) 11%, transparent);
+}
+
+/* f's hint chips. Popover-hosted overlays stay in the browser top layer. */
+.key-hints {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+.key-hint {
+  position: absolute;
+  padding: 0 0.28em;
+  border: 1px solid var(--color-oxide-hot);
+  border-radius: 2px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-oxide) 78%, white),
+    var(--color-oxide)
+  );
+  color: var(--color-page);
+  font-family: var(--font-meta);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.5;
+  text-transform: uppercase;
+  box-shadow: 0 2px 5px rgb(0 0 0 / 45%);
+}
+
+.key-hint .key-hint-typed {
+  opacity: 0.4;
+}
+
 /*
  * Oxidation hover: interactive ink corrodes toward oxide and the underline
  * thickens. The reduced-motion kill switch in input.css disables the
@@ -479,11 +536,11 @@ body[data-nav-hidden='true'] {
 
 /*
  * Theme switcher: a paint-chip rack pinned to the corner. A floating
- * <details>, so theme.js adds click-away closing on
+ * <details>, so appearance.js adds click-away closing on
  * top of the CSS-only open/close. Every surface reads the live tokens, so
  * the switcher itself rethemes with the page; each menu row's swatch dot
  * carries its own data-theme attribute and previews that palette (the
- * blocks in themes.css use bare attribute selectors for exactly this).
+ * session/finish styles use bare attribute selectors for exactly this).
  */
 .corner-rack {
   position: fixed;
@@ -641,7 +698,7 @@ body:has([data-page-band]) .theme-music {
 }
 
 /* The tune toggle: last row, fenced off from the paint chips. Hidden by
-   default — themes.css reveals it under the especially whimsical themes,
+   default — package CSS reveals it under the especially whimsical themes,
    which are the only ones that carry a tune. Markup is identical for
    every viewer either way (the HTML is edge-cached). */
 .theme-music {

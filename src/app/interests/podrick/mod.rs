@@ -91,7 +91,7 @@ async fn podrick(cx: &Cx) -> Result {
                 <div class="flex flex-wrap items-baseline gap-x-4 gap-y-2">
                     // data-music-toggle: the chip is another view of the
                     // site-wide music preference (with the corner pill and
-                    // the switcher's ♪ row); theme.js drives playback.
+                    // the switcher's ♪ row); appearance.js drives playback.
                     <button
                         type="button"
                         id="anthem-toggle"

@@ -204,7 +204,7 @@ function offlineStub() {
   const html = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Diary — offline</title></head>
-<body style="font-family: system-ui, sans-serif; margin: 4rem auto; max-width: 32rem; padding: 0 1rem; color: #1d2126; background: #f4f5f7">
+<body style="font-family: ui-monospace, monospace; margin: 4rem auto; max-width: 32rem; padding: 0 1rem; color: #d2dab0; background: #2e3626">
 <h1 style="font-size: 1.2rem">Offline</h1>
 <p>The diary needs one online visit before it can open offline.</p>
 </body>

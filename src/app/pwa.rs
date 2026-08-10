@@ -32,8 +32,8 @@ const MANIFEST: &str = r##"{
   "start_url": "/diary",
   "scope": "/diary",
   "display": "standalone",
-  "background_color": "#f4f5f7",
-  "theme_color": "#f4f5f7",
+  "background_color": "#2e3626",
+  "theme_color": "#2e3626",
   "icons": [
     { "src": "/diary-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "/diary-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }

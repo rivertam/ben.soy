@@ -29,34 +29,34 @@ const COMIC_NEUE: Font = fontsource_font!(COMIC_NEUE, host: Asset);
 /// runs). diary_sync.rs resolves this const into the /diary-sync.js loader
 /// so the service worker's offline SSR can link the same stylesheet.
 pub const SITE_CSS: Asset = topcoat::tailwind::stylesheet!();
-const THEME_JS: Asset = asset!("./theme.js");
-/// Clown mode's band: a Pixabay circus track (their license permits this
-/// use without attribution). Fetched only when the tune actually starts —
-/// theme.js reads the hashed URL off the ♪ row's data attribute.
-const CIRCUS_MP3: Asset = asset!("./circus.mp3");
-/// Felix mode's chaser: Felix himself, cut out of the 2023 sprint photo,
-/// who trails the tennis-ball cursor and eventually catches it. Same
-/// data-attribute delivery as the mp3; only fetched in felix mode.
-const FELIX_CHASER: Asset = asset!("./felix-chaser.webp");
+// Browser behavior is committed as native modules. Topcoat fingerprints each
+// source during the ordinary asset-bundle step, so no Node/TypeScript
+// toolchain or generated JS needs to enter the Rust-only build. Theme package
+// entry points and their optional assets live in content/themes.rs.
+const APPEARANCE_JS: Asset = asset!("./browser/appearance.js");
+const NAVIGATION_JS: Asset = asset!("./browser/navigation.js");
+const NAVIGATION_HINTS_JS: Asset = asset!("./browser/navigation/hints.js");
+const SESSION_JS: Asset = asset!("./browser/session.js");
+const SESSION_VIMIUM_JS: Asset = asset!("./browser/session/vimium.js");
 const FAVICON_16: Asset = asset!("./favicon/favicon-16.png");
 const FAVICON_32: Asset = asset!("./favicon/favicon-32.png");
 const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 
-/// One window in the tmux theme's status bar: a precomputed `"3 felix"`
+/// One window in the site's session bar: a precomputed `"3 felix"`
 /// label, its destination, and whether the request path lives inside it.
-struct TmuxWindow {
+struct SessionWindow {
     label: String,
     href: String,
     current: bool,
 }
 
-/// The tmux theme's windows: the site's full flat map, mirroring the `~`
+/// The default session's windows: the site's full flat map, mirroring the `~`
 /// listing (~, the log, the résumé, each interest, any granted hidden
 /// pages) — a superset of the header's three fixed links — numbered in
 /// render order.
 /// The current window is the longest matching path prefix — `/lifting/log`
 /// lights `lifting` while `/thoughts/anything` stays home at `~`.
-fn tmux_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec<TmuxWindow> {
+fn session_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec<SessionWindow> {
     let mut windows: Vec<(String, String)> = vec![
         ("~".to_string(), "/".to_string()),
         ("log".to_string(), "/log".to_string()),
@@ -84,7 +84,7 @@ fn tmux_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec
     windows
         .into_iter()
         .enumerate()
-        .map(|(index, (name, href))| TmuxWindow {
+        .map(|(index, (name, href))| SessionWindow {
             label: format!("{index} {name}"),
             href,
             current: index == active,
@@ -116,7 +116,7 @@ fn tmux_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec
 /// It defaults off so the extra face does not ride along on every page.
 ///
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
-/// join the tmux windows (and the `~` listing renders them as dotfiles),
+/// join the session windows (and the `~` listing renders them as dotfiles),
 /// and a barely-there "signed in" line replaces
 /// the footer's login link. Both personalize the HTML, which is why
 /// `response_layer.rs` forces `private, no-store` whenever the viewer cookie
@@ -153,15 +153,16 @@ pub async fn shell(
         Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
         None => Vec::new(),
     };
-    // The tmux theme's status bar rides along in every render (the HTML is
-    // cached theme-blind; themes.css reveals it only under
-    // [data-theme="tmux"], where it replaces the header as the nav).
-    let windows = tmux_windows(uri(cx).path(), &hidden_pages);
+    // The session bar is the default navigation. It rides along in every
+    // render because cached HTML cannot know whether localStorage will apply
+    // an alternate finish before paint.
+    let windows = session_windows(uri(cx).path(), &hidden_pages);
     let pane_title = windows
         .iter()
         .find(|win| win.current)
         .map(|win| win.label.clone())
         .unwrap_or_default();
+    let theme_boot_js = themes::boot_script();
     view! {
         // Default edge TTL for HTML that does not set Cache-Control itself.
         // First mention wins: pages that emit their own header before shell()
@@ -171,26 +172,46 @@ pub async fn shell(
         // not needed.
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=86400")))
         <!DOCTYPE html>
-        <html lang="en" data-theme="tmux">
+        <html lang="en">
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <meta name="referrer" content="strict-origin-when-cross-origin">
                 <title>(title)</title>
-                // The shell ships already attached: tmux is the default worn
-                // by fresh viewers (and the no-JS fallback). This swaps in a
-                // stored choice before the stylesheet arrives so first paint
-                // is in the right costume (content/themes.rs owns the script;
-                // theme.js handles the clicks).
-                <script>(Unescaped::new_unchecked(themes::THEME_BOOT_JS))</script>
+                // Fresh HTML is already the tmux session. Rust derives this
+                // tiny pre-paint allowlist from the appearance registry; only
+                // a remembered alternate adds data-theme.
+                <script>(Unescaped::new_unchecked(theme_boot_js))</script>
                 topcoat::dev::script()
                 if runtime {
                     topcoat::runtime::script()
                 }
-                <script defer="" src=(THEME_JS)></script>
+                <script
+                    type="module"
+                    src=(APPEARANCE_JS)
+                    data-appearance-runtime=""
+                    data-default-theme=(themes::DEFAULT_THEME_ID)
+                    data-theme-key=(themes::THEME_STORAGE_KEY)
+                ></script>
+                <script
+                    type="module"
+                    src=(NAVIGATION_JS)
+                    data-navigation-runtime=""
+                    data-hints-module=(NAVIGATION_HINTS_JS)
+                ></script>
+                <script
+                    type="module"
+                    src=(SESSION_JS)
+                    data-session-runtime=""
+                    data-default-theme=(themes::DEFAULT_THEME_ID)
+                    data-vimium-module=(SESSION_VIMIUM_JS)
+                ></script>
                 <link rel="stylesheet" href=(SITE_CSS)>
-                topcoat::font::link(font: ZILLA_SLAB)
-                topcoat::font::link(font: FIRA_SANS)
+                // These faces belong to oxide/night-shift, not the default
+                // session. Keep their @font-face rules available for a live
+                // switch without preloading their bytes on every visit.
+                topcoat::font::link(font: ZILLA_SLAB, preload: false)
+                topcoat::font::link(font: FIRA_SANS, preload: false)
                 topcoat::font::link(font: FIRA_MONO)
                 if marker_font {
                     topcoat::font::link(font: KALAM)
@@ -208,7 +229,7 @@ pub async fn shell(
                     // The /diary app surface (app/pwa.rs); the color matches
                     // --color-page so the standalone status bar blends in.
                     <link rel="manifest" href="/diary.webmanifest">
-                    <meta name="theme-color" content="#f4f5f7">
+                    <meta name="theme-color" content="#2e3626">
                 }
                 <link
                     rel="alternate"
@@ -236,11 +257,10 @@ pub async fn shell(
                         </nav>
                     </header>
                 }
-                // data-tmux-title is the pane label the tmux theme floats
-                // on the content border; inert everywhere else.
+                // Rust knows the active pane before the browser runs.
                 <main
                     class="mx-auto w-full max-w-4xl flex-1 px-5 pb-20"
-                    data-tmux-title=(pane_title.as_str())
+                    data-session-title=(pane_title.as_str())
                 >(child)</main>
                 <footer class="mx-auto w-full max-w-4xl px-5 pb-8">
                     <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-t border-hairline pt-4 font-meta text-xs text-muted">
@@ -282,18 +302,15 @@ pub async fn shell(
                         </p>
                     }
                 </footer>
-                // The tmux theme's status bar: session badge, numbered
-                // windows, keys legend, clock. Display: none under every
-                // other theme; theme.js paints the clock and the armed
-                // prefix chip, and drives ctrl-a n/p/0-9/l off the
-                // data-tmux-window hooks (themes.rs tests pin the contract).
-                <nav class="tmux-bar" aria-label="tmux windows" data-tmux-bar="">
+                // The primary nav: Rust owns its windows and message surface;
+                // session.js adds only client-local clock and key behavior.
+                <nav class="tmux-bar" aria-label="tmux windows" data-session-bar="">
                     <a class="tmux-session" href="/">">_ bens-site"</a>
                     <div class="tmux-windows">
                         for win in windows.iter() {
                             <a
                                 class="tmux-window"
-                                data-tmux-window=""
+                                data-session-window=""
                                 aria-current=(win.current.then_some("page"))
                                 href=(win.href.as_str())
                             >(win.label.as_str())</a>
@@ -303,8 +320,16 @@ pub async fn shell(
                         <span class="tmux-keys">"^a n: windows · f: follow · j/k: move"</span>
                         <span class="tmux-prefix" aria-hidden="true">"^A"</span>
                         <span class="tmux-host">"sponge"</span>
-                        <span class="tmux-clock" data-tmux-clock=""></span>
+                        <span class="tmux-clock" data-session-clock=""></span>
                     </span>
+                    <button
+                        type="button"
+                        class="tmux-note"
+                        data-session-message=""
+                        aria-live="polite"
+                        title="dismiss"
+                        hidden=""
+                    ></button>
                 </nav>
                 corner_rack()
             </body>
@@ -314,7 +339,7 @@ pub async fn shell(
 
 /// The fixed bottom-right rack: the transport (visible whenever the page
 /// has a music source — a whimsical theme's tune or a page band like
-/// /podrick's anthem; theme.js unhides it and paints ▶/⏸ from the real
+/// /podrick's anthem; appearance.js unhides it and paints ▶/⏸ from the real
 /// state) beside the theme switcher. The volume slider slides out on
 /// hover/focus and scales every sound the site makes. Music controls all
 /// carry `data-music-toggle`, so the pill, the menu's ♪ row, and any page
@@ -346,11 +371,10 @@ async fn corner_rack() -> Result {
 }
 
 /// The paint-chip rack in the corner: one row per registry entry, each row's
-/// swatch dot wearing its own theme via `data-theme` (themes.css resolves
-/// tokens against the dot itself). Server renders every row unpressed —
-/// the HTML is cached for anonymous viewers, so the live choice is applied
-/// client-side: the boot script sets `data-theme` before paint and theme.js
-/// corrects `aria-pressed` on load.
+/// swatch dot wearing its own theme via `data-theme` (the appearance
+/// stylesheets resolve tokens against the dot itself). Rust marks tmux pressed
+/// because it is the attribute-less default; appearance.js adjusts that cached
+/// markup only for a stored alternate.
 #[component]
 async fn theme_switcher() -> Result {
     view! {
@@ -365,7 +389,10 @@ async fn theme_switcher() -> Result {
                         type="button"
                         class="theme-option"
                         data-set-theme=(theme.id)
-                        aria-pressed="false"
+                        data-theme-module=(theme.module)
+                        data-theme-music=(theme.music_asset)
+                        data-theme-image=(theme.image_asset)
+                        aria-pressed=(if theme.id == themes::DEFAULT_THEME_ID { "true" } else { "false" })
                         title=(theme.blurb)
                     >
                         <span class="theme-dot" data-theme=(theme.id) aria-hidden="true"></span>
@@ -379,14 +406,12 @@ async fn theme_switcher() -> Result {
                 }
                 // The especially whimsical themes carry a tune, on by
                 // default; the row only appears while one is worn
-                // (themes.css reveals it) and is the opt-out, remembered
-                // per browser.
+                // (the active package's CSS reveals it) and is the opt-out,
+                // remembered per browser.
                 <button
                     type="button"
                     class="theme-option theme-music"
                     data-music-toggle=""
-                    data-clown-tune=(CIRCUS_MP3)
-                    data-felix-chaser=(FELIX_CHASER)
                     aria-pressed="false"
                     title="the big top comes with a band; silence it here"
                 >

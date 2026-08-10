@@ -1,0 +1,145 @@
+/* ── clown mode — the contrast ratios remain, regrettably, compliant ─────
+ * Comic Sans set on a fastidiously compliant grid: circus-midnight violet
+ * ink at 16.8:1, nose-red accent at 5.6:1. The tension is the whole joke.
+ * Selecting it honks (index.js); we are not sorry. */
+[data-theme="clown"] {
+  color-scheme: light;
+  --color-page: #fffdf7;
+  --color-card: #ffffff;
+  --color-ink: #26123b;
+  --color-ink2: #53406b;
+  --color-muted: #7d6d92;
+  --color-hairline: #ecdff0;
+  --color-oxide: #c81e2b;
+  --color-oxide-hot: #a11220;
+  --color-patina: #157a3d;
+  --color-steel: #2f6bb0;
+  --color-brass: #b0801c;
+  --font-display: "Comic Sans MS", "Comic Sans", "Chalkboard SE", "Comic Neue", cursive;
+  --font-body: "Comic Sans MS", "Comic Sans", "Chalkboard SE", "Comic Neue", cursive;
+  --font-meta: "Comic Sans MS", "Comic Sans", "Chalkboard SE", "Comic Neue", cursive;
+}
+
+/* Big-top polka dots: four colors of confetti, every one under 6% alpha. */
+[data-theme="clown"] body {
+  background-image:
+    radial-gradient(circle at 12% 18%, rgb(200 30 43 / 5%) 0 0.5rem, transparent 0.55rem),
+    radial-gradient(circle at 62% 34%, rgb(47 107 176 / 5%) 0 0.6rem, transparent 0.65rem),
+    radial-gradient(circle at 85% 12%, rgb(21 122 61 / 5%) 0 0.45rem, transparent 0.5rem),
+    radial-gradient(circle at 38% 76%, rgb(176 128 28 / 6%) 0 0.55rem, transparent 0.6rem),
+    radial-gradient(circle at 91% 68%, rgb(200 30 43 / 4%) 0 0.5rem, transparent 0.55rem);
+  background-size: 34rem 30rem;
+}
+
+/* The nose: every display title wears a glossy pure-CSS red nose. The
+   log page's hero is exempt — its word-stack span is sized by the longest
+   cycling word, which would leave the nose floating in mid-air. */
+[data-theme="clown"] h1:not(.log-hero)::after {
+  content: "";
+  display: inline-block;
+  width: 0.42em;
+  height: 0.42em;
+  margin-left: 0.16em;
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, #ff8d94, #c81e2b 58%, #8f0f1a);
+  vertical-align: baseline;
+}
+
+/* Links honk instead of oxidize: the underline goes wavy nose-red and the
+   words wobble. A link lifted into the juggling loop owns its transform, so
+   the hover animation politely gets out of its way. */
+[data-theme="clown"] a:hover,
+[data-theme="clown"] a:focus-visible {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--color-oxide);
+}
+
+[data-theme="clown"] a:not([data-clown-prop]):hover,
+[data-theme="clown"] a:not([data-clown-prop]):focus-visible {
+  position: relative;
+  animation: clown-link-wobble 0.48s ease-in-out;
+}
+
+[data-theme="clown"] a,
+[data-theme="clown"] button,
+[data-theme="clown"] img,
+[data-theme="clown"] video,
+[data-theme="clown"] [data-clown-physics] {
+  cursor: grab;
+}
+
+[data-theme="clown"] .corner-rack,
+[data-theme="clown"] .corner-rack * {
+  cursor: revert;
+}
+
+/* Ticket-stub seals: 'entry № 0042' prints as an ADMIT ONE stub. */
+[data-theme="clown"] .stamp-seal {
+  border: 1px dashed var(--color-oxide);
+  border-radius: 3px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgb(200 30 43 / 6%) 0 0.5rem,
+    transparent 0.5rem 1rem
+  );
+  transform: rotate(1deg);
+}
+
+/* Especially whimsical: clown mode carries a tune, so the music row
+   appears while it's worn. */
+[data-theme="clown"] .theme-music {
+  display: flex;
+}
+
+/* The switcher pill juggles, gently. Reduced-motion cancels the act. */
+[data-theme="clown"] .theme-dd > summary {
+  animation: clown-bob 2.6s ease-in-out infinite;
+}
+
+/* Section titles wiggle when poked. Once per poke; dignity is preserved
+   by the reduced-motion kill switch, and only there. */
+[data-theme="clown"] h2:hover,
+[data-theme="clown"] h3:hover {
+  animation: clown-wiggle 0.4s ease-in-out;
+}
+
+@keyframes clown-wiggle {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  30% {
+    transform: rotate(-1.2deg);
+  }
+  70% {
+    transform: rotate(1.2deg);
+  }
+}
+
+@keyframes clown-link-wobble {
+  0%,
+  100% {
+    top: 0;
+    text-shadow: 0 0 transparent;
+  }
+  28% {
+    top: -0.16rem;
+    text-shadow: -0.07rem 0 var(--color-brass);
+  }
+  62% {
+    top: 0.08rem;
+    text-shadow: 0.07rem 0 var(--color-steel);
+  }
+}
+
+@keyframes clown-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+  50% {
+    transform: translateY(-0.18rem) rotate(1.4deg);
+  }
+}

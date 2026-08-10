@@ -1,5 +1,5 @@
 // The /podrick anthem's page chip. Playback, autoplay-on-arrival, volume,
-// and the pause preference all live in theme.js's conductor (the <audio>
+// and the pause preference all live in appearance.js's conductor (the <audio>
 // carries data-page-band and the chip carries data-music-toggle); this
 // file only keeps the chip's label honest as the element's state changes.
 const audio = document.getElementById("anthem");

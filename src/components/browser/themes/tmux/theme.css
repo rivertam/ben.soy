@@ -1,0 +1,33 @@
+/*
+ * The default palette. Fresh HTML uses these values through input.css's
+ * @theme defaults; the explicit selector exists so the isolated menu swatch
+ * can still preview tmux while an alternate appearance is active.
+ */
+
+:root {
+  color-scheme: dark;
+  --tmux-bar: #232a1b;
+  --tmux-border: #57683b;
+  --tmux-lime: #a4cf2e;
+  --tmux-violet: #a58ce8;
+  --tmux-pink: #d78d95;
+  --tmux-coal: #1c2314;
+}
+
+[data-theme="tmux"] {
+  color-scheme: dark;
+  --color-page: #2e3626;
+  --color-card: #37402c;
+  --color-ink: #d2dab0;
+  --color-ink2: #aebb87;
+  --color-muted: #8b9a68;
+  --color-hairline: #465232;
+  --color-oxide: #e8a33d;
+  --color-oxide-hot: #f6c464;
+  --color-patina: #a9c25c;
+  --color-steel: #7fa9d0;
+  --color-brass: #d9b13f;
+  --font-display: "Fira Mono", "Courier New", monospace;
+  --font-body: "Fira Mono", "Courier New", monospace;
+  --font-meta: "Fira Mono", "Courier New", monospace;
+}

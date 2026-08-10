@@ -105,7 +105,11 @@ async fn home(cx: &Cx) -> Result {
             <ul class="mt-1 space-y-1">
                 <li class="text-muted" title="there is no up from here">"../"</li>
                 for row in rows.iter() {
-                    <li class="netrw-row relative">
+                    <li
+                        class="netrw-row relative"
+                        data-rail-item=""
+                        data-rail-href=(row.href.as_str())
+                    >
                         <a
                             class=(if row.hidden {
                                 "group flex items-baseline gap-x-5 no-underline opacity-75"

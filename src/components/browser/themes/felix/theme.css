@@ -1,0 +1,126 @@
+/* ── felix mode — POV: you're about to throw a ball ──────────────────────
+ * A Carolina Dog palette: dog-bed fleece, espresso ink (13.3:1), and an
+ * accent of week-old-tennis-ball olive — true chartreuse cannot pass
+ * contrast, and Felix would not care. */
+[data-theme="felix"] {
+  color-scheme: light;
+  --color-page: #faf3e4;
+  --color-card: #fffcf5;
+  --color-ink: #33261a;
+  --color-ink2: #5f4c38;
+  --color-muted: #83704f;
+  --color-hairline: #e8dcc4;
+  --color-oxide: #6b7a00;
+  --color-oxide-hot: #4e5a02;
+  --color-patina: #3f7d2c;
+  --color-steel: #4c6e94;
+  --color-brass: #a1731f;
+  --font-display: "Trebuchet MS", "Lucida Grande", Tahoma, sans-serif;
+  --font-body: Verdana, Geneva, Tahoma, sans-serif;
+  --font-meta: "Courier New", Courier, monospace;
+}
+
+/* The cursor is a tennis ball, which makes every link a game of fetch. */
+[data-theme="felix"] body,
+[data-theme="felix"] a,
+[data-theme="felix"] button,
+[data-theme="felix"] summary {
+  cursor:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'><circle cx='11' cy='11' r='9.5' fill='%23c3d24b' stroke='%238a9431' stroke-width='1'/><path d='M3.5 5.5a9.5 9.5 0 0 1 0 11M18.5 5.5a9.5 9.5 0 0 0 0 11' fill='none' stroke='%23fdf9e6' stroke-width='1.8'/></svg>")
+      11 11,
+    auto;
+}
+
+/* Balls mid-flight: sparse chartreuse dots on the fleece, park at golden
+   hour. Low alpha so prose reads straight through. */
+[data-theme="felix"] body {
+  background-image:
+    radial-gradient(circle at 18% 22%, rgb(154 205 50 / 9%) 0 0.55rem, transparent 0.6rem),
+    radial-gradient(circle at 73% 9%, rgb(154 205 50 / 7%) 0 0.4rem, transparent 0.45rem),
+    radial-gradient(circle at 89% 64%, rgb(154 205 50 / 8%) 0 0.5rem, transparent 0.55rem),
+    radial-gradient(circle at 34% 81%, rgb(154 205 50 / 7%) 0 0.45rem, transparent 0.5rem);
+  background-size: 52rem 44rem;
+}
+
+/* Paw-stamped rail: the engineering logbook has been walked through. */
+[data-theme="felix"] .rail-stamp::before {
+  content: "\1F43E";
+  margin-right: 0.35em;
+  font-size: 0.85em;
+  opacity: 0.5;
+  filter: sepia(0.4);
+}
+
+/* Links wag: the underline oscillates like a tail instead of corroding.
+   The global reduced-motion kill switch stills it. */
+[data-theme="felix"] a:hover {
+  animation: felix-wag 0.45s ease-in-out infinite;
+}
+
+@keyframes felix-wag {
+  0%,
+  100% {
+    text-underline-offset: 0.22em;
+  }
+  50% {
+    text-underline-offset: 0.34em;
+  }
+}
+
+/* The switcher's swatch dot is, of course, the ball. It bounces. */
+[data-theme="felix"] .theme-dd > summary > .theme-dot {
+  animation: ball-bounce 2.8s cubic-bezier(0.28, 0, 0.6, 1) infinite;
+}
+
+@keyframes ball-bounce {
+  0%,
+  24%,
+  100% {
+    transform: translateY(0) scaleY(1);
+  }
+  8% {
+    transform: translateY(-0.3rem) scaleY(1);
+  }
+  15% {
+    transform: translateY(0) scaleY(0.82);
+  }
+  19% {
+    transform: translateY(-0.12rem) scaleY(1);
+  }
+}
+
+/* Especially whimsical: felix mode carries a tune, so the music row
+   appears while it's worn. */
+[data-theme="felix"] .theme-music {
+  display: flex;
+}
+
+/* The chaser: Felix (cut from the 2023 sprint photo) trails the
+   tennis-ball cursor; the lazy package adapter drives his transform and ends
+   the chase with the ball in his mouth. Unscoped base styles so the img
+   never flashes unstyled between finish switches — its module hides it
+   outside felix mode. Below the switcher (z-40), above content. */
+.felix-chaser {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 8.15rem;
+  width: auto;
+  z-index: 30;
+  pointer-events: none;
+  filter: drop-shadow(0 0.4rem 0.5rem rgb(51 38 26 / 25%));
+  will-change: transform;
+}
+
+/* Ghost paw: one huge, nearly invisible print haunting the lower corner,
+   like a watermark in the album. */
+[data-theme="felix"] body::after {
+  content: "\1F43E";
+  position: fixed;
+  right: -0.5rem;
+  bottom: -1.5rem;
+  z-index: 0;
+  font-size: 9rem;
+  opacity: 0.05;
+  pointer-events: none;
+}

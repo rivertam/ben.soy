@@ -578,7 +578,7 @@ async fn log(cx: &Cx) -> Result {
                         tags,
                         ..
                     } = entry {
-                        <article class="log-row">
+                        <article class="log-row" data-rail-item="">
                             <span class="log-mark log-mark-essay"></span>
                             <div class="log-rail">
                                 <p class="log-date">(entry.date())</p>
@@ -586,7 +586,11 @@ async fn log(cx: &Cx) -> Result {
                             </div>
                             <div class="log-card">
                                 <h2 class="log-card-title font-display font-bold">
-                                    <a class="oxlink" href=(format!("/thoughts/{slug}"))>(title)</a>
+                                    <a
+                                        class="oxlink"
+                                        href=(format!("/thoughts/{slug}"))
+                                        data-rail-enter=""
+                                    >(title)</a>
                                 </h2>
                                 <p class="mt-2.5 max-w-prose leading-relaxed text-ink2">(teaser)</p>
                                 if let Some(photo) = photo {
@@ -618,7 +622,7 @@ async fn log(cx: &Cx) -> Result {
                         </article>
                     }
                     if let Entry::Note { body, source, slug, .. } = entry {
-                        <article class="log-row">
+                        <article class="log-row" data-rail-item="">
                             <span class="log-mark log-mark-note"></span>
                             <div class="log-rail">
                                 <p class="log-date">(entry.date())</p>
@@ -630,13 +634,17 @@ async fn log(cx: &Cx) -> Result {
                                     "note · "
                                     (source)
                                     " · "
-                                    <a class="log-permalink" href=(format!("/thoughts/{slug}"))>"permalink"</a>
+                                    <a
+                                        class="log-permalink"
+                                        href=(format!("/thoughts/{slug}"))
+                                        data-rail-enter=""
+                                    >"permalink"</a>
                                 </p>
                             </div>
                         </article>
                     }
                     if let Entry::Update { stamp, label, body, href, link_label: update_link_label, .. } = entry {
-                        <article class="log-row items-baseline">
+                        <article class="log-row items-baseline" data-rail-item="">
                             <span class="log-mark log-mark-update"></span>
                             <p class="log-date">(entry.date())</p>
                             <p class="log-update min-w-0">
@@ -646,7 +654,7 @@ async fn log(cx: &Cx) -> Result {
                                 " "
                                 (body)
                                 " "
-                                <a class="log-update-link" href=(href)>
+                                <a class="log-update-link" href=(href) data-rail-enter="">
                                     link_label(label: update_link_label)
                                 </a>
                             </p>
@@ -654,7 +662,7 @@ async fn log(cx: &Cx) -> Result {
                     }
                 }
                 if let Some(run) = row.win() {
-                    <article class="log-row items-baseline">
+                    <article class="log-row items-baseline" data-rail-item="">
                         <span class="log-mark log-mark-update"></span>
                         <p class="log-date">(run.date.as_str())</p>
                         <p class="log-update min-w-0">
@@ -669,14 +677,14 @@ async fn log(cx: &Cx) -> Result {
                                 run.ascension
                             ))
                             " "
-                            <a class="log-update-link" href="/spire">
+                            <a class="log-update-link" href="/spire" data-rail-enter="">
                                 link_label(label: "run log →")
                             </a>
                         </p>
                     </article>
                 }
                 if let Some(published) = row.lift() {
-                    <article class="log-row items-baseline">
+                    <article class="log-row items-baseline" data-rail-item="">
                         <span class="log-mark log-mark-update"></span>
                         <p class="log-date">(published.date.as_str())</p>
                         <p class="log-update min-w-0">
@@ -693,6 +701,7 @@ async fn log(cx: &Cx) -> Result {
                             <a
                                 class="log-update-link"
                                 href=(format!("/lifting/{}", published.workout.path))
+                                data-rail-enter=""
                             >
                                 link_label(label: "workout →")
                             </a>
@@ -700,7 +709,7 @@ async fn log(cx: &Cx) -> Result {
                     </article>
                 }
                 if let Some(fold) = row.fold() {
-                    <article class="log-row items-baseline">
+                    <article class="log-row items-baseline" data-rail-item="">
                         <span class="log-mark log-mark-update"></span>
                         <p class="log-date">(fold.date.as_str())</p>
                         <p class="log-update min-w-0">
@@ -710,7 +719,11 @@ async fn log(cx: &Cx) -> Result {
                             " "
                             (fold.body.as_str())
                             " "
-                            <a class="log-update-link" href=(fold.href.as_str())>
+                            <a
+                                class="log-update-link"
+                                href=(fold.href.as_str())
+                                data-rail-enter=""
+                            >
                                 link_label(label: fold.link_label)
                             </a>
                         </p>

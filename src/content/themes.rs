@@ -1,87 +1,159 @@
-//! Theme registry, mirroring `interests.rs`. Each theme is a `[data-theme]`
-//! variable block in `styles/themes.css`; this list is the single source of
-//! truth for the switcher menu in the shell (id, menu label, tooltip blurb).
-//! The first entry is the site's own finish, "mill and oxide" — it renders as
-//! the ABSENCE of `data-theme` on `<html>`, though its CSS block still exists
-//! so the switcher's swatch dots can wear it. The DEFAULT worn theme is tmux:
-//! `chrome.rs` SSRs `data-theme="tmux"` on `<html>` (so no-JS and fresh
-//! viewers are already attached) and the boot script below only swaps in a
-//! stored choice. Adding a theme means one entry here plus one block in
-//! `themes.css`; the tests below hold the two in sync.
+//! Choices in the shell's appearance menu. The tmux session is the site
+//! itself: it is first, is server-rendered, and is represented by the absence
+//! of `data-theme` on `<html>`. Every other entry is an explicit finish laid
+//! over that default shell.
+//!
+//! The tmux palette has a `[data-theme="tmux"]` preview block only so its menu
+//! swatch can resolve the right tokens. Its layout and keyboard behavior live
+//! in `styles/session.css` and `components/browser/session*.js`; those
+//! session behaviors remain core even though the palette uses the same
+//! package interface as every alternate appearance.
+
+use topcoat::asset::{Asset, asset};
+
+pub const DEFAULT_THEME_ID: &str = "tmux";
+pub const THEME_STORAGE_KEY: &str = "bens-theme";
 
 pub struct Theme {
     pub id: &'static str,
     pub label: &'static str,
     /// Menu tooltip, in the footer's deadpan voice.
     pub blurb: &'static str,
-    /// Especially whimsical: the menu row wears the big top 🎪, and only
-    /// these themes carry a continuous tune (theme.js TUNES + the
-    /// `.theme-music` reveal in themes.css — the test below keeps all
-    /// three in agreement). Stings stay universal; the circus is opt-in.
+    /// Fingerprinted entry point implementing the browser package interface.
+    pub module: Asset,
+    /// Optional named assets supplied to that entry point. A synthesized tune
+    /// has no `music_asset`; the package's `music` export owns tune presence.
+    pub music_asset: Option<Asset>,
+    pub image_asset: Option<Asset>,
+    /// Especially whimsical appearances get the menu marker and carry music.
     pub whimsical: bool,
 }
 
-/// Ordered as the menu renders: the house finish first, the sensible modes,
-/// then descending order of sensibleness.
+/// The default session leads, followed by increasingly optional finishes.
 pub static THEMES: [Theme; 5] = [
+    Theme {
+        id: DEFAULT_THEME_ID,
+        label: "tmux",
+        blurb: "the site itself; ctrl-a n cycles, f follows, j/k move",
+        module: asset!("../components/browser/themes/tmux/index.js"),
+        music_asset: None,
+        image_asset: None,
+        whimsical: false,
+    },
     Theme {
         id: "oxide",
         label: "mill & oxide",
-        blurb: "the house finish: steel paper, rust accents",
+        blurb: "steel paper, rust accents",
+        module: asset!("../components/browser/themes/oxide/index.js"),
+        music_asset: None,
+        image_asset: None,
         whimsical: false,
     },
     Theme {
         id: "dark",
         label: "night shift",
-        blurb: "dark mode; the mill after hours",
-        whimsical: false,
-    },
-    Theme {
-        id: "tmux",
-        label: "tmux",
-        blurb: "already attached; ctrl-a n cycles, f follows, j/k walk the log",
+        blurb: "the mill after hours",
+        module: asset!("../components/browser/themes/dark/index.js"),
+        music_asset: None,
+        image_asset: None,
         whimsical: false,
     },
     Theme {
         id: "felix",
         label: "felix mode",
         blurb: "POV: you're about to throw a ball",
+        module: asset!("../components/browser/themes/felix/index.js"),
+        music_asset: None,
+        image_asset: Some(asset!("../components/felix-chaser.webp")),
         whimsical: true,
     },
     Theme {
         id: "clown",
         label: "clown mode",
         blurb: "the contrast ratios remain, regrettably, compliant",
+        module: asset!("../components/browser/themes/clown/index.js"),
+        music_asset: Some(asset!("../components/circus.mp3")),
+        image_asset: None,
         whimsical: true,
     },
 ];
 
-/// Inline in `<head>` before the stylesheet so a stored theme applies
-/// before first paint (no flash of tmux for a committed clown). The shell
-/// SSRs `data-theme="tmux"` — the site's default, which a viewer with no
-/// stored choice (or no JS, or no storage) simply keeps — so this script
-/// only swaps costumes: an explicit choice of the house finish removes the
-/// attribute, any other stored id replaces it, and an unrecognized value is
-/// evicted so the default stands.
-/// Kept dependency-free and em-dash-free; `emdash.rs` skips `<script>` but
-/// only inside `<main>`, and this tag lives in `<head>` on trust.
-pub const THEME_BOOT_JS: &str = "(function(){try{var t=localStorage.getItem('bens-theme');\
-if(t&&t!=='oxide'&&t!=='dark'&&t!=='tmux'&&t!=='felix'&&t!=='clown'){localStorage.removeItem('bens-theme');t=null}\
-if(t==='oxide')delete document.documentElement.dataset.theme;\
-else if(t)document.documentElement.dataset.theme=t}catch(e){}})()";
+/// Runs before CSS so a remembered alternate finish never flashes the default
+/// session. Rust derives the allowlist from `THEMES`; the browser no longer
+/// carries a second hand-maintained registry. A stored `tmux` value from older
+/// builds is accepted and canonicalized to the attribute-less default.
+///
+/// Kept dependency-free and em-dash-free; `emdash.rs` skips `<script>` only
+/// inside `<main>`, while this trusted tag lives in `<head>`.
+pub fn boot_script() -> String {
+    let allowed = THEMES
+        .iter()
+        .map(|theme| format!("'{}'", theme.id))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "(function(){{try{{var r=document.documentElement,t=localStorage.getItem('{THEME_STORAGE_KEY}'),a=[{allowed}];\
+if(t&&!a.includes(t)){{localStorage.removeItem('{THEME_STORAGE_KEY}');t=null}}\
+if(!t||t==='{DEFAULT_THEME_ID}')delete r.dataset.theme;else r.dataset.theme=t}}catch(e){{}}}})()"
+    )
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const THEMES_CSS: &str = include_str!("../../styles/themes.css");
-    const THEME_JS: &str = include_str!("../../src/components/theme.js");
+    const SESSION_CSS: &str = include_str!("../../styles/session.css");
+    const ALL_CSS: &str = concat!(
+        include_str!("../components/browser/themes/tmux/theme.css"),
+        include_str!("../components/browser/themes/oxide/theme.css"),
+        include_str!("../components/browser/themes/dark/theme.css"),
+        include_str!("../components/browser/themes/felix/theme.css"),
+        include_str!("../components/browser/themes/clown/theme.css"),
+    );
+    const PACKAGES: [(&str, &str, &str); 5] = [
+        (
+            "tmux",
+            include_str!("../components/browser/themes/tmux/theme.css"),
+            include_str!("../components/browser/themes/tmux/index.js"),
+        ),
+        (
+            "oxide",
+            include_str!("../components/browser/themes/oxide/theme.css"),
+            include_str!("../components/browser/themes/oxide/index.js"),
+        ),
+        (
+            "dark",
+            include_str!("../components/browser/themes/dark/theme.css"),
+            include_str!("../components/browser/themes/dark/index.js"),
+        ),
+        (
+            "felix",
+            include_str!("../components/browser/themes/felix/theme.css"),
+            include_str!("../components/browser/themes/felix/index.js"),
+        ),
+        (
+            "clown",
+            include_str!("../components/browser/themes/clown/theme.css"),
+            include_str!("../components/browser/themes/clown/index.js"),
+        ),
+    ];
+    const APPEARANCE_JS: &str = include_str!("../components/browser/appearance.js");
+    const NAVIGATION_JS: &str = include_str!("../components/browser/navigation.js");
+    const SESSION_JS: &str = include_str!("../components/browser/session.js");
+    const HINTS_JS: &str = include_str!("../components/browser/navigation/hints.js");
+    const VIMIUM_JS: &str = include_str!("../components/browser/session/vimium.js");
+    const CHROME_RS: &str = include_str!("../components/chrome.rs");
+    const RAIL_RS: &str = include_str!("../components/rail.rs");
+    const HOME_RS: &str = include_str!("../app/home.rs");
+    const LOG_RS: &str = include_str!("../app/log.rs");
+    const SITE_CSS: &str = include_str!("../../styles/site.css");
 
-    /// Every `[data-theme="…"]` selector target in themes.css, ignoring
-    /// comments (the file's prose mentions the selector syntax).
+    /// Every `[data-theme="…"]` selector target in package styles, ignoring
+    /// comments (their prose mentions selector syntax too).
     fn css_theme_ids() -> Vec<String> {
         let mut css = String::new();
-        let mut rest = THEMES_CSS;
+        let mut rest = ALL_CSS;
         while let Some(start) = rest.find("/*") {
             css.push_str(&rest[..start]);
             let after = &rest[start + 2..];
@@ -104,36 +176,87 @@ mod tests {
     }
 
     #[test]
-    fn every_registered_theme_has_a_css_block() {
-        for theme in THEMES.iter() {
-            // The bare token block specifically (`[data-theme="id"] {`) —
-            // a surviving decoration rule must not satisfy this after the
-            // palette block itself was deleted.
+    fn every_registered_choice_has_one_homogeneous_package() {
+        assert_eq!(THEMES.len(), PACKAGES.len());
+        for (theme, (package_id, css, js)) in THEMES.iter().zip(PACKAGES) {
+            assert_eq!(theme.id, package_id, "registry and package order diverged");
             let block = format!("[data-theme=\"{}\"] {{", theme.id);
             assert!(
-                THEMES_CSS.contains(&block),
-                "theme `{}` is registered but has no `{block}` token block in styles/themes.css",
+                css.contains(&block),
+                "theme `{}` is registered but its package has no `{block}` token block",
+                theme.id
+            );
+            assert!(THEMES_CSS.contains(&format!("themes/{}/theme.css", theme.id)));
+            assert!(js.contains(&format!("export const id = \"{}\";", theme.id)));
+            for export in ["tone", "activate", "deactivate", "selected"] {
+                assert!(
+                    js.contains(&format!("export function {export}")),
+                    "theme `{}` does not export {export}()",
+                    theme.id
+                );
+            }
+            assert!(js.contains("export const colorScheme"));
+            assert!(js.contains("export const music"));
+        }
+    }
+
+    #[test]
+    fn every_css_choice_is_registered() {
+        for css_id in css_theme_ids() {
+            assert!(
+                THEMES.iter().any(|theme| theme.id == css_id),
+                "package CSS styles [data-theme=\"{css_id}\"] but the registry doesn't list it"
+            );
+        }
+    }
+
+    #[test]
+    fn package_metadata_matches_css_and_rust_assets() {
+        for (theme, (_, css, js)) in THEMES.iter().zip(PACKAGES) {
+            let color_scheme = if js.contains("colorScheme = \"dark\"") {
+                "dark"
+            } else if js.contains("colorScheme = \"light\"") {
+                "light"
+            } else {
+                panic!("theme `{}` has no valid color scheme", theme.id);
+            };
+            assert!(
+                css.contains(&format!("color-scheme: {color_scheme};")),
+                "theme `{}` exports a color scheme that disagrees with CSS",
+                theme.id
+            );
+
+            let carries_music = !js.contains("export const music = null;");
+            assert_eq!(
+                carries_music, theme.whimsical,
+                "theme `{}`: music export and whimsical marker disagree",
+                theme.id
+            );
+            assert_eq!(
+                js.contains("kind: \"audio\""),
+                theme.music_asset.is_some(),
+                "theme `{}`: audio descriptor and Rust music asset disagree",
+                theme.id
+            );
+            assert_eq!(
+                js.contains("assets.image"),
+                theme.image_asset.is_some(),
+                "theme `{}`: image use and Rust image asset disagree",
+                theme.id
+            );
+            let reveal = format!("[data-theme=\"{}\"] .theme-music", theme.id);
+            assert_eq!(
+                css.contains(&reveal),
+                carries_music,
+                "theme `{}`: music export and toggle CSS disagree",
                 theme.id
             );
         }
     }
 
     #[test]
-    fn every_css_block_is_a_registered_theme() {
-        for css_id in css_theme_ids() {
-            assert!(
-                THEMES.iter().any(|t| t.id == css_id),
-                "styles/themes.css styles [data-theme=\"{css_id}\"] but the registry doesn't list it"
-            );
-        }
-    }
-
-    #[test]
-    fn ids_are_unique_kebab_and_the_house_finish_leads() {
-        // "oxide" is the house finish: the boot script and theme.js treat it
-        // as "remove the attribute" (the worn default is tmux, SSR'd by the
-        // shell), so it must keep its id, and the menu leads with it.
-        assert_eq!(THEMES[0].id, "oxide", "the house finish renders first");
+    fn ids_and_modules_are_unique_and_the_default_session_leads() {
+        assert_eq!(THEMES[0].id, DEFAULT_THEME_ID);
         for (i, theme) in THEMES.iter().enumerate() {
             assert!(
                 theme
@@ -149,79 +272,101 @@ mod tests {
                 "duplicate theme id `{}`",
                 theme.id
             );
+            assert!(
+                THEMES[..i]
+                    .iter()
+                    .all(|prior| prior.module.id() != theme.module.id()),
+                "duplicate theme module for `{}`",
+                theme.id
+            );
         }
     }
 
-    /// The boot script, `theme.js`, and this registry agree on the contract:
-    /// one storage key, the default id meaning "no attribute", and a `dark`
-    /// registry entry for the boot script's OS-preference fallback.
     #[test]
-    fn boot_script_and_theme_js_share_the_contract() {
-        assert!(THEME_BOOT_JS.contains("'bens-theme'"));
-        assert!(THEME_BOOT_JS.contains("'oxide'"));
-        assert!(THEME_JS.contains("\"bens-theme\""));
-        assert!(THEME_JS.contains("\"bens-theme-music\""));
-        assert!(THEME_JS.contains("\"oxide\""));
-        // The media the shell hands theme.js through the ♪ row's data
-        // attributes (chrome.rs must keep rendering both). theme.js must
-        // select by ATTRIBUTE, never by "[data-music-toggle]" — several
-        // elements carry that toggle hook and the first one in DOM order
-        // (the corner pill) has no media attributes; that exact bug once
-        // silenced clown mode and benched the felix chaser.
-        assert!(THEME_JS.contains("querySelector(\"[data-clown-tune]\")"));
-        assert!(THEME_JS.contains("querySelector(\"[data-felix-chaser]\")"));
-        // Pages with their own music (/podrick's anthem) mark it with
-        // data-page-band and the theme tune yields; keep the contract.
-        assert!(THEME_JS.contains("data-page-band"));
-        // The tmux theme's moving parts live in three files: chrome.rs
-        // renders the status bar and marks the windows, theme.js drives
-        // ctrl-a/j/k/f against those hooks, themes.css draws the bar, the
-        // cursorline, and the hint chips. Keep the selector contract.
-        const CHROME_RS: &str = include_str!("../components/chrome.rs");
-        assert!(CHROME_RS.contains("data-tmux-bar"));
-        assert!(CHROME_RS.contains("data-tmux-window"));
-        assert!(CHROME_RS.contains("data-tmux-clock"));
-        assert!(CHROME_RS.contains("data-tmux-title"));
-        assert!(THEME_JS.contains("querySelector(\"[data-tmux-bar]\")"));
-        assert!(THEME_JS.contains("querySelectorAll(\"[data-tmux-window]\")"));
-        assert!(THEME_JS.contains("querySelector(\"[data-tmux-clock]\")"));
-        for class in ["tmux-cursorline", "tmux-hint", "tmux-hints", "tmux-note"] {
-            assert!(
-                THEME_JS.contains(class) && THEMES_CSS.contains(&format!(".{class}")),
-                "`{class}` must exist in both theme.js and themes.css"
-            );
-        }
-        // Every registered theme has a signature selection sting.
+    fn rust_owns_registration_and_the_runtime_is_theme_agnostic() {
+        let boot = boot_script();
+        assert!(boot.contains(THEME_STORAGE_KEY));
         for theme in THEMES.iter() {
+            assert!(boot.contains(&format!("'{}'", theme.id)));
+        }
+        assert!(boot.contains("delete r.dataset.theme"));
+        assert!(CHROME_RS.contains("<html lang=\"en\">"));
+        assert!(!CHROME_RS.contains("<html lang=\"en\" data-theme"));
+        for hook in [
+            "data-default-theme=(themes::DEFAULT_THEME_ID)",
+            "data-theme-key=(themes::THEME_STORAGE_KEY)",
+            "data-theme-module=(theme.module)",
+            "data-theme-music=(theme.music_asset)",
+            "data-theme-image=(theme.image_asset)",
+        ] {
+            assert!(CHROME_RS.contains(hook), "chrome lost {hook}");
+        }
+        assert!(APPEARANCE_JS.contains("config.dataset.defaultTheme"));
+        assert!(APPEARANCE_JS.contains("config.dataset.themeKey"));
+        assert!(APPEARANCE_JS.contains("import(registration.module)"));
+        assert!(!APPEARANCE_JS.contains("clownModule"));
+        assert!(!APPEARANCE_JS.contains("felixModule"));
+        assert!(SESSION_CSS.contains(":root:not([data-theme]) .tmux-bar"));
+    }
+
+    #[test]
+    fn site_navigation_and_session_keep_distinct_interfaces() {
+        for hook in [
+            "data-navigation-runtime",
+            "data-hints-module",
+            "data-session-runtime",
+            "data-vimium-module",
+        ] {
+            assert!(CHROME_RS.contains(hook), "chrome lost {hook}");
+        }
+        assert!(NAVIGATION_JS.contains("import(config.dataset.hintsModule)"));
+        assert!(SESSION_JS.contains("import(config.dataset.vimiumModule)"));
+        assert!(HINTS_JS.contains("export function createHints"));
+        assert!(VIMIUM_JS.contains("export function createVimiumNotice"));
+        assert!(NAVIGATION_JS.contains(".rail-row, [data-rail-item]"));
+        assert!(NAVIGATION_JS.contains("currentRail.dataset.railHref"));
+        assert!(NAVIGATION_JS.contains("[data-rail-enter]"));
+        for key in ["j", "k", "f", "Enter"] {
             assert!(
-                THEME_JS.contains(&format!("{}:", theme.id)),
-                "theme `{}` has no sting entry in theme.js",
-                theme.id
+                NAVIGATION_JS.contains(&format!("case \"{key}\"")),
+                "site navigation lost {key}"
             );
         }
-        // Only the especially whimsical themes carry a continuous tune, and
-        // themes.css must reveal the music toggle for exactly those.
-        for theme in THEMES.iter() {
-            let reveal = format!("[data-theme=\"{}\"] .theme-music", theme.id);
-            assert_eq!(
-                THEMES_CSS.contains(&reveal),
-                theme.whimsical,
-                "`{}`: whimsical flag and the .theme-music reveal in themes.css disagree",
-                theme.id
+        assert!(!NAVIGATION_JS.contains("dataset.theme"));
+        assert!(SESSION_JS.contains("site:navigationkey"));
+
+        // Rail rows opt in intrinsically; their mount points only provide an
+        // Enter action when one exists.
+        assert!(RAIL_RS.contains("enter_href"));
+        assert!(RAIL_RS.contains("data-rail-href"));
+        assert!(HOME_RS.contains("data-rail-item"));
+        assert!(HOME_RS.contains("data-rail-href"));
+        assert!(LOG_RS.contains("data-rail-item"));
+        assert!(LOG_RS.contains("data-rail-enter"));
+        for selector in ["[data-rail-current] {", ".key-hints {", ".key-hint {"] {
+            assert!(SITE_CSS.contains(selector), "site CSS lost {selector}");
+            assert!(
+                !SESSION_CSS.contains(selector),
+                "site-wide selector {selector} leaked back into session CSS"
             );
         }
-        // The shell SSRs the default costume on <html>; the boot script and
-        // theme.js only ever swap it. Keep the shipped default a registered
-        // theme, and keep the boot script treating the house finish as
-        // "remove the attribute".
-        assert!(
-            CHROME_RS.contains("data-theme=\"tmux\""),
-            "chrome.rs must SSR the tmux default on <html> (the boot script only swaps stored choices)"
-        );
-        assert!(
-            THEMES.iter().any(|t| t.id == "tmux"),
-            "the SSR default `tmux` must stay a registered theme"
-        );
-        assert!(THEME_BOOT_JS.contains("if(t==='oxide')delete"));
+
+        // A page band still takes precedence over package-specific music.
+        assert!(APPEARANCE_JS.contains("data-page-band"));
+
+        for hook in [
+            "data-session-bar",
+            "data-session-window",
+            "data-session-clock",
+            "data-session-title",
+            "data-session-message",
+        ] {
+            assert!(CHROME_RS.contains(hook), "chrome lost {hook}");
+        }
+        assert!(SESSION_JS.contains("querySelector(\"[data-session-bar]\")"));
+        assert!(SESSION_JS.contains("querySelectorAll(\"[data-session-window]\")"));
+        assert!(SESSION_JS.contains("querySelector(\"[data-session-clock]\")"));
+        assert!(CHROME_RS.contains("tmux-note"));
+        assert!(SESSION_CSS.contains(".tmux-note"));
     }
 }
