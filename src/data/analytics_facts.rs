@@ -681,6 +681,25 @@ mod tests {
             .unwrap();
         crate::data::schema_migrations::apply(&db).await.unwrap();
 
+        // Epoch 3 removes the live DEFINE EVENT while backfill is paused.
+        // Reinstall it here so the dirty-revision CAS path stays covered.
+        db.query(
+            "DEFINE EVENT analytics_events_rebuild_visitor_day ON TABLE analytics_events
+             WHEN $event IN ['CREATE', 'UPDATE'] THEN {
+                 fn::analytics::rebuild_visitor_day(
+                     <int>($after.occurred_at / 86400),
+                     $after.visitor_id,
+                     NONE,
+                     time::unix(),
+                     NONE
+                 );
+             };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
         let visitor = "a".repeat(64);
         let session = "b".repeat(64);
         let id = "12345678-1234-4123-8123-123456789abc";
