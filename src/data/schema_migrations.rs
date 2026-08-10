@@ -7,7 +7,7 @@
 
 use super::Db;
 
-const CURRENT_SCHEMA_EPOCH: u16 = 2;
+const CURRENT_SCHEMA_EPOCH: u16 = 3;
 
 struct Migration {
     epoch: u16,
@@ -22,6 +22,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         epoch: 2,
         sql: include_str!("schema_migrations/0002_analytics_visitor_days.surql"),
+    },
+    Migration {
+        epoch: 3,
+        sql: include_str!("schema_migrations/0003_analytics_pause_dirty_event.surql"),
     },
 ];
 
@@ -149,7 +153,7 @@ mod tests {
         apply(&db).await.unwrap();
         apply(&db).await.unwrap();
 
-        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2]);
+        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2, 3]);
         db.query("INFO FOR INDEX analytics_events_kind_time ON analytics_events")
             .await
             .unwrap()
