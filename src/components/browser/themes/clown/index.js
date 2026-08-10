@@ -12,6 +12,7 @@ export function tone({ tone }) {
 }
 
 const GRAVITY = 1800;
+const BALL_COUNT = 12;
 const props = new Set();
 const suppressClicks = new WeakSet();
 let active = false;
@@ -21,7 +22,9 @@ let juggleLastFrame = 0;
 let juggleOverlay = null;
 
 const celebrate = (reducedMotion) => {
-  if (reducedMotion || !("animate" in Element.prototype)) return;
+  if (reducedMotion) return;
+  dropBalls();
+  if (!("animate" in Element.prototype)) return;
   const colors = ["#c81e2b", "#2f6bb0", "#157a3d", "#b0801c"];
   for (let i = 0; i < 36; i++) {
     const bit = document.createElement("span");
@@ -49,6 +52,70 @@ const celebrate = (reducedMotion) => {
       )
       .addEventListener("finish", () => bit.remove());
   }
+};
+
+const makeBall = (x, y, size) => {
+  const element = document.createElement("span");
+  element.dataset.clownBall = "";
+  element.dataset.clownPhysics = "";
+  element.setAttribute("aria-hidden", "true");
+  overlay().appendChild(element);
+  const prop = {
+    source: element,
+    element,
+    originalStyle: null,
+    x,
+    y,
+    width: size,
+    height: size,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    spin: 0,
+    held: false,
+    pointerId: null,
+    grabX: 0,
+    grabY: 0,
+    lastX: 0,
+    lastY: 0,
+    lastAt: 0,
+    dragged: false,
+    sleeping: false,
+  };
+  Object.assign(element.style, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    width: `${size}px`,
+    height: `${size}px`,
+    boxSizing: "border-box",
+    margin: "0",
+    zIndex: "1",
+    pointerEvents: "auto",
+    touchAction: "none",
+    userSelect: "none",
+    cursor: "grab",
+    willChange: "transform",
+  });
+  props.add(prop);
+  propFor.set(element, prop);
+  paintProp(prop);
+  return prop;
+};
+
+const dropBalls = () => {
+  for (let i = 0; i < BALL_COUNT; i++) {
+    const size = 28 + Math.random() * 12;
+    const prop = makeBall(
+      Math.random() * Math.max(0, innerWidth - size),
+      -size - Math.random() * 140,
+      size
+    );
+    prop.vx = (Math.random() - 0.5) * 520;
+    prop.vy = 80 + Math.random() * 260;
+    prop.spin = (Math.random() - 0.5) * 900;
+  }
+  ensureJuggleFrame();
 };
 
 const juggleTarget = (target) => {

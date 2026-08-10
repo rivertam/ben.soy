@@ -393,7 +393,6 @@ async fn theme_switcher() -> Result {
                         data-theme-music=(theme.music_asset)
                         data-theme-image=(theme.image_asset)
                         aria-pressed=(if theme.id == themes::DEFAULT_THEME_ID { "true" } else { "false" })
-                        title=(theme.blurb)
                     >
                         <span class="theme-dot" data-theme=(theme.id) aria-hidden="true"></span>
                         (theme.label)

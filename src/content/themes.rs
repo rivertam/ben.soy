@@ -17,8 +17,6 @@ pub const THEME_STORAGE_KEY: &str = "bens-theme";
 pub struct Theme {
     pub id: &'static str,
     pub label: &'static str,
-    /// Menu tooltip, in the footer's deadpan voice.
-    pub blurb: &'static str,
     /// Fingerprinted entry point implementing the browser package interface.
     pub module: Asset,
     /// Optional named assets supplied to that entry point. A synthesized tune
@@ -34,7 +32,6 @@ pub static THEMES: [Theme; 5] = [
     Theme {
         id: DEFAULT_THEME_ID,
         label: "tmux",
-        blurb: "the site itself; ctrl-a n cycles, f follows, j/k move",
         module: asset!("../components/browser/themes/tmux/index.js"),
         music_asset: None,
         image_asset: None,
@@ -43,7 +40,6 @@ pub static THEMES: [Theme; 5] = [
     Theme {
         id: "oxide",
         label: "mill & oxide",
-        blurb: "steel paper, rust accents",
         module: asset!("../components/browser/themes/oxide/index.js"),
         music_asset: None,
         image_asset: None,
@@ -52,7 +48,6 @@ pub static THEMES: [Theme; 5] = [
     Theme {
         id: "dark",
         label: "night shift",
-        blurb: "the mill after hours",
         module: asset!("../components/browser/themes/dark/index.js"),
         music_asset: None,
         image_asset: None,
@@ -61,7 +56,6 @@ pub static THEMES: [Theme; 5] = [
     Theme {
         id: "felix",
         label: "felix mode",
-        blurb: "POV: you're about to throw a ball",
         module: asset!("../components/browser/themes/felix/index.js"),
         music_asset: None,
         image_asset: Some(asset!("../components/felix-chaser.webp")),
@@ -70,7 +64,6 @@ pub static THEMES: [Theme; 5] = [
     Theme {
         id: "clown",
         label: "clown mode",
-        blurb: "the contrast ratios remain, regrettably, compliant",
         module: asset!("../components/browser/themes/clown/index.js"),
         music_asset: Some(asset!("../components/circus.mp3")),
         image_asset: None,
@@ -266,7 +259,7 @@ mod tests {
                 "theme id `{}` isn't kebab-case",
                 theme.id
             );
-            assert!(!theme.label.is_empty() && !theme.blurb.is_empty());
+            assert!(!theme.label.is_empty());
             assert!(
                 THEMES[..i].iter().all(|prior| prior.id != theme.id),
                 "duplicate theme id `{}`",

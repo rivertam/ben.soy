@@ -20,6 +20,13 @@
   --font-meta: "Comic Sans MS", "Comic Sans", "Chalkboard SE", "Comic Neue", cursive;
 }
 
+/* Keep a flying prop from turning a drag across the page into a marquee. */
+[data-theme="clown"],
+[data-theme="clown"] * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* Big-top polka dots: four colors of confetti, every one under 6% alpha. */
 [data-theme="clown"] body {
   background-image:
@@ -31,18 +38,12 @@
   background-size: 34rem 30rem;
 }
 
-/* The nose: every display title wears a glossy pure-CSS red nose. The
-   log page's hero is exempt — its word-stack span is sized by the longest
-   cycling word, which would leave the nose floating in mid-air. */
-[data-theme="clown"] h1:not(.log-hero)::after {
-  content: "";
-  display: inline-block;
-  width: 0.42em;
-  height: 0.42em;
-  margin-left: 0.16em;
+/* The nose left the titles and joined the act: these balls fall with the
+   celebration confetti and can be grabbed once they land. */
+[data-theme="clown"] [data-clown-ball] {
   border-radius: 50%;
   background: radial-gradient(circle at 32% 28%, #ff8d94, #c81e2b 58%, #8f0f1a);
-  vertical-align: baseline;
+  box-shadow: 0 2px 5px rgb(143 15 26 / 35%);
 }
 
 /* Links honk instead of oxidize: the underline goes wavy nose-red and the
