@@ -1,5 +1,3 @@
--- Pause the per-write dirty marker while fact backfill is opt-in and idle.
--- Every beacon was UPSERT-ing analytics_fact_dirty; under load that amplified
--- websocket resets. Reintroduce the event in a later epoch when deliberately
--- finishing the visitor-day rollout (ANALYTICS_FACTS_BACKFILL=1).
-REMOVE EVENT IF EXISTS analytics_events_rebuild_visitor_day ON TABLE analytics_events;
+-- Epoch 3 formerly paused the analytics dirty event. The analytics stack has
+-- been removed; this epoch is retained as a no-op so existing
+-- site_schema_migrations ledgers stay contiguous.

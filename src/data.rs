@@ -14,12 +14,9 @@ use surrealdb::{
 };
 use tokio::sync::OnceCell;
 
-pub mod analytics_facts;
 mod diary_migrations;
 mod schema_migrations;
 
-#[path = "app/analytics/models.rs"]
-pub mod analytics_models;
 #[path = "app/interests/lifting/models.rs"]
 pub mod fitness_models;
 #[path = "app/interests/podrick/models.rs"]
@@ -187,7 +184,6 @@ pub async fn connect(config: &DataConfig) -> Result<Db, DataError> {
         db.health().await.map_err(connect_error)
     })
     .await?;
-    analytics_facts::start_backfill(db.clone());
     Ok(db)
 }
 

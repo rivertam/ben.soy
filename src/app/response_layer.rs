@@ -119,11 +119,11 @@ mod tests {
     fn finds_the_viewer_cookie_by_exact_name() {
         assert!(names_viewer_cookie(&headers(&["__Host-viewer=abc"])));
         assert!(names_viewer_cookie(&headers(&[
-            "analytics-visitor=1; __Host-viewer=abc; theme=dark"
+            "theme=dark; __Host-viewer=abc; other=1"
         ])));
         // HTTP/2 may split the cookie list across several headers.
         assert!(names_viewer_cookie(&headers(&[
-            "analytics-visitor=1",
+            "theme=dark",
             "__Host-viewer=abc"
         ])));
     }
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn ignores_lookalikes_and_values() {
         assert!(!names_viewer_cookie(&headers(&[])));
-        assert!(!names_viewer_cookie(&headers(&["analytics-visitor=1"])));
+        assert!(!names_viewer_cookie(&headers(&["theme=dark"])));
         assert!(!names_viewer_cookie(&headers(&["x__Host-viewer=1"])));
         assert!(!names_viewer_cookie(&headers(&["__Host-viewer2=1"])));
         assert!(!names_viewer_cookie(&headers(&["ref=__Host-viewer"])));

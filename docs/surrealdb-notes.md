@@ -25,7 +25,7 @@ SURREALDB_PASSWORD
 ```
 
 `SURREALDB_ENDPOINT` may be `http://` or `ws://`. Prefer `http://` in
-production for large analytics and fitness snapshot reads; the site binary
+production for large fitness snapshot reads; the site binary
 enables both `protocol-http` and `protocol-ws`.
 
 `Data::db()` initializes lazily, uses eight-second budgets for connection,
@@ -51,17 +51,8 @@ numbered files in `src/data/schema_migrations/` once and records immutable
 Add a new migration and bump `CURRENT_SCHEMA_EPOCH` for every later index
 change; use `OVERWRITE` only when that one-time rebuild is intentional. Site
 epochs are contiguous and additive: an older binary accepts newer ledger rows
-so an epoch-1 rollback can continue using its old raw analytics loader. Diary
+so a rollback across site index epochs remains possible. Diary
 epochs remain strictly version-fenced and do not share this rule.
-
-Analytics epoch 2 owns `analytics_visitor_days`, its rebuild function/event,
-and the leased backfill cursor. Epoch 3 removes the live dirty `DEFINE EVENT`
-while backfill is paused. The background task is opt-in
-(`ANALYTICS_FACTS_BACKFILL=1`) and starts only after bootstrap returns; while it
-is scanning or reconciling, request-path rebuilds stay off so live writes only
-dirty keys when the event is restored. Facts do not become the dashboard source
-until all four supported windows have exact legacy parity. See
-`docs/analytics.md`.
 
 The diary is the exception to pure reconciliation because offline clients need
 an exact activation boundary. `src/data/diary_migrations.rs` applies its
@@ -125,12 +116,9 @@ write that the Rust side then misread:
   Resource busy. This transaction can be retried". Measured 1 failure in 120 for
   two racers and 171 in 800 for eight. The SDK flattens it to a message with no
   typed variant, so recognizing it means matching that string — upstream's own
-  tests do the same. `analytics/db.rs::retrying_conflicts` is the reference
-  handling: every analytics beacon from one visitor upserts the same
-  `analytics_sessions` row, so this is that module's ordinary case rather than a
-  rare one. Any new write on a record several requests share needs the same
-  wrapper, and it must be a *retry*, not a swallow — the losing write did not
-  happen.
+  tests do the same. Any write on a record several requests share needs an
+  explicit retry wrapper around that string match, not a swallow — the losing
+  write did not happen.
 - **`DELETE ... WHERE field IN [..]` can match nothing where `SELECT` matches.**
   Observed on `exercise_tags`, whose UNIQUE index is compound
   (`exercise_name, kind, value`) and whose predicate covered only the leading

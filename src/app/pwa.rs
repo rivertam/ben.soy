@@ -244,7 +244,7 @@ mod tests {
 
     /// Same rule as favicon.rs and /diary itself: reachable, never listed.
     #[test]
-    fn pwa_routes_stay_unlisted_and_untrackable() {
+    fn pwa_routes_stay_unlisted() {
         for path in [
             "/sw.js",
             "/diary.webmanifest",
@@ -255,7 +255,6 @@ mod tests {
                 !crate::content::routes::site_routes().contains(&path.to_string()),
                 "{path} leaked into site_routes()"
             );
-            assert!(!crate::content::routes::is_trackable_route(path));
         }
     }
 }

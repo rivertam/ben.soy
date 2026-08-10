@@ -7,7 +7,7 @@
 
 use super::Db;
 
-const CURRENT_SCHEMA_EPOCH: u16 = 3;
+const CURRENT_SCHEMA_EPOCH: u16 = 4;
 
 struct Migration {
     epoch: u16,
@@ -26,6 +26,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         epoch: 3,
         sql: include_str!("schema_migrations/0003_analytics_pause_dirty_event.surql"),
+    },
+    Migration {
+        epoch: 4,
+        sql: include_str!("schema_migrations/0004_drop_analytics.surql"),
     },
 ];
 
@@ -153,8 +157,8 @@ mod tests {
         apply(&db).await.unwrap();
         apply(&db).await.unwrap();
 
-        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2, 3]);
-        db.query("INFO FOR INDEX analytics_events_kind_time ON analytics_events")
+        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2, 3, 4]);
+        db.query("INFO FOR INDEX workouts_started_at_utc ON workouts")
             .await
             .unwrap()
             .check()
@@ -172,7 +176,7 @@ mod tests {
             .iter()
             .map(|migration| migration.sql.matches("DEFINE INDEX IF NOT EXISTS").count())
             .sum::<usize>();
-        assert_eq!(indexes, 19);
+        assert_eq!(indexes, 13);
         assert!(MIGRATIONS.iter().all(|migration| {
             !migration
                 .sql

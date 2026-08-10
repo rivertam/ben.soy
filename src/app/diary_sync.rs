@@ -291,16 +291,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Same rule as the pwa.rs routes: reachable, never listed, never
-    /// trackable.
+    /// Same rule as the pwa.rs routes: reachable, never listed.
     #[test]
-    fn sync_routes_stay_unlisted_and_untrackable() {
+    fn sync_routes_stay_unlisted() {
         for path in [LOADER_PATH, GLUE_PATH, WASM_PATH] {
             assert!(
                 !crate::content::routes::site_routes().contains(&path.to_string()),
                 "{path} leaked into site_routes()"
             );
-            assert!(!crate::content::routes::is_trackable_route(path));
         }
     }
 }

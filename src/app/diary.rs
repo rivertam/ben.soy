@@ -6,8 +6,8 @@
 //! constant comparison as `/admin`, working through database outages. The
 //! page otherwise follows every hidden-page invariant (docs/auth.md): out of
 //! all public registries, `no-store` before `shell()` on every variant,
-//! `analytics: false`, signed-out → login redirect, signed-in non-admin →
-//! the real 404. Its one listing is the `/admin` tool card.
+//! signed-out → login redirect, signed-in non-admin → the real 404. Its one
+//! listing is the `/admin` tool card.
 //!
 //! An entry's business fields live in `EntryContent`; placement pairs them
 //! with a timestamp and Eastern public-path record key
@@ -51,9 +51,8 @@ use benjisponge::data::Data;
 
 use crate::components::{back_link, page_head, shell};
 use crate::content::access::is_admin;
-use crate::util::urlencode;
+use crate::util::{is_same_origin, urlencode};
 
-use super::analytics::is_same_origin;
 use super::login::viewer;
 use super::not_found::not_found_page;
 
@@ -135,7 +134,6 @@ async fn diary(cx: &Cx) -> Result {
             title: "Diary",
             active: "",
             runtime: false,
-            analytics: false,
             pwa: true,
             diary_room(
                 page_number: page_number,
@@ -203,7 +201,6 @@ async fn diary_entry(cx: &Cx) -> Result {
             title: title.as_str(),
             active: "",
             runtime: false,
-            analytics: false,
             pwa: true,
             page_head(stamp: "diary", title: heading.as_str(), lede: "")
             if let Some(entry) = entry {
@@ -680,28 +677,15 @@ fn log_failure(step: &str, error: &str) {
 mod tests {
     use super::*;
 
-    /// The whole point of the page: unlisted everywhere, untrackable, and —
-    /// unlike a hidden page — impossible to grant to anyone at
-    /// `/admin/permissions`, because it has no `HIDDEN_PAGES` entry.
+    /// The whole point of the page: unlisted everywhere, and — unlike a
+    /// hidden page — impossible to grant to anyone at `/admin/permissions`,
+    /// because it has no `HIDDEN_PAGES` entry.
     #[test]
-    fn diary_is_unlisted_ungrantable_and_untrackable() {
+    fn diary_is_unlisted_and_ungrantable() {
         assert!(
             !crate::content::routes::site_routes().contains(&PATH.to_string()),
             "{PATH} leaked into site_routes()"
         );
-        assert!(!crate::content::routes::is_trackable_route(PATH));
-        assert!(!crate::content::routes::is_trackable_route(
-            "/diary/2026-07-27T10-00-00-04-00"
-        ));
-        assert!(!crate::content::routes::is_trackable_route(
-            "/api/diary/entries"
-        ));
-        assert!(!crate::content::routes::is_trackable_route(
-            "/api/diary/snapshot"
-        ));
-        assert!(!crate::content::routes::is_trackable_route(
-            "/api/diary/token"
-        ));
         assert!(
             crate::content::access::hidden_page(PATH).is_none(),
             "{PATH} must never be a grantable hidden page"

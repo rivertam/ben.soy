@@ -38,7 +38,7 @@ independently repeats that exact check before reading the request body.
 admin's own footer line is its one listing. Admin pages are tooling, not
 hidden pages: they stay out of every registry including `HIDDEN_PAGES`, and
 follow the hidden-page invariants below (`no-store` before `shell()`,
-`analytics: false`, signed-out → login redirect, signed-in non-admin → the
+signed-out → login redirect, signed-in non-admin → the
 real 404). `/admin/permissions` manages the grants; its grant/revoke POSTs repeat the
 admin check, require positive same-origin evidence, and bound the body
 before parsing. Grants must target a registered `HIDDEN_PAGES` path;
@@ -132,7 +132,7 @@ display entry to `HIDDEN_PAGES` in `src/content/access.rs`, grant access
 at `/admin/permissions` (the new entry's form set appears there
 automatically). Hidden pages deliberately stay OUT of
 `INTERESTS`/`POSTS`/`site_routes()` — that's what keeps the nav, indexes,
-feed, 404, and analytics trackability silent about them. The
+feed, and 404 silent about them. The
 `HIDDEN_PAGES` entry is the page's only listing: the shell's tmux
 windows and the `~` listing at `/` render it for allowlisted viewers,
 nobody else.
@@ -144,11 +144,6 @@ Invariants:
   layer (below) already covers requests bearing the viewer cookie; the
   page-level header is deliberate redundancy for a page whose every
   variant must stay uncached.
-- `analytics: false` on `shell()` — the analytics dashboard is public.
-- Path must not be analytics-trackable: nothing under `/felix/`,
-  `/swing/`, or `/lifting/` (`is_trackable_route`), or the hidden path
-  shows up as a referrer of public pageviews. The `HIDDEN_PAGES` test
-  enforces this.
 - Signed-out → `Err(redirect("/login?next=…"))`. This reveals that *a*
   door exists at the path, in exchange for friends being able to just
   follow a link; render `not_found_page` for the signed-out case too if a

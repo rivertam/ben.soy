@@ -35,8 +35,8 @@ use topcoat::{
 
 use crate::components::{index_card, page_head, shell};
 use crate::content::access::{self, HIDDEN_PAGES, HiddenPage, HiddenPageGrant, is_admin};
+use crate::util::is_same_origin;
 
-use super::analytics::is_same_origin;
 use super::diary;
 use super::login::viewer;
 use super::not_found::not_found_page;
@@ -91,7 +91,6 @@ async fn admin_index(cx: &Cx) -> Result {
             title: "Admin",
             active: "",
             runtime: false,
-            analytics: false,
             page_head(stamp: "index", title: "Admin", lede: "The back office.")
             <section class="mt-14 space-y-10">
                 for tool in ADMIN_TOOLS.iter() {
@@ -156,7 +155,6 @@ async fn permissions(cx: &Cx) -> Result {
             title: "Permissions",
             active: "",
             runtime: false,
-            analytics: false,
             page_head(
                 stamp: "admin",
                 title: "Permissions",
@@ -483,8 +481,7 @@ mod tests {
     }
 
     /// Admin tooling is unlisted, exactly like hidden pages: out of the route
-    /// registry (so the 404's index and sitemap never mention it) and off the
-    /// analytics-trackable prefixes.
+    /// registry so the 404's index and sitemap never mention it.
     #[test]
     fn admin_pages_stay_unlisted() {
         for path in [INDEX_PATH, PAGE_PATH] {
@@ -492,12 +489,11 @@ mod tests {
                 !crate::content::routes::site_routes().contains(&path.to_string()),
                 "{path} leaked into site_routes()"
             );
-            assert!(!crate::content::routes::is_trackable_route(path));
         }
         for tool in ADMIN_TOOLS.iter() {
             // The diary is admin-only tooling at its own path; everything
             // else lives under /admin/. Either way a tool must stay out of
-            // the public registries and off the analytics-trackable routes.
+            // the public registries.
             assert!(
                 tool.href.starts_with("/admin/") || tool.href == diary::PATH,
                 "{} points outside /admin/",
@@ -508,7 +504,6 @@ mod tests {
                 "{} leaked into site_routes()",
                 tool.href
             );
-            assert!(!crate::content::routes::is_trackable_route(tool.href));
         }
         assert_eq!(ADMIN_TOOLS[0].href, PAGE_PATH);
         assert_eq!(

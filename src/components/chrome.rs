@@ -29,7 +29,6 @@ const COMIC_NEUE: Font = fontsource_font!(COMIC_NEUE, host: Asset);
 /// runs). diary_sync.rs resolves this const into the /diary-sync.js loader
 /// so the service worker's offline SSR can link the same stylesheet.
 pub const SITE_CSS: Asset = topcoat::tailwind::stylesheet!();
-const ANALYTICS_JS: Asset = asset!("./analytics.js");
 const THEME_JS: Asset = asset!("./theme.js");
 /// Clown mode's band: a Pixabay circus track (their license permits this
 /// use without attribution). Fetched only when the tune actually starts —
@@ -108,9 +107,6 @@ fn tmux_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec
 /// `runtime` controls Topcoat's browser runtime. It defaults on for existing
 /// pages; fully server-rendered pages can opt out and ship no production JS.
 ///
-/// `analytics` controls the first-party tracker. It is disabled on the 404 so
-/// arbitrary requested paths can never become public dashboard entries.
-///
 /// `pwa` links the /diary app manifest and its status-bar color so the page
 /// is installable (app/pwa.rs serves the pieces). Only the admin-only diary
 /// pages set it; the flag renders no viewer data, but keeping it off
@@ -132,7 +128,6 @@ pub async fn shell(
     active: &str,
     #[default(false)] hide_nav: bool,
     #[default(true)] runtime: bool,
-    #[default(true)] analytics: bool,
     #[default(false)] pwa: bool,
     #[default(false)] marker_font: bool,
     child: View,
@@ -191,9 +186,6 @@ pub async fn shell(
                 topcoat::dev::script()
                 if runtime {
                     topcoat::runtime::script()
-                }
-                if analytics {
-                    <script defer="" src=(ANALYTICS_JS)></script>
                 }
                 <script defer="" src=(THEME_JS)></script>
                 <link rel="stylesheet" href=(SITE_CSS)>
@@ -262,7 +254,6 @@ pub async fn shell(
                                 href="https://www.reddit.com/user/BenjiSponge"
                                 class="quiet-link"
                             >"Reddit"</a>
-                            <a href="/analytics" class="quiet-link">"Analytics"</a>
                         </span>
                         <span>
                             (format!("entry № {:04} of {:04} · ", LOG.len(), LOG.len()))

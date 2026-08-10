@@ -38,7 +38,6 @@ async fn motorcycles(cx: &Cx) -> Result {
             title: "Motorcycles",
             active: "",
             runtime: false,
-            analytics: false,
             page_head(
                 stamp: "motorcycles",
                 title: "Motorcycles",

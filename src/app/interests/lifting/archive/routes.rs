@@ -17,9 +17,9 @@ use topcoat::{
 use benjisponge::auth::bearer_authorized;
 use benjisponge::data::Data;
 
-use crate::app::analytics::is_same_origin;
 use crate::app::login::viewer;
 use crate::content::access::is_admin;
+use crate::util::is_same_origin;
 
 use super::db;
 use super::eastern;

@@ -251,7 +251,7 @@ origin doing its job, not a bug to fix.
   the next pass for Discord's full `Retry-After`.
 - **`/podrick` is hidden, not merely unlinked.** It stays out of `INTERESTS`
   and `site_routes()`, repeats the database grant check on every request,
-  disables public analytics, and emits `no-store` before every rendered shell.
+  disables public registries, and emits `no-store` before every rendered shell.
   Its only listing and grant form come from `access::HIDDEN_PAGES`.
 
 ## Layout

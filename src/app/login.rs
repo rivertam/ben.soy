@@ -127,7 +127,6 @@ async fn login(cx: &Cx) -> Result {
             title: "Sign in",
             active: "",
             runtime: false,
-            analytics: false,
             <section class="mt-16 sm:mt-24">
                 <header class="rail-row">
                     <p class="rail-stamp">"sign in"</p>

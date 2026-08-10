@@ -1,5 +1,4 @@
 mod admin;
-mod analytics;
 mod diary;
 mod diary_sync;
 mod favicon;
@@ -24,7 +23,6 @@ use topcoat::{
     asset::{AssetBundle, RouterBuilderAssetExt},
     cookie::{Key, RouterBuilderCookieExt},
     router::{Router, RouterBuilderDiscoverExt},
-    session::{RouterBuilderSessionExt, SessionConfig, cookie::CookieTokenStore},
 };
 
 pub fn router() -> Router {
@@ -33,15 +31,8 @@ pub fn router() -> Router {
         .assets(AssetBundle::load().unwrap())
         .discover()
         .cookies()
-        .sessions(
-            SessionConfig::builder()
-                .token_store(CookieTokenStore::new().name("analytics-visitor"))
-                .lifetime(std::time::Duration::from_hours(24 * 400))
-                .build(),
-        )
         .app_context(data.clone())
         .app_context(FitnessStore::new(data))
-        .app_context(analytics::guard::AnalyticsGuard::default())
         .app_context(cookie_key())
         .build()
 }

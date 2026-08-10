@@ -24,7 +24,8 @@ use super::interests::lifting::archive::{
     store::FitnessStore,
 };
 use super::interests::lifting::canonical_share_text;
-use super::{analytics::is_same_origin, login::viewer};
+use super::login::viewer;
+use crate::util::is_same_origin;
 
 const PATH: &str = "/lifting/upload";
 const LOGIN_REDIRECT: &str = "/login?next=%2Flifting";

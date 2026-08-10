@@ -4,8 +4,8 @@
 //! as its own service (`docs/podrick.md`). This module is only the page that
 //! renders the Pants Off calendars — the lift job has no panel here; you read
 //! it in the channel it posts to. It follows the hidden page contract in
-//! `docs/auth.md`: database-managed grants, no public registry, no analytics,
-//! and no-store before every rendered shell.
+//! `docs/auth.md`: database-managed grants, no public registry, and no-store
+//! before every rendered shell.
 
 mod heatmap;
 mod seed;
@@ -83,7 +83,6 @@ async fn podrick(cx: &Cx) -> Result {
             title: meta.title,
             active: "",
             runtime: true,
-            analytics: false,
             page_head(stamp: meta.stamp, title: meta.title, lede: meta.teaser)
 
             rail_section(

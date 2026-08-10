@@ -68,7 +68,6 @@ pub async fn not_found_page(requested: &str) -> Result {
         shell(
             title: "404",
             active: "",
-            analytics: false,
             (StatusCode::NOT_FOUND)
             <section class="mt-16 sm:mt-24">
                 <header class="rail-row">

@@ -359,14 +359,6 @@ mod tests {
                 "{} collides with a public interest",
                 page.path
             );
-            // A trackable path would let the analytics pipeline record the
-            // hidden page as a referrer of public pageviews — hidden pages
-            // must never live under /felix/, /swing/, or /lifting/.
-            assert!(
-                !crate::content::routes::is_trackable_route(page.path),
-                "{} is analytics-trackable",
-                page.path
-            );
         }
     }
 }

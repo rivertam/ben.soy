@@ -23,10 +23,10 @@ use topcoat::{
 };
 
 use crate::{
-    app::{analytics::is_same_origin, login::viewer},
+    app::login::viewer,
     components::shell,
     content::access::is_admin,
-    util::urlencode,
+    util::{is_same_origin, urlencode},
 };
 
 use super::{
@@ -608,12 +608,10 @@ mod tests {
     }
 
     /// The exercise pages are dynamic per-name routes like `/lifting/{path}`
-    /// permalinks: out of `site_routes()`, but on the trackable `/lifting/`
-    /// prefix like every other public lifting page.
+    /// permalinks: out of `site_routes()`, like every other public lifting detail.
     #[test]
     fn exercise_pages_stay_out_of_the_route_registry() {
         let sample = page_url("Bench Press");
         assert!(!crate::content::routes::site_routes().contains(&sample));
-        assert!(crate::content::routes::is_trackable_route(&sample));
     }
 }

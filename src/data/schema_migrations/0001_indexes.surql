@@ -20,14 +20,6 @@ DEFINE INDEX IF NOT EXISTS exercise_muscles_identity
     ON exercise_muscles FIELDS exercise_name, muscle UNIQUE;
 DEFINE INDEX IF NOT EXISTS hidden_page_grants_identity
     ON hidden_page_grants FIELDS page_path, email UNIQUE;
-DEFINE INDEX IF NOT EXISTS analytics_events_kind_time
-    ON analytics_events FIELDS kind, occurred_at;
-DEFINE INDEX IF NOT EXISTS analytics_events_time
-    ON analytics_events FIELDS occurred_at;
-DEFINE INDEX IF NOT EXISTS analytics_events_session
-    ON analytics_events FIELDS visitor_id, session_id, occurred_at;
-DEFINE INDEX IF NOT EXISTS analytics_events_session_time
-    ON analytics_events FIELDS session_id, occurred_at;
 DEFINE INDEX IF NOT EXISTS podrick_announcements_claimed_at
     ON podrick_announcements FIELDS claimed_at;
 DEFINE INDEX IF NOT EXISTS podrick_pants_messages_posted_at
