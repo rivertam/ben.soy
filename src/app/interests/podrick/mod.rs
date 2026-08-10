@@ -18,6 +18,7 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     router::{HeaderValue, error::redirect, header, page, query_params, uri},
+    runtime::{Event, shard},
     view::view,
 };
 
@@ -81,7 +82,7 @@ async fn podrick(cx: &Cx) -> Result {
         shell(
             title: meta.title,
             active: "",
-            runtime: false,
+            runtime: true,
             analytics: false,
             page_head(stamp: meta.stamp, title: meta.title, lede: meta.teaser)
 
@@ -108,19 +109,57 @@ async fn podrick(cx: &Cx) -> Result {
                 <script type="module" src=(ANTHEM_JS)></script>
             )
 
+            // Keep the signal outside the shard: changing years replaces only
+            // the history contents, leaving the page anthem (and its playback
+            // position) mounted. pants-off.js drives this input and mirrors
+            // the selection into browser history; the year links remain real
+            // links when JavaScript is unavailable.
+            signal pants_year = selected_year.to_string();
+            <input
+                type="hidden"
+                data-pants-year-input=""
+                data-current-year=(current_year.to_string())
+                :value=$(pants_year.get())
+                @input=$(|e: Event| pants_year.set(e.target.value))
+            />
             rail_section(
                 class: "mt-8",
                 stamp: "history",
-                heatmap::pants_heatmaps(
-                    status: pants,
-                    now: now,
-                    selected_year: selected_year,
-                    earliest_year: earliest_year,
-                    current_year: current_year
-                )
+                pants_history_shard(selected_year: $(pants_year.get()))
             )
 
             back_link(href: "/", label: "~")
+        )
+    }
+}
+
+/// The year argument comes from the browser, so this endpoint repeats both
+/// authorization and range validation before returning any hidden history.
+#[shard]
+async fn pants_history_shard(cx: &Cx, selected_year: String) -> Result {
+    let Some(current) = viewer(cx) else {
+        return view! {};
+    };
+    if !may_view(app_context::<Data>(cx), &current.email, PATH).await {
+        return view! {};
+    }
+
+    let now = Timestamp::now().as_second();
+    let pants = status::load(app_context::<Data>(cx)).await;
+    let (earliest_year, current_year) =
+        heatmap::pants_year_bounds(&pants, now).unwrap_or((1970, 1970));
+    let selected_year = selected_year
+        .parse::<i16>()
+        .unwrap_or(current_year)
+        .clamp(earliest_year, current_year);
+
+    view! {
+        heatmap::pants_heatmaps(
+            status: pants,
+            now: now,
+            selected_year: selected_year,
+            earliest_year: earliest_year,
+            current_year: current_year
         )
     }
 }

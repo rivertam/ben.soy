@@ -104,6 +104,7 @@ pub(super) async fn pants_heatmaps(
                                 <a
                                     class=(YEAR_LINK)
                                     href=(year_href(*year, current_year))
+                                    data-pants-year-link=""
                                 >
                                     (year.to_string())
                                 </a>
