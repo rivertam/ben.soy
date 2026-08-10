@@ -389,7 +389,7 @@
    The log page's hero is exempt like clown's nose — its word-stack span is
    sized by the longest cycling word, which would strand the cursor mid-air
    (and the status line below already blinks its own caret). */
-[data-theme="tmux"] h1:not(.log-hero)::after {
+[data-theme="tmux"] h1:not(.log-hero):not(.felix-hero-title)::after {
   content: "\258A";
   margin-left: 0.15em;
   color: var(--color-oxide);

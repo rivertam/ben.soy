@@ -264,7 +264,7 @@ async fn felix_page(initial_photo: &str) -> Result {
             </a>
             <script type="module" src=(FELIX_HOME_JS)></script>
             rail_section(
-                class: "mt-8",
+                class: "felix-photo-spread mt-8",
                 stamp: "photos",
                 <div
                     class="felix-gallery"
@@ -299,7 +299,7 @@ async fn felix_page(initial_photo: &str) -> Result {
                             </button>
                             <figcaption>
                                 <span class="felix-photo-stamp">(photo.stamp)</span>
-                                <span>(photo.caption)</span>
+                                <span class="felix-photo-caption">(photo.caption)</span>
                             </figcaption>
                         </figure>
                     }

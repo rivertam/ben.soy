@@ -28,6 +28,50 @@ body[data-nav-hidden="true"] .felix-hero {
   background: #090b0d;
 }
 
+/* Felix is a fixed editorial spread rather than a surface that borrows the
+   site's active palette. The theme runtime still runs underneath it, so
+   theme audio and interactions remain available. */
+body:has(.felix-hero) {
+  --color-page: #12100f;
+  --color-card: #211d1a;
+  --color-ink: #f3ede4;
+  --color-ink2: #c7bbb0;
+  --color-muted: #8d8177;
+  --color-hairline: #493f38;
+  --color-oxide: #d58a62;
+  --color-oxide-hot: #f0aa7d;
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-meta: "Courier New", Courier, monospace;
+  color: #f3ede4;
+  background: #12100f;
+}
+
+body:has(.felix-hero) main {
+  max-width: 76rem;
+  padding-right: clamp(1rem, 4vw, 4rem);
+  padding-left: clamp(1rem, 4vw, 4rem);
+}
+
+body:has(.felix-hero) footer {
+  max-width: 76rem;
+  color: #8d8177;
+  border-color: #493f38;
+}
+
+body:has(.felix-hero) .felix-home {
+  color: #c7bbb0;
+  background: rgb(18 16 15 / 88%);
+  border-color: #493f38;
+  backdrop-filter: blur(0.5rem);
+}
+
+body:has(.felix-hero) .felix-home:hover,
+body:has(.felix-hero) .felix-home:focus-visible {
+  color: #f0aa7d;
+  border-color: #d58a62;
+}
+
 .felix-hero::after {
   position: absolute;
   z-index: -1;
@@ -249,10 +293,62 @@ body[data-nav-hidden="true"] .felix-hero {
   border-color: var(--color-oxide);
 }
 
-/* The remaining photos are labeled prints, rather than competing with the hero. */
+/* The remaining photos are a restrained contact sheet, rather than a
+   thumbnail grid. */
 .felix-gallery {
-  columns: 2;
-  column-gap: 1rem;
+  columns: 1;
+  column-gap: 2.5rem;
+}
+
+body:has(.felix-hero) .felix-photo-spread {
+  margin-top: clamp(3rem, 8vw, 7rem);
+  padding-top: 1.25rem;
+  border-top: 1px solid #493f38;
+}
+
+body:has(.felix-hero) .felix-photo-spread > .rail-stamp {
+  color: #d58a62;
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+}
+
+body:has(.felix-hero) .felix-photo {
+  margin-bottom: 2rem;
+  padding: 0;
+  background: #211d1a;
+  border: 0;
+}
+
+body:has(.felix-hero) .felix-photo-button {
+  background: #090807;
+}
+
+body:has(.felix-hero) .felix-photo figcaption {
+  display: block;
+  padding: 0.9rem 0.1rem 0;
+  color: #c7bbb0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.95rem;
+  font-style: italic;
+  line-height: 1.35;
+}
+
+body:has(.felix-hero) .felix-photo-stamp {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: #d58a62;
+  font-size: 0.65rem;
+  font-style: normal;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+body:has(.felix-hero) .felix-photo-caption:empty {
+  display: none;
+}
+
+body:has(.felix-hero) .felix-photo-button:focus-visible {
+  outline-color: #f0aa7d;
 }
 
 .felix-photo {
@@ -464,7 +560,7 @@ body[data-nav-hidden="true"] .felix-hero {
 
 @media (min-width: 40rem) {
   .felix-gallery {
-    columns: 3;
+    columns: 2;
   }
 }
 
