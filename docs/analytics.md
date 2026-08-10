@@ -125,7 +125,9 @@ performs the legacy raw snapshot: explicitly projected events pages of at most
 200 rows per UTC day, plus a prior-session probe over only the idle window
 before cutoff, with the window ∩ prior intersection done in Rust. Small pages
 keep the shared SurrealDB connection from resetting under multi-week payloads;
-`SURREALDB_ENDPOINT` may use `http://` (preferred) or `ws://`.
+the whole raw load is hard-capped at five seconds so a slow scan returns the
+standby card instead of holding the tab open past the edge proxy. `SURREALDB_ENDPOINT`
+may use `http://` (preferred) or `ws://`.
 The first request for each of the four windows then compares the fact and
 legacy dashboards structurally and persists a four-bit parity mask.
 Only mask 15 activates fact-only reads. Any fact query or decode failure falls
