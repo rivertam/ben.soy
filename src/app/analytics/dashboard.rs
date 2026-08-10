@@ -203,44 +203,63 @@ async fn load_raw(db: &Db, cutoff: i64, current: i64) -> anyhow::Result<Dashboar
     // Prior markers only need the idle window before `$cutoff`. Intersect that
     // tiny candidate set with in-window pageview sessions in Rust.
     //
-    // Load the window one UTC day at a time: a single multi-week `SELECT *`
-    // was large enough to reset the shared SurrealDB websocket (and take
-    // fitness / event writes down with it), while day-sized chunks stay
-    // within what the connection can return.
+    // Page through events with a hard row limit: even a single busy UTC day was
+    // large enough to reset the shared SurrealDB websocket, so day chunks alone
+    // were not enough. Explicit projections keep NONE option fields intact.
+    const PAGE: i64 = 200;
     let prior_floor = cutoff.saturating_sub(super::db::SESSION_IDLE_SECONDS);
     let first_day = cutoff.div_euclid(86_400);
     let last_day = current.div_euclid(86_400);
     let day_count = last_day.saturating_sub(first_day).saturating_add(1);
     let budget =
-        Duration::from_secs(u64::try_from(day_count.saturating_mul(2).max(8)).unwrap_or(8));
+        Duration::from_secs(u64::try_from(day_count.saturating_mul(5).max(15)).unwrap_or(15));
     let (events, prior_sessions) = timeout(budget, async {
         let mut events = Vec::new();
         for day in first_day..=last_day {
             let floor = day.saturating_mul(86_400).max(cutoff);
             let ceiling = (day + 1).saturating_mul(86_400);
-            let mut response = db
-                .query(
-                    "SELECT record::id(id) AS id,
-                            visitor_id, session_id, occurred_at, kind, page_path,
-                            referrer_kind, referrer_host, referrer_path, country_code,
-                            timezone, language, device_kind, browser, operating_system,
-                            viewport_kind, navigation_kind, local_hour, local_weekday,
-                            engagement_seconds, scroll_percent, lcp_milliseconds,
-                            cls_thousandths, navigation_milliseconds, target_host,
-                            utm_source, utm_medium, utm_campaign
-                     FROM analytics_events
-                     WHERE occurred_at >= $floor AND occurred_at < $ceiling",
-                )
-                .bind(("floor", floor))
-                .bind(("ceiling", ceiling))
-                .await
-                .context("analytics snapshot query failed")?
-                .check()
-                .context("analytics snapshot query failed")?;
-            let mut chunk: Vec<AnalyticsEvent> = response
-                .take(0)
-                .context("analytics snapshot decoding failed")?;
-            events.append(&mut chunk);
+            let mut cursor_at = floor.saturating_sub(1);
+            let mut cursor_id = String::new();
+            loop {
+                let mut response = db
+                    .query(
+                        "SELECT record::id(id) AS id,
+                                visitor_id, session_id, occurred_at, kind, page_path,
+                                referrer_kind, referrer_host, referrer_path, country_code,
+                                timezone, language, device_kind, browser, operating_system,
+                                viewport_kind, navigation_kind, local_hour, local_weekday,
+                                engagement_seconds, scroll_percent, lcp_milliseconds,
+                                cls_thousandths, navigation_milliseconds, target_host,
+                                utm_source, utm_medium, utm_campaign
+                         FROM analytics_events
+                         WHERE occurred_at >= $floor AND occurred_at < $ceiling
+                           AND (occurred_at > $cursor_at
+                                OR (occurred_at = $cursor_at AND record::id(id) > $cursor_id))
+                         ORDER BY occurred_at ASC, id ASC
+                         LIMIT $limit",
+                    )
+                    .bind(("floor", floor))
+                    .bind(("ceiling", ceiling))
+                    .bind(("cursor_at", cursor_at))
+                    .bind(("cursor_id", cursor_id.clone()))
+                    .bind(("limit", PAGE))
+                    .await
+                    .context("analytics snapshot query failed")?
+                    .check()
+                    .context("analytics snapshot query failed")?;
+                let mut chunk: Vec<AnalyticsEvent> = response
+                    .take(0)
+                    .context("analytics snapshot decoding failed")?;
+                let count = chunk.len();
+                if let Some(last) = chunk.last() {
+                    cursor_at = last.occurred_at;
+                    cursor_id = last.id.clone();
+                }
+                events.append(&mut chunk);
+                if count < PAGE as usize {
+                    break;
+                }
+            }
         }
 
         let mut response = db
@@ -276,7 +295,7 @@ async fn load_raw(db: &Db, cutoff: i64, current: i64) -> anyhow::Result<Dashboar
     .await
     .with_context(|| {
         format!(
-            "analytics snapshot exceeded {} seconds across {day_count} day chunks",
+            "analytics snapshot exceeded {} seconds across {day_count} day pages",
             budget.as_secs()
         )
     })??;

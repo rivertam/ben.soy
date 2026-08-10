@@ -24,6 +24,10 @@ SURREALDB_USERNAME
 SURREALDB_PASSWORD
 ```
 
+`SURREALDB_ENDPOINT` may be `http://` or `ws://`. Prefer `http://` in
+production for large analytics and fitness snapshot reads; the site binary
+enables both `protocol-http` and `protocol-ws`.
+
 `Data::db()` initializes lazily, uses eight-second budgets for connection,
 authentication, namespace selection, direct-sync configuration, and health,
 and 60-second budgets for each schema/bootstrap stage. It applies
