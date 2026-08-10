@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
@@ -203,17 +203,17 @@ async fn load_raw(db: &Db, cutoff: i64, current: i64) -> anyhow::Result<Dashboar
     // Prior markers only need the idle window before `$cutoff`. Intersect that
     // tiny candidate set with in-window pageview sessions in Rust.
     //
-    // Page through events with a hard row limit: even a single busy UTC day was
-    // large enough to reset the shared SurrealDB websocket, so day chunks alone
-    // were not enough. Explicit projections keep NONE option fields intact.
+    // Page through events, but keep a hard wall-clock budget under the edge
+    // proxy timeout. The previous per-day budget (5s × days) let 7d/90d hold
+    // the request open until Cloudflare returned 502 — the "free-spinning"
+    // analytics page. Prefer a fast standby over a hung tab.
     const PAGE: i64 = 200;
+    const BUDGET: Duration = Duration::from_secs(5);
     let prior_floor = cutoff.saturating_sub(super::db::SESSION_IDLE_SECONDS);
     let first_day = cutoff.div_euclid(86_400);
     let last_day = current.div_euclid(86_400);
-    let day_count = last_day.saturating_sub(first_day).saturating_add(1);
-    let budget =
-        Duration::from_secs(u64::try_from(day_count.saturating_mul(5).max(15)).unwrap_or(15));
-    let (events, prior_sessions) = timeout(budget, async {
+    let started = Instant::now();
+    let (events, prior_sessions) = timeout(BUDGET, async {
         let mut events = Vec::new();
         for day in first_day..=last_day {
             let floor = day.saturating_mul(86_400).max(cutoff);
@@ -221,6 +221,12 @@ async fn load_raw(db: &Db, cutoff: i64, current: i64) -> anyhow::Result<Dashboar
             let mut cursor_at = floor.saturating_sub(1);
             let mut cursor_id = String::new();
             loop {
+                if started.elapsed() >= BUDGET.saturating_sub(Duration::from_millis(250)) {
+                    anyhow::bail!(
+                        "analytics snapshot ran out of budget after {} events",
+                        events.len()
+                    );
+                }
                 let mut response = db
                     .query(
                         "SELECT record::id(id) AS id,
@@ -293,12 +299,7 @@ async fn load_raw(db: &Db, cutoff: i64, current: i64) -> anyhow::Result<Dashboar
         Ok::<_, anyhow::Error>((events, prior_sessions))
     })
     .await
-    .with_context(|| {
-        format!(
-            "analytics snapshot exceeded {} seconds across {day_count} day pages",
-            budget.as_secs()
-        )
-    })??;
+    .context("analytics snapshot exceeded five seconds")??;
 
     Ok(aggregate(&events, &prior_sessions, cutoff, current))
 }
