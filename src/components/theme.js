@@ -989,63 +989,73 @@
   };
 
   // Vimium fights this theme for f and j/k (it swallows the keys before
-  // the page ever sees them). Detecting it by DOM is a dead end: its UI
-  // is injected lazily and lives inside a shadow root, so a fresh page
-  // shows nothing. But its manifest marks a few resources web-accessible
-  // to every page, and only an installed Vimium answers a fetch for them
-  // (probe-verified against the Chrome Web Store build). Verdict cached
-  // per tab; when it's yes, one polite display-message suggests a
-  // per-site exclusion, once per tab.
+  // the page ever sees them). Its web-accessible resources answer a
+  // fetch whenever the extension is *installed* — including after a
+  // per-site exclusion — so the probe alone can't tell active from idle.
+  // We only nag when install looks likely, overlapping keys have not
+  // yet reached the page (proof the exclusion stuck), and the viewer
+  // hasn't already been told. Noted/ok live in localStorage so a
+  // finished exclusion survives new tabs; DOM markers still catch forks
+  // / live HUD the id probe can't cover.
   const VIMIUM_NOTED_KEY = "bens-tmux-vimium-noted";
-  const VIMIUM_VERDICT_KEY = "bens-tmux-vimium";
+  const VIMIUM_OK_KEY = "bens-tmux-vimium-ok";
   const VIMIUM_STORE_ID = "dbepggeogbaibhgnhhndojpepiihcmeb";
   let vimiumTimer = null;
-  const vimiumPresent = async () => {
+  const vimiumStore = (key, value) => {
     try {
-      const cached = sessionStorage.getItem(VIMIUM_VERDICT_KEY);
-      if (cached) return cached === "yes";
+      if (value === undefined) return localStorage.getItem(key);
+      localStorage.setItem(key, value);
     } catch {
-      // No storage: probe every page; the fetch is cheap.
+      return null;
     }
-    // Late-injected UI (a vimium-reset shadow host) or a fork's markers,
-    // for the browsers the id probe can't cover.
-    let found = !!document.querySelector('[class*="vimium" i], [id*="vimium" i]');
-    if (!found && "chrome" in window) {
-      try {
-        await fetch(
-          `chrome-extension://${VIMIUM_STORE_ID}/content_scripts/vimium.css`,
-          { mode: "no-cors" }
-        );
-        found = true;
-      } catch {
-        // Not installed (or not Chrome): the fetch refuses.
-      }
+  };
+  // Older builds stored the ack per tab; promote it so a refresh right
+  // after an exclusion doesn't re-nag.
+  try {
+    if (sessionStorage.getItem(VIMIUM_NOTED_KEY) === "yes") {
+      vimiumStore(VIMIUM_NOTED_KEY, "yes");
     }
+  } catch {
+    // No sessionStorage: nothing to promote.
+  }
+  const markVimiumOk = () => {
+    // j/k/f reached us ⇒ Vimium isn't capturing on this origin.
+    vimiumStore(VIMIUM_OK_KEY, "yes");
+    if (vimiumTimer) {
+      clearTimeout(vimiumTimer);
+      vimiumTimer = null;
+    }
+    clearTimeout(noteTimer);
+    noteTimer = null;
+    document.querySelector(".tmux-note")?.remove();
+  };
+  const vimiumInstalled = async () => {
+    if (document.querySelector('[class*="vimium" i], [id*="vimium" i]')) {
+      return true;
+    }
+    if (!("chrome" in window)) return false;
     try {
-      sessionStorage.setItem(VIMIUM_VERDICT_KEY, found ? "yes" : "no");
+      await fetch(
+        `chrome-extension://${VIMIUM_STORE_ID}/content_scripts/vimium.css`,
+        { mode: "no-cors" }
+      );
+      return true;
     } catch {
-      // Same shrug as above.
+      // Not installed (or not Chrome): the fetch refuses.
+      return false;
     }
-    return found;
   };
   const noteVimium = async () => {
-    let noted = false;
-    try {
-      noted = sessionStorage.getItem(VIMIUM_NOTED_KEY) === "yes";
-    } catch {
-      // No storage: worst case the note repeats next page.
-    }
-    // tmuxOn is rechecked after the await: the probe is async and the
-    // viewer may have changed costume mid-flight.
-    if (noted || !(await vimiumPresent()) || !tmuxOn()) return;
+    if (vimiumStore(VIMIUM_NOTED_KEY) === "yes") return;
+    if (vimiumStore(VIMIUM_OK_KEY) === "yes") return;
+    // tmuxOn / ok are rechecked after the await: the probe is async and
+    // a key (or costume change) may have landed mid-flight.
+    if (!(await vimiumInstalled()) || !tmuxOn()) return;
+    if (vimiumStore(VIMIUM_OK_KEY) === "yes") return;
     tmuxMessage(
       "vimium detected. First of all, nice. Second, I basically inlined vimium on this theme, so try disabling it for this site. :)"
     );
-    try {
-      sessionStorage.setItem(VIMIUM_NOTED_KEY, "yes");
-    } catch {
-      // Same shrug as above.
-    }
+    vimiumStore(VIMIUM_NOTED_KEY, "yes");
   };
 
   // The status-line clock, repainted often enough to never lie by more
@@ -1059,7 +1069,11 @@
     if (tmuxOn()) {
       paintTmuxClock();
       if (!tmuxClockTimer) tmuxClockTimer = setInterval(paintTmuxClock, 20000);
-      if (!vimiumTimer) {
+      if (
+        !vimiumTimer &&
+        vimiumStore(VIMIUM_NOTED_KEY) !== "yes" &&
+        vimiumStore(VIMIUM_OK_KEY) !== "yes"
+      ) {
         vimiumTimer = setTimeout(() => {
           vimiumTimer = null;
           noteVimium();
@@ -1119,15 +1133,19 @@
     switch (event.key) {
       case "j":
         // Explicitly instant: smooth scrolling under key-repeat queues
-        // animations and feels like wading.
+        // animations and feels like wading. Landing here also means
+        // Vimium isn't eating the key on this origin.
+        markVimiumOk();
         if (!logMove(1)) scrollBy({ top: 80, behavior: "instant" });
         event.preventDefault();
         break;
       case "k":
+        markVimiumOk();
         if (!logMove(-1)) scrollBy({ top: -80, behavior: "instant" });
         event.preventDefault();
         break;
       case "f":
+        markVimiumOk();
         startHints();
         event.preventDefault();
         break;
