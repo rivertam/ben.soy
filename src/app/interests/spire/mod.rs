@@ -37,7 +37,7 @@ struct SpireQuery {
 
 /// Which slice of the log a `?page=` value selects: the clamped 1-based
 /// page, the page count, and the index range it covers. Out-of-range and
-/// garbage requests clamp instead of erroring, like the homepage filters.
+/// garbage requests clamp instead of erroring, like the log page's filters.
 fn page_slice(total: usize, requested: usize) -> (usize, usize, std::ops::Range<usize>) {
     let pages = total.div_ceil(PER_PAGE).max(1);
     let page = requested.clamp(1, pages);
@@ -56,7 +56,7 @@ fn page_url(page: usize) -> String {
     }
 }
 
-/// Deep link to the run-log slice holding `target` — how the homepage's
+/// Deep link to the run-log slice holding `target` — how the log timeline's
 /// collapsed win clusters land readers near their runs. Best-effort by
 /// design: runs syncing in between renders shift everything a slot.
 pub(crate) fn run_page_url(runs: &[Run], target: &Run) -> String {
@@ -96,7 +96,7 @@ async fn spire(cx: &Cx) -> Result {
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_section(
                 class: "mt-10",
@@ -214,7 +214,7 @@ async fn spire(cx: &Cx) -> Result {
                     </a>
                 </p>
             )
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

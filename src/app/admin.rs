@@ -1,7 +1,7 @@
 //! Admin-only pages: `/admin` (the tool index) and `/admin/permissions`
 //! (hidden-page grant management).
 //!
-//! The index is a rail of cards like `/interests`, fed by `ADMIN_TOOLS`; the
+//! The index is a rail of cards fed by `ADMIN_TOOLS`; the
 //! shell's admin-only footer link is its one listing. Permissions renders one
 //! form set per registered hidden page — the granted emails, each with a
 //! revoke button, and an add form. Grants whose page has since left

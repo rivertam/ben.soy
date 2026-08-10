@@ -34,7 +34,7 @@ pub const PANTS_BACKFILL_BEFORE: &str = "pants_backfill_before";
 pub const PANTS_SOURCE_CHANNEL: &str = "pants_source_channel";
 
 /// The workout source Podrick announces. CSV history is deliberately excluded:
-/// it never joins the homepage timeline or `/feed.xml` either, and a resync
+/// it never joins the `/log` timeline or `/feed.xml` either, and a resync
 /// would otherwise replay years of workouts into the channel.
 pub const ANNOUNCED_SOURCE: &str = "manual";
 

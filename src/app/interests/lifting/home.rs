@@ -43,7 +43,7 @@ async fn lifting(cx: &Cx) -> Result {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             runtime: true,
             <header class="rail-row mt-16">
                 <p class="rail-stamp rail-stamp-label">(meta.slug)</p>
@@ -164,7 +164,7 @@ async fn lifting(cx: &Cx) -> Result {
                     }
                 </section>
             </div>
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

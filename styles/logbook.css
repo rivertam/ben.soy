@@ -1,5 +1,5 @@
 /*
- * Homepage logbook: hero word rotation, filter chips, and the timeline.
+ * The log (/log): hero word rotation, filter chips, and the timeline.
  * Palette and fonts are theme tokens in input.css. The timeline reuses the
  * rail geometry (8.5rem column, 2.5rem gutter) and threads a vertical
  * hairline down the gutter with a marker per entry.

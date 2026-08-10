@@ -3,8 +3,11 @@
 //! truth for the switcher menu in the shell (id, menu label, tooltip blurb).
 //! The first entry is the site's own finish, "mill and oxide" — it renders as
 //! the ABSENCE of `data-theme` on `<html>`, though its CSS block still exists
-//! so the switcher's swatch dots can wear it. Adding a theme means one entry
-//! here plus one block in `themes.css`; the tests below hold the two in sync.
+//! so the switcher's swatch dots can wear it. The DEFAULT worn theme is tmux:
+//! `chrome.rs` SSRs `data-theme="tmux"` on `<html>` (so no-JS and fresh
+//! viewers are already attached) and the boot script below only swaps in a
+//! stored choice. Adding a theme means one entry here plus one block in
+//! `themes.css`; the tests below hold the two in sync.
 
 pub struct Theme {
     pub id: &'static str,
@@ -34,9 +37,9 @@ pub static THEMES: [Theme; 5] = [
         whimsical: false,
     },
     Theme {
-        id: "terminal",
-        label: "terminal",
-        blurb: "amber phosphor; the log at 60 Hz",
+        id: "tmux",
+        label: "tmux",
+        blurb: "already attached; ctrl-a n cycles, f follows, j/k walk the log",
         whimsical: false,
     },
     Theme {
@@ -53,16 +56,19 @@ pub static THEMES: [Theme; 5] = [
     },
 ];
 
-/// Inline in `<head>` before the stylesheet so the stored theme applies
-/// before first paint (no flash of mill-and-oxide for a committed clown).
-/// Storage distinguishes "never chose" (`null` — OS dark preference may pick
-/// the dark theme) from an explicit choice of the default (respected as-is).
+/// Inline in `<head>` before the stylesheet so a stored theme applies
+/// before first paint (no flash of tmux for a committed clown). The shell
+/// SSRs `data-theme="tmux"` — the site's default, which a viewer with no
+/// stored choice (or no JS, or no storage) simply keeps — so this script
+/// only swaps costumes: an explicit choice of the house finish removes the
+/// attribute, any other stored id replaces it, and an unrecognized value is
+/// evicted so the default stands.
 /// Kept dependency-free and em-dash-free; `emdash.rs` skips `<script>` but
 /// only inside `<main>`, and this tag lives in `<head>` on trust.
 pub const THEME_BOOT_JS: &str = "(function(){try{var t=localStorage.getItem('bens-theme');\
-if(t&&t!=='oxide'&&t!=='dark'&&t!=='terminal'&&t!=='felix'&&t!=='clown'){localStorage.removeItem('bens-theme');t=null}\
-if(!t&&matchMedia('(prefers-color-scheme: dark)').matches)t='dark';\
-if(t&&t!=='oxide')document.documentElement.dataset.theme=t}catch(e){}})()";
+if(t&&t!=='oxide'&&t!=='dark'&&t!=='tmux'&&t!=='felix'&&t!=='clown'){localStorage.removeItem('bens-theme');t=null}\
+if(t==='oxide')delete document.documentElement.dataset.theme;\
+else if(t)document.documentElement.dataset.theme=t}catch(e){}})()";
 
 #[cfg(test)]
 mod tests {
@@ -123,9 +129,10 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_unique_kebab_and_the_default_leads() {
-        // "oxide" is the default: the boot script and theme.js treat it as
-        // "remove the attribute", so it must stay first and keep its id.
+    fn ids_are_unique_kebab_and_the_house_finish_leads() {
+        // "oxide" is the house finish: the boot script and theme.js treat it
+        // as "remove the attribute" (the worn default is tmux, SSR'd by the
+        // shell), so it must keep its id, and the menu leads with it.
         assert_eq!(THEMES[0].id, "oxide", "the house finish renders first");
         for (i, theme) in THEMES.iter().enumerate() {
             assert!(
@@ -166,6 +173,24 @@ mod tests {
         // Pages with their own music (/podrick's anthem) mark it with
         // data-page-band and the theme tune yields; keep the contract.
         assert!(THEME_JS.contains("data-page-band"));
+        // The tmux theme's moving parts live in three files: chrome.rs
+        // renders the status bar and marks the windows, theme.js drives
+        // ctrl-a/j/k/f against those hooks, themes.css draws the bar, the
+        // cursorline, and the hint chips. Keep the selector contract.
+        const CHROME_RS: &str = include_str!("../components/chrome.rs");
+        assert!(CHROME_RS.contains("data-tmux-bar"));
+        assert!(CHROME_RS.contains("data-tmux-window"));
+        assert!(CHROME_RS.contains("data-tmux-clock"));
+        assert!(CHROME_RS.contains("data-tmux-title"));
+        assert!(THEME_JS.contains("querySelector(\"[data-tmux-bar]\")"));
+        assert!(THEME_JS.contains("querySelectorAll(\"[data-tmux-window]\")"));
+        assert!(THEME_JS.contains("querySelector(\"[data-tmux-clock]\")"));
+        for class in ["tmux-cursorline", "tmux-hint", "tmux-hints", "tmux-note"] {
+            assert!(
+                THEME_JS.contains(class) && THEMES_CSS.contains(&format!(".{class}")),
+                "`{class}` must exist in both theme.js and themes.css"
+            );
+        }
         // Every registered theme has a signature selection sting.
         for theme in THEMES.iter() {
             assert!(
@@ -185,11 +210,18 @@ mod tests {
                 theme.id
             );
         }
-        if THEMES.len() > 1 {
-            assert!(
-                THEMES.iter().any(|t| t.id == "dark"),
-                "the boot script auto-selects `dark` for OS dark mode; keep a theme with that id"
-            );
-        }
+        // The shell SSRs the default costume on <html>; the boot script and
+        // theme.js only ever swap it. Keep the shipped default a registered
+        // theme, and keep the boot script treating the house finish as
+        // "remove the attribute".
+        assert!(
+            CHROME_RS.contains("data-theme=\"tmux\""),
+            "chrome.rs must SSR the tmux default on <html> (the boot script only swaps stored choices)"
+        );
+        assert!(
+            THEMES.iter().any(|t| t.id == "tmux"),
+            "the SSR default `tmux` must stay a registered theme"
+        );
+        assert!(THEME_BOOT_JS.contains("if(t==='oxide')delete"));
     }
 }

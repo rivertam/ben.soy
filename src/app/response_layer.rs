@@ -9,7 +9,7 @@
 //!    `Cache-Control: private, no-store`, whatever the page declared.
 //!    Signed-in HTML is personalized — the shell's nav and footer render the
 //!    viewer's grants and email — while pages keep declaring the cache
-//!    headers their anonymous variants want (home says `s-maxage=60`, the
+//!    headers their anonymous variants want (/log says `s-maxage=60`, the
 //!    shell default `s-maxage=86400`). First-mention-wins can't help: pages
 //!    emit their header before `shell()` runs, so without this chokepoint a
 //!    signed-in render would land in the Cloudflare cache under the page's

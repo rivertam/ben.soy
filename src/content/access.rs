@@ -24,8 +24,8 @@ use surrealdb::types::SurrealValue;
 /// database-only.
 pub const ADMIN_EMAIL: &str = "ben.m.berman@gmail.com";
 
-/// A hidden page's display entry: what allowlisted viewers see when the nav
-/// dropdown and the interests index populate for them. Paths and copy are
+/// A hidden page's display entry: what allowlisted viewers see when the
+/// tmux windows and the `~` listing populate for them. Paths and copy are
 /// committed — the page modules are public source anyway; only WHO may view
 /// stays in the database. `/admin/permissions` derives its grant forms from
 /// this registry, so a new hidden page gets its form set for free.

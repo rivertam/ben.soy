@@ -1,6 +1,6 @@
 //! A hidden page: not in `INTERESTS`, not in `site_routes()`, so the nav,
 //! indexes, feed, and 404 never mention it publicly. Its one listing is
-//! `access::HIDDEN_PAGES`, which the shell dropdown and the interests index
+//! `access::HIDDEN_PAGES`, which the tmux windows and the `~` listing
 //! render for allowlisted viewers only. Signed-out visitors get bounced to
 //! `/login`; signed-in visitors who aren't allowlisted for it get the real
 //! 404. The `no-store` header goes out before `shell()` on every variant —

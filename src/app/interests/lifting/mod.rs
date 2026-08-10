@@ -285,7 +285,7 @@ async fn lift_detail(cx: &Cx) -> Result {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
             title: page_title.as_str(),
-            active: "interests",
+            active: "",
             runtime: false,
             if let Some(workout) = workout {
                 lift_detail_head(workout: workout, share_text: share_text.as_deref().unwrap_or(""))

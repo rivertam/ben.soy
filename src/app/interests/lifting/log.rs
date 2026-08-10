@@ -86,7 +86,7 @@ async fn lifting_log(cx: &Cx) -> Result {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             runtime: true,
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             <div class="relative min-[90rem]:min-h-[28rem]">
@@ -182,7 +182,7 @@ async fn lifting_log(cx: &Cx) -> Result {
                     }
                 </section>
             </div>
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

@@ -15,7 +15,7 @@ async fn puzzles() -> Result {
     view! {
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_prose(
                 stamp: "",
@@ -42,7 +42,7 @@ async fn puzzles() -> Result {
                     </a>
                 </p>
             )
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

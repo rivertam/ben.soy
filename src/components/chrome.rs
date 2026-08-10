@@ -7,12 +7,11 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     font::{Font, fontsource::fontsource_font},
-    router::{HeaderValue, header},
+    router::{HeaderValue, header, uri},
     view::{Unescaped, View, component, view},
 };
 
 use crate::app::login::viewer;
-use crate::components::link_label;
 use crate::content::{access, interests::INTERESTS, logbook::LOG, themes};
 
 pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
@@ -44,6 +43,56 @@ const FAVICON_16: Asset = asset!("./favicon/favicon-16.png");
 const FAVICON_32: Asset = asset!("./favicon/favicon-32.png");
 const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 
+/// One window in the tmux theme's status bar: a precomputed `"3 felix"`
+/// label, its destination, and whether the request path lives inside it.
+struct TmuxWindow {
+    label: String,
+    href: String,
+    current: bool,
+}
+
+/// The tmux theme's windows: the site's full flat map, mirroring the `~`
+/// listing (~, the log, the résumé, each interest, any granted hidden
+/// pages) — a superset of the header's three fixed links — numbered in
+/// render order.
+/// The current window is the longest matching path prefix — `/lifting/log`
+/// lights `lifting` while `/thoughts/anything` stays home at `~`.
+fn tmux_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec<TmuxWindow> {
+    let mut windows: Vec<(String, String)> = vec![
+        ("~".to_string(), "/".to_string()),
+        ("log".to_string(), "/log".to_string()),
+        ("resume".to_string(), "/resume".to_string()),
+    ];
+    windows.extend(
+        INTERESTS
+            .iter()
+            .map(|interest| (interest.slug.to_string(), format!("/{}", interest.slug))),
+    );
+    windows.extend(
+        hidden_pages
+            .iter()
+            .map(|hidden| (hidden.stamp.to_string(), hidden.path.to_string())),
+    );
+    let active = windows
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, href))| {
+            let href = href.as_str();
+            href == "/" || path == href || path.starts_with(&format!("{href}/"))
+        })
+        .max_by_key(|(_, (_, href))| href.len())
+        .map_or(0, |(index, _)| index);
+    windows
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, href))| TmuxWindow {
+            label: format!("{index} {name}"),
+            href,
+            current: index == active,
+        })
+        .collect()
+}
+
 /// The full document: every page renders through this, so every page owns its
 /// title. Pages invoke it as markup with the page content as trailing children:
 /// `view! { shell(title: "…", active: "…", <p>"…"</p>) }`.
@@ -51,8 +100,8 @@ const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 /// `title` is the bare page title — the shell appends "— Ben Berman" itself;
 /// pass `""` for the homepage, whose title is just the name.
 ///
-/// `active` names the nav item the page lives under — `"log"`, `"resume"`,
-/// `"interests"`, or `""` for none — and gets the oxide underline.
+/// `active` names the nav item the page lives under — `"~"`, `"log"`,
+/// `"resume"`, or `""` for none — and gets the oxide underline.
 ///
 /// `hide_nav` removes the header for an immersive, self-contained page.
 ///
@@ -71,7 +120,8 @@ const APPLE_TOUCH_ICON: Asset = asset!("./favicon/apple-touch-icon.png");
 /// It defaults off so the extra face does not ride along on every page.
 ///
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
-/// join the interests dropdown, and a barely-there "signed in" line replaces
+/// join the tmux windows (and the `~` listing renders them as dotfiles),
+/// and a barely-there "signed in" line replaces
 /// the footer's login link. Both personalize the HTML, which is why
 /// `response_layer.rs` forces `private, no-store` whenever the viewer cookie
 /// rides the request — the header below only governs anonymous renders.
@@ -108,24 +158,35 @@ pub async fn shell(
         Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
         None => Vec::new(),
     };
+    // The tmux theme's status bar rides along in every render (the HTML is
+    // cached theme-blind; themes.css reveals it only under
+    // [data-theme="tmux"], where it replaces the header as the nav).
+    let windows = tmux_windows(uri(cx).path(), &hidden_pages);
+    let pane_title = windows
+        .iter()
+        .find(|win| win.current)
+        .map(|win| win.label.clone())
+        .unwrap_or_default();
     view! {
         // Default edge TTL for HTML that does not set Cache-Control itself.
         // First mention wins: pages that emit their own header before shell()
-        // keep it (spire/home/feed use s-maxage=60; lifting/API use no-store).
+        // keep it (spire/log/feed use s-maxage=60; lifting/API use no-store).
         // Cloudflare CDN honors s-maxage when the zone Cache Rule makes HTML
         // eligible; deploy CI purges the zone so RELEASE_ID-style busting is
         // not needed.
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=86400")))
         <!DOCTYPE html>
-        <html lang="en">
+        <html lang="en" data-theme="tmux">
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <meta name="referrer" content="strict-origin-when-cross-origin">
                 <title>(title)</title>
-                // Applies the stored theme before the stylesheet arrives so
-                // first paint is already in costume (content/themes.rs owns
-                // the script; theme.js handles the clicks).
+                // The shell ships already attached: tmux is the default worn
+                // by fresh viewers (and the no-JS fallback). This swaps in a
+                // stored choice before the stylesheet arrives so first paint
+                // is in the right costume (content/themes.rs owns the script;
+                // theme.js handles the clicks).
                 <script>(Unescaped::new_unchecked(themes::THEME_BOOT_JS))</script>
                 topcoat::dev::script()
                 if runtime {
@@ -174,30 +235,21 @@ pub async fn shell(
                             href="/"
                             class="font-display text-lg font-semibold text-ink no-underline hover:text-oxide"
                         >"Ben Berman"</a>
+                        // The whole flat map of the site lives at `~`; the
+                        // header keeps only the three fixed rooms.
                         <nav class="flex gap-6 font-meta text-sm">
-                            <a href="/" class=(nav("log"))>"log"</a>
+                            <a href="/" class=(nav("~"))>"~"</a>
+                            <a href="/log" class=(nav("log"))>"log"</a>
                             <a href="/resume" class=(nav("resume"))>"résumé"</a>
-                            <details class="nav-dd">
-                                <summary class=(nav("interests"))>"interests"</summary>
-                                <div class="nav-dd-menu">
-                                    <a class="quiet-link" href="/interests">
-                                        link_label(label: "all interests →")
-                                    </a>
-                                    for interest in INTERESTS.iter() {
-                                        <a
-                                            class="quiet-link"
-                                            href=(format!("/{}", interest.slug))
-                                        >(interest.slug)</a>
-                                    }
-                                    for hidden in hidden_pages.iter() {
-                                        <a class="quiet-link" href=(hidden.path)>(hidden.stamp)</a>
-                                    }
-                                </div>
-                            </details>
                         </nav>
                     </header>
                 }
-                <main class="mx-auto w-full max-w-4xl flex-1 px-5 pb-20">(child)</main>
+                // data-tmux-title is the pane label the tmux theme floats
+                // on the content border; inert everywhere else.
+                <main
+                    class="mx-auto w-full max-w-4xl flex-1 px-5 pb-20"
+                    data-tmux-title=(pane_title.as_str())
+                >(child)</main>
                 <footer class="mx-auto w-full max-w-4xl px-5 pb-8">
                     <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-t border-hairline pt-4 font-meta text-xs text-muted">
                         <span class="flex flex-wrap gap-x-5 gap-y-2">
@@ -239,6 +291,30 @@ pub async fn shell(
                         </p>
                     }
                 </footer>
+                // The tmux theme's status bar: session badge, numbered
+                // windows, keys legend, clock. Display: none under every
+                // other theme; theme.js paints the clock and the armed
+                // prefix chip, and drives ctrl-a n/p/0-9/l off the
+                // data-tmux-window hooks (themes.rs tests pin the contract).
+                <nav class="tmux-bar" aria-label="tmux windows" data-tmux-bar="">
+                    <a class="tmux-session" href="/">">_ bens-site"</a>
+                    <div class="tmux-windows">
+                        for win in windows.iter() {
+                            <a
+                                class="tmux-window"
+                                data-tmux-window=""
+                                aria-current=(win.current.then_some("page"))
+                                href=(win.href.as_str())
+                            >(win.label.as_str())</a>
+                        }
+                    </div>
+                    <span class="tmux-status-right">
+                        <span class="tmux-keys">"^a n: windows · f: follow · j/k: move"</span>
+                        <span class="tmux-prefix" aria-hidden="true">"^A"</span>
+                        <span class="tmux-host">"sponge"</span>
+                        <span class="tmux-clock" data-tmux-clock=""></span>
+                    </span>
+                </nav>
                 corner_rack()
             </body>
         </html>

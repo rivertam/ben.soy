@@ -838,7 +838,7 @@
   font-family: var(--font-meta);
   font-size: 0.68rem;
   /* Frozen house rust, not var(--color-oxide): this panel is an
-     art-directed dark zone, and bright theme accents (terminal's amber)
+     art-directed dark zone, and bright theme accents (tmux's orange)
      would sink the white label below contrast. */
   background: color-mix(in srgb, #b7410e 75%, #202930);
   cursor: pointer;

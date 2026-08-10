@@ -33,7 +33,7 @@ independently repeats that exact check before reading the request body.
 
 ## Admin pages (`/admin`, `/admin/permissions`)
 
-`/admin` is the tool index — a rail of cards like `/interests`, fed by
+`/admin` is the tool index — a rail of cards fed by
 `ADMIN_TOOLS` in `src/app/admin.rs`; the "admin" link the shell adds to the
 admin's own footer line is its one listing. Admin pages are tooling, not
 hidden pages: they stay out of every registry including `HIDDEN_PAGES`, and
@@ -133,8 +133,9 @@ at `/admin/permissions` (the new entry's form set appears there
 automatically). Hidden pages deliberately stay OUT of
 `INTERESTS`/`POSTS`/`site_routes()` — that's what keeps the nav, indexes,
 feed, 404, and analytics trackability silent about them. The
-`HIDDEN_PAGES` entry is the page's only listing: the shell's interests
-dropdown and `/interests` render it for allowlisted viewers, nobody else.
+`HIDDEN_PAGES` entry is the page's only listing: the shell's tmux
+windows and the `~` listing at `/` render it for allowlisted viewers,
+nobody else.
 Invariants:
 
 - `no-store` before `shell()` on every variant, including the not-found
@@ -163,7 +164,7 @@ Invariants:
 ## Signed-in rendering and the CDN
 
 The shell personalizes for viewers: allowlisted hidden pages join the
-interests dropdown and `/interests`, and the quiet "log in with google" link
+tmux windows and the `~` listing, and the quiet "log in with google" link
 at the footer's bottom right becomes a "signed in as … · sign out" line — for
 the admin it also carries the `/admin` link. Personalized
 HTML must never be edge-cached, so the site-wide response layer

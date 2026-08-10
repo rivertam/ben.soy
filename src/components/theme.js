@@ -10,9 +10,13 @@
 (() => {
   const KEY = "bens-theme";
   const MUSIC_KEY = "bens-theme-music";
-  const DEFAULT_ID = "oxide";
+  // The id worn when <html> carries no data-theme: an explicit choice of
+  // the house finish. The site's DEFAULT is tmux — chrome.rs SSRs it on
+  // <html>, and the boot script leaves it standing unless storage says
+  // otherwise — so bare is a choice here, not the starting state.
+  const BARE_ID = "oxide";
   const root = document.documentElement;
-  const wornId = () => root.dataset.theme || DEFAULT_ID;
+  const wornId = () => root.dataset.theme || BARE_ID;
   const reducedMotion = () =>
     matchMedia("(prefers-reduced-motion: reduce)").matches;
   // A page that renders [data-page-band] (an <audio> like /podrick's
@@ -104,10 +108,11 @@
       noise(stingBus, { d: 0.5, f: 400, q: 0.7, v: 0.6 });
       tone(stingBus, { f: 90, d: 0.5, w: "sine", v: 0.5, glide: 60 });
     },
-    // Terminal: degauss thump, then the tube warms up.
-    terminal: () => {
-      tone(stingBus, { f: 55, d: 0.12, w: "square", v: 0.5 });
-      tone(stingBus, { f: 220, t: 0.1, d: 0.22, w: "square", v: 0.35, glide: 880 });
+    // tmux: one keypress, then the attach — a rising double bell.
+    tmux: () => {
+      noise(stingBus, { d: 0.05, f: 3200, q: 2, v: 0.5 });
+      tone(stingBus, { f: 660, t: 0.07, d: 0.09, w: "square", v: 0.32 });
+      tone(stingBus, { f: 990, t: 0.18, d: 0.14, w: "square", v: 0.28 });
     },
     // Felix: the squeaky toy, twice, because once was incredible.
     felix: () => {
@@ -710,9 +715,457 @@
     else stopChase();
   };
 
+  /* ── tmux mode: the site is a session you're attached to ──────────── */
+  // chrome.rs renders the status bar (session badge, numbered windows —
+  // the same destinations as the ~ listing — and a clock); themes.css
+  // reveals it only under [data-theme="tmux"]. This section is the keys:
+  // ctrl-a is the prefix (n/p cycle windows, 0-9 jump, l bounces to the
+  // last one), j/k walk the log and the ~ listing under a cursorline
+  // (plain scrolling anywhere else), gg/G reach the ends, Enter opens the
+  // selected entry, and f sprays vimium-style hints over everything
+  // interactable. All of it no-ops unless tmux is the worn theme.
+  const TMUX_LAST_KEY = "bens-tmux-last";
+  const tmuxOn = () => wornId() === "tmux";
+  const tmuxBar = () => document.querySelector("[data-tmux-bar]");
+  const tmuxWindows = () => [
+    ...document.querySelectorAll("[data-tmux-window]"),
+  ];
+
+  let tmuxArmed = false;
+  let tmuxArmTimer = null;
+  const armPrefix = (on) => {
+    tmuxArmed = on;
+    clearTimeout(tmuxArmTimer);
+    tmuxArmTimer = null;
+    const bar = tmuxBar();
+    if (on) {
+      if (bar) bar.dataset.prefixArmed = "";
+      tmuxArmTimer = setTimeout(() => armPrefix(false), 2000);
+    } else if (bar) {
+      delete bar.dataset.prefixArmed;
+    }
+  };
+
+  // Window switches note where they left from so prefix-l can bounce
+  // between two windows like tmux's last-window. Per tab on purpose:
+  // each tab is its own attached client.
+  const tmuxGo = (href) => {
+    try {
+      sessionStorage.setItem(
+        TMUX_LAST_KEY,
+        location.pathname + location.search
+      );
+    } catch {
+      // Private mode: l just has nowhere to bounce back to.
+    }
+    location.href = href;
+  };
+  const tmuxCycle = (delta) => {
+    const wins = tmuxWindows();
+    if (!wins.length) return;
+    const at = Math.max(
+      0,
+      wins.findIndex((win) => win.hasAttribute("aria-current"))
+    );
+    tmuxGo(wins[(at + delta + wins.length) % wins.length].getAttribute("href"));
+  };
+  const tmuxJump = (digit) => {
+    const win = tmuxWindows()[digit];
+    if (win) tmuxGo(win.getAttribute("href"));
+  };
+  const tmuxLastWindow = () => {
+    let last = null;
+    try {
+      last = sessionStorage.getItem(TMUX_LAST_KEY);
+    } catch {
+      // No storage, no bounce.
+    }
+    if (last && last !== location.pathname + location.search) tmuxGo(last);
+  };
+
+  // j/k: a cursorline over the log's timeline and the ~ listing's rows.
+  // Year badges are skipped — they're furniture, not entries.
+  let logRows = null;
+  let logAt = -1;
+  const logEntries = () => {
+    if (!logRows) {
+      logRows = [
+        ...document.querySelectorAll(".log-timeline .log-row, .netrw .netrw-row"),
+      ].filter((row) => !row.querySelector(".log-year"));
+    }
+    return logRows;
+  };
+  const logClear = () => {
+    for (const row of logEntries()) row.classList.remove("tmux-cursorline");
+    logAt = -1;
+  };
+  const logSelect = (index) => {
+    const rows = logEntries();
+    if (!rows.length) return false;
+    logAt = Math.max(0, Math.min(rows.length - 1, index));
+    rows.forEach((row, i) =>
+      row.classList.toggle("tmux-cursorline", i === logAt)
+    );
+    rows[logAt].scrollIntoView({ block: "nearest" });
+    return true;
+  };
+  const logMove = (delta) => {
+    const rows = logEntries();
+    if (!rows.length) return false;
+    if (logAt < 0) return logSelect(delta > 0 ? 0 : rows.length - 1);
+    return logSelect(logAt + delta);
+  };
+
+  // f: vimium-style hints. Fixed-length labels over the home row, sized
+  // so every visible interactable gets a unique tag.
+  const HINT_CHARS = "sadfjklewcmpgh";
+  let hintState = null;
+  const hintLabels = (count) => {
+    let len = 1;
+    while (Math.pow(HINT_CHARS.length, len) < count) len += 1;
+    const labels = [];
+    const grow = (prefix) => {
+      if (labels.length >= count) return;
+      if (prefix.length === len) {
+        labels.push(prefix);
+        return;
+      }
+      for (const ch of HINT_CHARS) grow(prefix + ch);
+    };
+    grow("");
+    return labels;
+  };
+  const hintTargets = () =>
+    [
+      ...document.querySelectorAll(
+        "a[href], button, summary, input, select, textarea, [role='button'], audio[controls]"
+      ),
+    ].filter((el) => {
+      if (el.disabled || el.closest("[hidden]")) return false;
+      const box = el.getBoundingClientRect();
+      return (
+        box.width > 1 &&
+        box.height > 1 &&
+        box.bottom > 0 &&
+        box.right > 0 &&
+        box.top < innerHeight &&
+        box.left < innerWidth &&
+        getComputedStyle(el).visibility !== "hidden"
+      );
+    });
+  const endHints = () => {
+    if (!hintState) return;
+    for (const overlay of hintState.overlays) overlay.remove();
+    hintState = null;
+    removeEventListener("resize", endHints);
+  };
+  // The open [popover] an element lives in, if any. Popover panels sit in
+  // the browser's top layer, which paints over every z-index — a chip for a
+  // target in there is only visible if it rides inside the same panel.
+  const openPopoverOf = (el) => {
+    const pop = el.closest("[popover]");
+    try {
+      return pop && pop.matches(":popover-open") ? pop : null;
+    } catch {
+      // No Popover API: panels render in-flow and the page overlay serves.
+      return null;
+    }
+  };
+  const paintHints = () => {
+    for (const { chip, label } of hintState.chips) {
+      const live = label.startsWith(hintState.typed);
+      chip.style.display = live ? "" : "none";
+      for (let i = 0; i < chip.children.length; i++) {
+        chip.children[i].classList.toggle(
+          "tmux-hint-typed",
+          live && i < hintState.typed.length
+        );
+      }
+    }
+  };
+  const startHints = () => {
+    endHints();
+    const targets = hintTargets();
+    if (!targets.length) return;
+    const labels = hintLabels(targets.length);
+    // One overlay per hosting surface: <body> for the page, plus each open
+    // popover that contains a target. Chips are positioned relative to
+    // their overlay, so the page's stay glued while scrolling (the way
+    // vimium does it) and a popover's ride along with its panel.
+    const overlays = new Map();
+    const overlayIn = (host) => {
+      let entry = overlays.get(host);
+      if (!entry) {
+        const overlay = document.createElement("div");
+        overlay.className = "tmux-hints";
+        overlay.setAttribute("aria-hidden", "true");
+        host.appendChild(overlay);
+        entry = { overlay, origin: overlay.getBoundingClientRect() };
+        overlays.set(host, entry);
+      }
+      return entry;
+    };
+    const chips = targets.map((target, i) => {
+      const { overlay, origin } = overlayIn(
+        openPopoverOf(target) || document.body
+      );
+      const box = target.getBoundingClientRect();
+      const chip = document.createElement("span");
+      chip.className = "tmux-hint";
+      for (const ch of labels[i]) {
+        const key = document.createElement("span");
+        key.textContent = ch;
+        chip.appendChild(key);
+      }
+      chip.style.top = `${Math.max(2, box.top - origin.top - 8)}px`;
+      chip.style.left = `${Math.max(2, box.left - origin.left - 6)}px`;
+      overlay.appendChild(chip);
+      return { chip, target, label: labels[i] };
+    });
+    hintState = {
+      overlays: [...overlays.values()].map(({ overlay }) => overlay),
+      chips,
+      typed: "",
+    };
+    // A resize does move the anchors out from under the chips: fold.
+    addEventListener("resize", endHints);
+  };
+  const fireHint = (target) => {
+    endHints();
+    if (target.matches("input, textarea, select")) target.focus();
+    else target.click();
+  };
+  const hintKey = (event) => {
+    if (event.ctrlKey || event.altKey || event.metaKey) {
+      endHints();
+      return;
+    }
+    if (event.key === "Shift") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      endHints();
+      return;
+    }
+    if (event.key === "Backspace") {
+      hintState.typed = hintState.typed.slice(0, -1);
+      paintHints();
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (key.length !== 1 || !HINT_CHARS.includes(key)) {
+      endHints();
+      return;
+    }
+    const next = hintState.typed + key;
+    const hit = hintState.chips.find(({ label }) => label === next);
+    if (hit) {
+      fireHint(hit.target);
+      return;
+    }
+    if (!hintState.chips.some(({ label }) => label.startsWith(next))) return;
+    hintState.typed = next;
+    paintHints();
+  };
+
+  // display-message: a transient note across the status line, tmux's own
+  // way of talking. Click dismisses; so does leaving the theme.
+  let noteTimer = null;
+  const tmuxMessage = (text) => {
+    const bar = tmuxBar();
+    if (!bar) return;
+    let note = bar.querySelector(".tmux-note");
+    if (!note) {
+      note = document.createElement("span");
+      note.className = "tmux-note";
+      note.setAttribute("role", "status");
+      note.title = "dismiss";
+      note.addEventListener("click", () => note.remove());
+      bar.appendChild(note);
+    }
+    note.textContent = text;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => note.remove(), 8000);
+  };
+
+  // Vimium fights this theme for f and j/k (it swallows the keys before
+  // the page ever sees them). Detecting it by DOM is a dead end: its UI
+  // is injected lazily and lives inside a shadow root, so a fresh page
+  // shows nothing. But its manifest marks a few resources web-accessible
+  // to every page, and only an installed Vimium answers a fetch for them
+  // (probe-verified against the Chrome Web Store build). Verdict cached
+  // per tab; when it's yes, one polite display-message suggests a
+  // per-site exclusion, once per tab.
+  const VIMIUM_NOTED_KEY = "bens-tmux-vimium-noted";
+  const VIMIUM_VERDICT_KEY = "bens-tmux-vimium";
+  const VIMIUM_STORE_ID = "dbepggeogbaibhgnhhndojpepiihcmeb";
+  let vimiumTimer = null;
+  const vimiumPresent = async () => {
+    try {
+      const cached = sessionStorage.getItem(VIMIUM_VERDICT_KEY);
+      if (cached) return cached === "yes";
+    } catch {
+      // No storage: probe every page; the fetch is cheap.
+    }
+    // Late-injected UI (a vimium-reset shadow host) or a fork's markers,
+    // for the browsers the id probe can't cover.
+    let found = !!document.querySelector('[class*="vimium" i], [id*="vimium" i]');
+    if (!found && "chrome" in window) {
+      try {
+        await fetch(
+          `chrome-extension://${VIMIUM_STORE_ID}/content_scripts/vimium.css`,
+          { mode: "no-cors" }
+        );
+        found = true;
+      } catch {
+        // Not installed (or not Chrome): the fetch refuses.
+      }
+    }
+    try {
+      sessionStorage.setItem(VIMIUM_VERDICT_KEY, found ? "yes" : "no");
+    } catch {
+      // Same shrug as above.
+    }
+    return found;
+  };
+  const noteVimium = async () => {
+    let noted = false;
+    try {
+      noted = sessionStorage.getItem(VIMIUM_NOTED_KEY) === "yes";
+    } catch {
+      // No storage: worst case the note repeats next page.
+    }
+    // tmuxOn is rechecked after the await: the probe is async and the
+    // viewer may have changed costume mid-flight.
+    if (noted || !(await vimiumPresent()) || !tmuxOn()) return;
+    tmuxMessage(
+      "vimium detected. First of all, nice. Second, I basically inlined vimium on this theme, so try disabling it for this site. :)"
+    );
+    try {
+      sessionStorage.setItem(VIMIUM_NOTED_KEY, "yes");
+    } catch {
+      // Same shrug as above.
+    }
+  };
+
+  // The status-line clock, repainted often enough to never lie by more
+  // than a blink.
+  let tmuxClockTimer = null;
+  const paintTmuxClock = () => {
+    const clock = document.querySelector("[data-tmux-clock]");
+    if (clock) clock.textContent = new Date().toTimeString().slice(0, 5);
+  };
+  const syncTmux = () => {
+    if (tmuxOn()) {
+      paintTmuxClock();
+      if (!tmuxClockTimer) tmuxClockTimer = setInterval(paintTmuxClock, 20000);
+      if (!vimiumTimer) {
+        vimiumTimer = setTimeout(() => {
+          vimiumTimer = null;
+          noteVimium();
+        }, 1500);
+      }
+    } else {
+      clearInterval(tmuxClockTimer);
+      tmuxClockTimer = null;
+      clearTimeout(vimiumTimer);
+      vimiumTimer = null;
+      clearTimeout(noteTimer);
+      noteTimer = null;
+      document.querySelector(".tmux-note")?.remove();
+      armPrefix(false);
+      endHints();
+      logClear();
+    }
+  };
+
+  let lastG = 0;
+  document.addEventListener("keydown", (event) => {
+    if (!tmuxOn()) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("input, textarea, select, [contenteditable='true']")) {
+      return; // never steal from a prompt
+    }
+    if (hintState) {
+      hintKey(event);
+      return;
+    }
+    if (
+      event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      (event.key === "a" || event.key === "b")
+    ) {
+      // The prefix: ctrl-a like the home session, ctrl-b for stock tmux
+      // hands. The browser reads ctrl-a as select-all; the session
+      // outranks it.
+      event.preventDefault();
+      armPrefix(!tmuxArmed);
+      return;
+    }
+    if (tmuxArmed) {
+      armPrefix(false);
+      if (event.ctrlKey || event.altKey || event.metaKey) return;
+      if (event.key === "n") tmuxCycle(1);
+      else if (event.key === "p") tmuxCycle(-1);
+      else if (event.key === "l") tmuxLastWindow();
+      else if (/^[0-9]$/.test(event.key)) tmuxJump(Number(event.key));
+      else return;
+      event.preventDefault();
+      return;
+    }
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+    switch (event.key) {
+      case "j":
+        // Explicitly instant: smooth scrolling under key-repeat queues
+        // animations and feels like wading.
+        if (!logMove(1)) scrollBy({ top: 80, behavior: "instant" });
+        event.preventDefault();
+        break;
+      case "k":
+        if (!logMove(-1)) scrollBy({ top: -80, behavior: "instant" });
+        event.preventDefault();
+        break;
+      case "f":
+        startHints();
+        event.preventDefault();
+        break;
+      case "G":
+        if (!logSelect(logEntries().length - 1)) {
+          scrollTo({
+            top: document.documentElement.scrollHeight,
+            behavior: "instant",
+          });
+        }
+        event.preventDefault();
+        break;
+      case "g":
+        if (performance.now() - lastG < 450) {
+          if (!logSelect(0)) scrollTo({ top: 0, behavior: "instant" });
+        }
+        lastG = performance.now();
+        break;
+      case "Enter": {
+        if (logAt < 0) return;
+        // A focused control keeps its own Enter.
+        if (target?.closest("a, button, summary, [tabindex]")) return;
+        const link = logEntries()[logAt]?.querySelector("a");
+        if (link) {
+          event.preventDefault();
+          link.click();
+        }
+        break;
+      }
+      case "Escape":
+        logClear();
+        break;
+    }
+  });
+
   /* ── theme switching ──────────────────────────────────────────────── */
   const apply = (id) => {
-    if (!id || id === DEFAULT_ID) delete root.dataset.theme;
+    if (!id || id === BARE_ID) delete root.dataset.theme;
     else root.dataset.theme = id;
     const worn = wornId();
     if (worn !== "clown") stopJuggling();
@@ -721,6 +1174,7 @@
     }
     syncMusic();
     syncChaser();
+    syncTmux();
   };
 
   document.addEventListener("click", (event) => {
@@ -760,8 +1214,9 @@
       button.closest("details")?.removeAttribute("open");
       return;
     }
-    // Click-away closes the floating menu (the nav dropdown stays CSS-only;
-    // this one floats over content, so it earns the courtesy).
+    // Click-away closes the floating menu (a plain CSS-only <details>
+    // would stay open; this one floats over content, so it earns the
+    // courtesy).
     const open = document.querySelector(".theme-dd[open]");
     if (open && !open.contains(target)) open.removeAttribute("open");
   });

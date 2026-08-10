@@ -158,7 +158,7 @@ async fn felix_page(initial_photo: &str) -> Result {
     view! {
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             hide_nav: true,
             <header class="felix-hero" aria-labelledby="felix-title">
                 <img
@@ -361,7 +361,7 @@ async fn felix_page(initial_photo: &str) -> Result {
                     </p>
                 </div>
             </dialog>
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

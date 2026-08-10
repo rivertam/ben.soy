@@ -1,6 +1,6 @@
 //! The logbook: the site's master feed, newest first. Posts register beside
 //! their page; the updates below are the only entries authored here. The
-//! homepage timeline and `/feed.xml` both derive from the merged registry.
+//! `/log` timeline and `/feed.xml` both derive from the merged registry.
 //!
 //! Serial numbers count from the oldest entry: entry at index `i` is
 //! `№ {LOG.len() - i}` (zero-padded to four digits, see [`serial`]).
@@ -43,7 +43,7 @@ pub enum Entry {
     },
 }
 
-/// An entry's kind, for the homepage's `?kind=` filter.
+/// An entry's kind, for the log page's `?kind=` filter.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Essay,
@@ -155,7 +155,7 @@ pub static LOG: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     entries
 });
 
-/// The homepage filter row's fixed tag chips. `spire` and `fitness` filter
+/// The log page's fixed filter-row tag chips. `spire` and `fitness` filter
 /// dynamic timeline items (wins and published lifts); the rest match curated
 /// logbook entry tags.
 pub static FILTER_TAGS: [&str; 8] = [

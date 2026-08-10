@@ -20,7 +20,7 @@ async fn keyboards() -> Result {
     view! {
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_section(
                 class: "mt-4",
@@ -223,7 +223,7 @@ async fn keyboards() -> Result {
                     ": 121 lately, 165 peak."
                 </div>
             )
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

@@ -66,7 +66,7 @@ async fn simulation() -> Result {
     view! {
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_prose(
                 stamp: "backstory",
@@ -158,7 +158,7 @@ async fn simulation() -> Result {
                     </li>
                 </ul>
             )
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

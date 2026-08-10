@@ -68,7 +68,7 @@ async fn exercise_page(cx: &Cx) -> Result {
                 ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
                 shell(
                     title: "Exercise",
-                    active: "interests",
+                    active: "",
                     runtime: false,
                     <header class="rail-row mt-16">
                         <p class="rail-stamp rail-stamp-label">"exercise"</p>
@@ -143,7 +143,7 @@ async fn exercise_page(cx: &Cx) -> Result {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
             title: title.as_str(),
-            active: "interests",
+            active: "",
             runtime: false,
             <header class="rail-row mt-16">
                 <p class="rail-stamp rail-stamp-label">"exercise"</p>

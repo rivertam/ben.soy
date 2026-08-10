@@ -135,7 +135,7 @@ async fn swing_page(initial_media: &str) -> Result {
     view! {
         shell(
             title: meta.title,
-            active: "interests",
+            active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_prose(
                 stamp: "",
@@ -306,7 +306,7 @@ async fn swing_page(initial_media: &str) -> Result {
                 </div>
             </dialog>
             <script type="module" src=(SWING_GALLERY_JS)></script>
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

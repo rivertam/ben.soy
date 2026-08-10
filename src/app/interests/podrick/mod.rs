@@ -120,7 +120,7 @@ async fn podrick(cx: &Cx) -> Result {
                 )
             )
 
-            back_link(href: "/interests", label: "all interests")
+            back_link(href: "/", label: "~")
         )
     }
 }

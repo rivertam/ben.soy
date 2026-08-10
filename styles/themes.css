@@ -100,82 +100,296 @@
   box-shadow: 0 0 10px rgb(224 103 58 / 30%);
 }
 
-/* ── terminal — amber phosphor, the log at 60 Hz ─────────────────────────
- * For the man who built a TUI crossword engine before solving the puzzle:
- * everything in Fira Mono on one warm tube. P3 amber phosphor is literally
- * in the rust-orange family, so the palette pun survives at 10.4:1. */
-[data-theme="terminal"] {
+/* ── tmux — the session this site is written in; you are attached ────────
+ * Olive panes, orange accents, the violet session badge, the lime active
+ * window: the maintainer's actual terminal, at 8.6:1. Everything is Fira
+ * Mono, the header yields to a status bar of numbered windows (chrome.rs
+ * renders both navs; only one shows), and theme.js carries the keys:
+ * ctrl-a n/p/0-9/l for windows, j/k over the log, f for hints. */
+[data-theme="tmux"] {
   color-scheme: dark;
-  --color-page: #141110;
-  --color-card: #1d1815;
-  --color-ink: #f2b661;
-  --color-ink2: #c9974a;
-  --color-muted: #a17b3c;
-  --color-hairline: #33291c;
-  --color-oxide: #ffcf70;
-  --color-oxide-hot: #ffe9bb;
-  --color-patina: #7ddb84;
-  --color-steel: #b5ad9c;
-  --color-brass: #d98e3f;
+  --color-page: #2e3626;
+  --color-card: #37402c;
+  --color-ink: #d2dab0;
+  --color-ink2: #aebb87;
+  --color-muted: #8b9a68;
+  --color-hairline: #465232;
+  --color-oxide: #e8a33d;
+  --color-oxide-hot: #f6c464;
+  --color-patina: #a9c25c;
+  --color-steel: #7fa9d0;
+  --color-brass: #d9b13f;
   --font-display: "Fira Mono", "Courier New", monospace;
   --font-body: "Fira Mono", "Courier New", monospace;
   --font-meta: "Fira Mono", "Courier New", monospace;
+  /* Session hardware, off the shell's token grid: the status bar's own
+     blocks, named for the terminal they're sampled from. */
+  --tmux-bar: #232a1b;
+  --tmux-border: #57683b;
+  --tmux-lime: #a4cf2e;
+  --tmux-violet: #a58ce8;
+  --tmux-pink: #d78d95;
+  --tmux-coal: #1c2314;
 }
 
-/* Tube glass: a centered phosphor wash under fine scanlines. */
-[data-theme="terminal"] body {
-  background-image:
-    radial-gradient(
-      ellipse 120% 80% at 50% 35%,
-      rgb(255 176 0 / 5%),
-      transparent 70%
-    ),
-    repeating-linear-gradient(
-      0deg,
-      rgb(0 0 0 / 14%) 0 1px,
-      transparent 1px 3px
-    );
+/* The header stands down; the status bar below is the nav now. */
+[data-theme="tmux"] body > header {
+  display: none;
 }
 
-/* Screen curvature: glass falloff darkening the corners. Negative
-   z-index like a drafting grid: it dims the tube behind the text, never
-   the phosphor itself, so corner text keeps its contrast. */
-[data-theme="terminal"] body::after {
-  content: "";
+/* Clearance for the fixed bar, and a lift for the corner rack so the
+   theme switcher never hides under the session it summoned. */
+[data-theme="tmux"] body {
+  padding-bottom: 2.6rem;
+}
+
+[data-theme="tmux"] .corner-rack {
+  bottom: calc(3.2rem + env(safe-area-inset-bottom, 0rem));
+}
+
+/* The content column is a pane: green border, its window title riding the
+   top edge ("5 lifting"). Immersive pages (data-nav-hidden) keep their
+   full-bleed layouts unframed. */
+[data-theme="tmux"] body:not([data-nav-hidden="true"]) main {
+  position: relative;
+  width: calc(100% - 0.9rem);
+  border: 1px solid var(--tmux-border);
+  margin-top: 1.25rem;
+  padding-top: 1.5rem;
+}
+
+[data-theme="tmux"] body:not([data-nav-hidden="true"]) main::before {
+  content: attr(data-tmux-title);
+  position: absolute;
+  top: -0.8em;
+  left: 1rem;
+  padding: 0 0.5em;
+  background: var(--color-page);
+  font-family: var(--font-meta);
+  font-size: 0.72rem;
+  color: var(--color-muted);
+}
+
+/* The status bar. In the DOM on every page for every viewer (the HTML is
+   cached theme-blind); only the worn tmux theme reveals it. */
+.tmux-bar {
+  display: none;
+}
+
+[data-theme="tmux"] .tmux-bar {
   position: fixed;
+  inset: auto 0 0 0;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.22rem 0.55rem calc(0.22rem + env(safe-area-inset-bottom, 0rem));
+  background: var(--tmux-bar);
+  border-top: 1px solid var(--tmux-border);
+  font-family: var(--font-meta);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+[data-theme="tmux"] .tmux-session {
+  flex: none;
+  padding: 0 0.55em;
+  border-radius: 2px;
+  background: var(--tmux-violet);
+  color: var(--tmux-coal);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+[data-theme="tmux"] .tmux-session:hover,
+[data-theme="tmux"] .tmux-session:focus-visible {
+  background: color-mix(in srgb, var(--tmux-violet) 80%, white);
+  color: var(--tmux-coal);
+}
+
+[data-theme="tmux"] .tmux-windows {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 0.2rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+[data-theme="tmux"] .tmux-windows::-webkit-scrollbar {
+  display: none;
+}
+
+/* Phones shed the window strip (hidden, never removed — ctrl-a jumps and
+   the themes.rs contract still see the anchors). The session badge is
+   already a link home, and the ~ listing takes it from there. */
+@media (max-width: 40rem) {
+  [data-theme="tmux"] .tmux-windows {
+    display: none;
+  }
+}
+
+[data-theme="tmux"] .tmux-window {
+  flex: none;
+  padding: 0 0.5em;
+  border-radius: 2px;
+  color: var(--color-muted);
+  text-decoration: none;
+}
+
+[data-theme="tmux"] .tmux-window:hover,
+[data-theme="tmux"] .tmux-window:focus-visible {
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-ink) 12%, transparent);
+}
+
+/* The active window, in the lime nothing else is allowed to wear. */
+[data-theme="tmux"] .tmux-window[aria-current] {
+  background: var(--tmux-lime);
+  color: var(--tmux-coal);
+  font-weight: 700;
+}
+
+[data-theme="tmux"] .tmux-status-right {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
+}
+
+/* The keys legend doubles as the documentation. Narrow bars shed it. */
+[data-theme="tmux"] .tmux-keys {
+  color: var(--color-muted);
+}
+
+@media (max-width: 64rem) {
+  [data-theme="tmux"] .tmux-keys {
+    display: none;
+  }
+}
+
+[data-theme="tmux"] .tmux-host {
+  color: var(--tmux-lime);
+}
+
+[data-theme="tmux"] .tmux-clock {
+  color: var(--color-brass);
+}
+
+/* The prefix chip: hidden until theme.js arms ctrl-a, then pink, like a
+   prefix-highlight plugin nobody remembers installing. */
+.tmux-prefix {
+  display: none;
+}
+
+[data-theme="tmux"] .tmux-bar[data-prefix-armed] .tmux-prefix {
+  display: inline;
+  padding: 0 0.45em;
+  border-radius: 2px;
+  background: var(--tmux-pink);
+  color: var(--tmux-coal);
+  font-weight: 700;
+}
+
+/* display-message: theme.js's transient status-line note (today: spotting
+   Vimium squatting on f and j/k). It takes over the whole bar the way
+   tmux messages do; clicking it, or leaving the theme, dismisses. */
+[data-theme="tmux"] .tmux-note {
+  position: absolute;
   inset: 0;
-  z-index: -1;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 0.6rem;
+  background: var(--color-oxide);
+  color: var(--tmux-coal);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+/* j/k's cursorline over the log and the ~ listing: the row the session is
+   on, bled outward like nvim's cursorline. scroll-margin keeps the
+   selection clear of the viewport edges and the fixed bar. */
+[data-theme="tmux"] .tmux-cursorline {
+  background: rgb(0 0 0 / 20%);
+  box-shadow: 0 0 0 0.55rem rgb(0 0 0 / 20%);
+  border-radius: 1px;
+}
+
+[data-theme="tmux"] .tmux-cursorline::after {
+  content: "\276F"; /* ❯ */
+  position: absolute;
+  left: -1.15rem;
+  top: 0;
+  color: var(--color-oxide);
+}
+
+[data-theme="tmux"] .log-row,
+[data-theme="tmux"] .netrw-row {
+  scroll-margin-block: 4.5rem;
+}
+
+/* The ~ listing's rows sit tight, so the cursorline keeps its sideways
+   bleed but drops the vertical smear tuned for /log's roomier gaps. */
+[data-theme="tmux"] .netrw .tmux-cursorline {
+  box-shadow:
+    -0.55rem 0 0 rgb(0 0 0 / 20%),
+    0.55rem 0 0 rgb(0 0 0 / 20%);
+}
+
+/* The ~ listing's Quick Help keys are real only where theme.js binds
+   them; every other theme keeps just the honest part of the line. */
+.netrw-keys {
+  display: none;
+}
+
+[data-theme="tmux"] .netrw-keys {
+  display: inline;
+}
+
+/* f's hint chips, in the session badge's violet so they read as part of
+   this theme rather than vimium's amber. theme.js builds one overlay per
+   hosting surface: page-anchored on <body> (scrolling keeps chips glued to
+   their targets) and, for targets inside an open [popover], inside that
+   popover — the top layer paints over any z-index, so that's the only way
+   a chip there is visible. Matched letters dim as they're typed. */
+[data-theme="tmux"] .tmux-hints {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 60;
   pointer-events: none;
-  background: radial-gradient(
-    ellipse at center,
-    transparent 62%,
-    rgb(0 0 0 / 28%) 100%
-  );
 }
 
-/* Phosphor persistence: glow snaps on fast, decays slow when you leave —
-   hover-oxidation reinterpreted as afterglow. */
-[data-theme="terminal"] a {
-  transition:
-    color 160ms ease,
-    text-decoration-color 160ms ease,
-    text-shadow 1.2s ease-out;
+[data-theme="tmux"] .tmux-hint {
+  position: absolute;
+  padding: 0 0.28em;
+  border: 1px solid #6c55ae;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, #c9baf1, var(--tmux-violet));
+  color: var(--tmux-coal);
+  font-family: var(--font-meta);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.5;
+  text-transform: uppercase;
+  box-shadow: 0 2px 5px rgb(0 0 0 / 45%);
 }
 
-[data-theme="terminal"] a:hover,
-[data-theme="terminal"] a:focus-visible {
-  transition:
-    color 160ms ease,
-    text-decoration-color 160ms ease,
-    text-shadow 120ms ease-in;
-  text-shadow: 0 0 7px rgb(255 207 112 / 55%);
+[data-theme="tmux"] .tmux-hint .tmux-hint-typed {
+  opacity: 0.4;
 }
 
 /* The prompt never left: a block cursor blinks after every display title.
-   The homepage hero is exempt like clown's nose — its word-stack span is
+   The log page's hero is exempt like clown's nose — its word-stack span is
    sized by the longest cycling word, which would strand the cursor mid-air
    (and the status line below already blinks its own caret). */
-[data-theme="terminal"] h1:not(.log-hero)::after {
+[data-theme="tmux"] h1:not(.log-hero)::after {
   content: "\258A";
   margin-left: 0.15em;
   color: var(--color-oxide);
@@ -194,38 +408,9 @@
 }
 
 /* Reverse video: selection inverts like a terminal highlight. */
-[data-theme="terminal"] ::selection {
+[data-theme="tmux"] ::selection {
   background: var(--color-ink);
   color: var(--color-page);
-}
-
-/* Power-on: one bright horizontal line unfolding into the picture, every
-   time the set is switched on. One-shot — the animation runs when the
-   attribute lands and never again until it lands again. */
-[data-theme="terminal"] body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  background: #ffe9bb;
-  opacity: 0;
-  animation: crt-power-on 0.45s ease-out;
-}
-
-@keyframes crt-power-on {
-  0% {
-    opacity: 0.85;
-    transform: scaleY(0.004);
-  }
-  55% {
-    opacity: 0.3;
-    transform: scaleY(1);
-  }
-  100% {
-    opacity: 0;
-    transform: scaleY(1);
-  }
 }
 
 /* ── felix mode — POV: you're about to throw a ball ──────────────────────
@@ -389,7 +574,7 @@
 }
 
 /* The nose: every display title wears a glossy pure-CSS red nose. The
-   homepage hero is exempt — its word-stack span is sized by the longest
+   log page's hero is exempt — its word-stack span is sized by the longest
    cycling word, which would leave the nose floating in mid-air. */
 [data-theme="clown"] h1:not(.log-hero)::after {
   content: "";

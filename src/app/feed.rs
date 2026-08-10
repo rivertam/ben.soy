@@ -3,7 +3,7 @@
 //! publishes to the feed. Slay the Spire victories (and only victories —
 //! deaths stay on `/spire`) join the feed at render time from the synced run
 //! database, as do workouts explicitly published through the authenticated
-//! manual-entry path (same set the homepage timeline shows). Not a page: it
+//! manual-entry path (same set the `/log` timeline shows). Not a page: it
 //! renders no shell and stays out of `site_routes()` (the 404 index is for
 //! pages).
 
@@ -182,7 +182,7 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
     xml.push_str("<rss version=\"2.0\" xmlns:atom=\"http://www.w3.org/2005/Atom\">\n");
     xml.push_str("<channel>\n");
     xml.push_str("<title>Ben Berman — logbook</title>\n");
-    xml.push_str(&format!("<link>{}/</link>\n", escape(origin)));
+    xml.push_str(&format!("<link>{}/log</link>\n", escape(origin)));
     xml.push_str("<description>Everything gets an entry, long or short.</description>\n");
     xml.push_str("<language>en-us</language>\n");
     xml.push_str(&format!(
@@ -237,7 +237,7 @@ pub(crate) fn workout_description(workout: &Workout) -> String {
     description
 }
 
-/// Total volume points across a workout's sets — used by the homepage timeline.
+/// Total volume points across a workout's sets — used by the `/log` timeline.
 pub(crate) fn workout_volume_points(workout: &Workout) -> u32 {
     workout.sets.iter().fold(0_u32, |total, set| {
         total.saturating_add(scoring::set_volume_points(
@@ -627,7 +627,7 @@ mod tests {
         let xml = rss_xml(ORIGIN, &[], &[]);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
         assert!(xml.contains("<title>Ben Berman — logbook</title>"));
-        assert!(xml.contains(&format!("<link>{ORIGIN}/</link>")));
+        assert!(xml.contains(&format!("<link>{ORIGIN}/log</link>")));
         assert!(xml.contains(&format!(
             "<atom:link href=\"{ORIGIN}/feed.xml\" rel=\"self\" type=\"application/rss+xml\"/>"
         )));

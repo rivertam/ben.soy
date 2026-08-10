@@ -172,7 +172,7 @@ origin `Cache-Control` wins. A later rule matching
 personalized shell ([auth.md](auth.md)).
 
 Default HTML is `public, max-age=0, s-maxage=86400` from `shell`;
-Spire/home/feed use `s-maxage=60`; lifting and API responses use `no-store`.
+Spire/log/feed use `s-maxage=60`; lifting and API responses use `no-store`.
 Hashed `/_topcoat/assets/*` files are immutable. `just deploy` can purge the
 zone when a change must appear immediately.
 

@@ -1,10 +1,10 @@
 //! Interest registry, mirroring `posts.rs`. Each interest is a standalone
 //! page module under `app/interests/`; this list is the single source of
 //! truth for its slug (top-level route `/{slug}`, nav label, rail stamp),
-//! display title, and teaser (the index card copy, doubling as the page's
-//! lede). The nav dropdown, the interests index, and the 404's route list
-//! all derive from here — adding an interest means one entry here plus the
-//! page module.
+//! display title, and teaser (the `~` listing's annotation, doubling as the
+//! page's lede). The `~` listing, the tmux windows, and the 404's route
+//! list all derive from here — adding an interest means one entry here plus
+//! the page module.
 
 pub struct Interest {
     pub slug: &'static str,
@@ -26,7 +26,7 @@ pub static INTERESTS: [Interest; 8] = [
     Interest {
         slug: "lifting",
         title: "Lifting",
-        teaser: "I lift weights pretty often. Click on this one to learn how often!",
+        teaser: "I lift weights pretty often",
     },
     Interest {
         slug: "keyboards",
