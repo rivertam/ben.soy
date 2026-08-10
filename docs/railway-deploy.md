@@ -48,7 +48,9 @@ deployment check with the server's private listener.
 Set all five connection variables on the web service:
 
 ```text
-SURREALDB_ENDPOINT=ws://surrealdb.railway.internal:8000
+SURREALDB_ENDPOINT=http://surrealdb.railway.internal:8000
+# Prefer http:// for large analytics/fitness reads; ws:// still works for
+# smaller queries. The site binary enables both protocol-http and protocol-ws.
 SURREALDB_NAMESPACE=benjisponge
 SURREALDB_DATABASE=benjisponge
 SURREALDB_USERNAME=${{surrealdb.SURREAL_USER}}

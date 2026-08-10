@@ -121,10 +121,11 @@ phases, and keeps processing dirty keys after readiness; it never blocks a
 data-backed route from opening.
 
 Until reconciliation completes (or while the worker is idle), each render
-performs the legacy raw snapshot: one explicitly projected events query per
-UTC day in the window, plus a prior-session probe over only the idle window
-before cutoff, with the window ∩ prior intersection done in Rust. Day-sized
-chunks keep the shared websocket from resetting under a multi-week payload.
+performs the legacy raw snapshot: explicitly projected events pages of at most
+200 rows per UTC day, plus a prior-session probe over only the idle window
+before cutoff, with the window ∩ prior intersection done in Rust. Small pages
+keep the shared SurrealDB connection from resetting under multi-week payloads;
+`SURREALDB_ENDPOINT` may use `http://` (preferred) or `ws://`.
 The first request for each of the four windows then compares the fact and
 legacy dashboards structurally and persists a four-bit parity mask.
 Only mask 15 activates fact-only reads. Any fact query or decode failure falls

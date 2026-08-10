@@ -64,7 +64,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 subtle = "2.6.1"
-surrealdb = { workspace = true, features = ["protocol-ws", "rustls"] }
+surrealdb = { workspace = true, features = ["protocol-ws", "protocol-http", "rustls"] }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 topcoat = { version = "0.5.0", features = ["tailwind", "font-fontsource"] }
 url = "2.5.8"
