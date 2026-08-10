@@ -1,12 +1,9 @@
 //! The charts of the planes post: the Cuts view (FlightScale — sliced
-//! year-bars, dashed flight ticks, cut chips, the habit zoom panel and the
-//! combined-swaps bar), the Compare view (ComparisonScale with makeup
-//! chips), the ice callout beside them, and the travel-allowance
-//! BudgetChart. Ported from `~/how-bad/src/components/{FlightScale,
-//! ComparisonScale,IceCallout,IceGraphic,BudgetChart}.tsx` and the tab shell
-//! in `App.tsx`.
+//! year-bars, dashed flight ticks, cut chips and the combined-swaps bar), the
+//! flight share block, and the ice callout beside them. Ported from
+//! `~/how-bad/src/components/{FlightScale,IceCallout,IceGraphic,Receipt}.tsx`.
 //!
-//! All arithmetic stays server-side: the cut chips and makeup chips write
+//! All arithmetic stays server-side: the cut chips write
 //! plain signals, the affected chart regions are `#[shard]`s re-rendered on
 //! the server, and the "erased" slice styling is pure CSS keyed off
 //! reactive `data-pick-*` attributes (see `styles/planes-charts.css`).
@@ -15,7 +12,6 @@
 
 use super::ice::{ICE_SHOW_FLOOR_M2, ice_figure};
 use super::instruments::{driving_figure, fuel_figure, seat_figure};
-use super::receipt;
 use topcoat::{
     Result,
     runtime::shard,
@@ -24,21 +20,16 @@ use topcoat::{
 
 use super::{
     airports::Airport,
-    comparison_scale::{
-        ComparisonMode, comparison_rows, domain_color, list_makeup_chips, pick_makeup_row,
-    },
-    emissions::{
-        Cabin, Coordinates, FlightImpact, JET_FUEL_KG_PER_LITRE, great_circle_km, route_impact,
-    },
+    emissions::{Cabin, Coordinates, FlightImpact, JET_FUEL_KG_PER_LITRE, great_circle_km},
     format::{
-        format_bar_value, format_count, format_ice, format_js_number, format_litres, format_tonnes,
-        format_tonnes_smart, format_whole, format_years_span,
+        format_bar_value, format_count, format_ice, format_litres, format_tonnes,
+        format_tonnes_smart, format_whole,
     },
     reference_data::{
-        BUDGET_TARGETS, CutOption, FlightAnalogy, HABIT_BARS, SACRIFICE_BARS, SacrificeBar,
-        cuttable_kg, pick_analogy, total_kg,
+        CutOption, HABIT_BARS, SACRIFICE_BARS, SacrificeBar, cuttable_kg, pick_analogy, total_kg,
     },
-    sources::cite,
+    share::{SHARE_JS, share_block},
+    sources::{cite, cite_group},
 };
 
 fn all_bars() -> impl Iterator<Item = &'static SacrificeBar> {
@@ -88,10 +79,10 @@ fn strip_price(label: &str) -> &str {
 
 /// Slice widths for a track, clamped so they never sum past 100%. Without
 /// the clamp, a bar that outweighs its track (a habit year vs. a short
-/// flight in the zoom panel) would flex-shrink every slice proportionally —
+/// flight) would flex-shrink every slice proportionally —
 /// the track would still look full-width, but every slice's share and the
 /// dashed tick's position would silently lie. Overflow past one track is
-/// truncated instead, matching the Compare view's `.min(100.0)`.
+/// truncated instead of rescaling the bar's slices.
 fn clamped_widths(kgs: impl Iterator<Item = f64>, denom_kg: f64) -> Vec<f64> {
     let mut remaining = 100.0_f64;
     kgs.map(|kg| {
@@ -111,9 +102,7 @@ async fn row_head(noun: &str, detail: &str, source_ids: Vec<&'static str>) -> Re
             <span class="row-detail">
                 (detail)
                 " "
-                for id in source_ids {
-                    cite(id: id)
-                }
+                cite_group(ids: source_ids)
             </span>
         </span>
     }
@@ -184,78 +173,10 @@ async fn bar_track(
                 </div>
             }
             if has_tick {
-                <span class="flight-tick" style=(format!("left:{tick_pct}%"))>
-                    <span class=(if flip { "tick-label flip" } else { "tick-label" }) tabindex="0">
-                        (tick_text)
-                        <span class="tip">(tick_tip)</span>
-                    </span>
-                </span>
-            }
-        </div>
-    }
-}
-
-/// The "…but what about?" track: every habit bar's slices end to end, with
-/// the flight quoted in one of the habits' own currencies.
-#[component]
-async fn habits_track(
-    flight_kg: f64,
-    denom_kg: f64,
-    seed_offset: i64,
-    tick_pct: f64,
-    trip_noun: String,
-) -> Result {
-    struct Seg {
-        class: String,
-        style: String,
-        tip: String,
-    }
-    let slices: Vec<_> = HABIT_BARS
-        .iter()
-        .flat_map(|bar| bar.slices.iter().map(move |slice| (bar, slice)))
-        .collect();
-    let widths = clamped_widths(slices.iter().map(|(_, s)| s.kg), denom_kg);
-    let segs: Vec<Seg> = slices
-        .iter()
-        .zip(widths)
-        .map(|((bar, slice), width)| Seg {
-            class: format!("bar-seg seg-{}-{}", bar.id, slice.id),
-            style: format!("width:{width}%;background:{}", slice.color),
-            tip: format!("{} — {}", format_bar_value(slice.kg), slice.label),
-        })
-        .collect();
-
-    let pool: Vec<FlightAnalogy> = HABIT_BARS
-        .iter()
-        .flat_map(|bar| bar.analogies.iter().copied())
-        .collect();
-    let has_tick = flight_kg > 0.0;
-    let (tick_text, tick_tip) = if has_tick {
-        let seed = flight_kg.round() as i64 + seed_offset;
-        let (analogy, count) = pick_analogy(&pool, flight_kg, seed);
-        (
-            analogy.tick.replace("{n}", &format_count(count)),
-            format!(
-                "This {trip_noun} ≈ {} {} ({})",
-                format_whole(count),
-                analogy.unit_label,
-                analogy.basis
-            ),
-        )
-    } else {
-        (String::new(), String::new())
-    };
-    let flip = tick_pct > 55.0;
-
-    view! {
-        <div class="bar-h-track">
-            for seg in segs {
-                <div class=(seg.class) tabindex="0" style=(seg.style)>
-                    <span class="tip">(seg.tip)</span>
-                </div>
-            }
-            if has_tick {
-                <span class="flight-tick" style=(format!("left:{tick_pct}%"))>
+                <span
+                    class="flight-tick flight-tick--labeled"
+                    style=(format!("--tick-left:{tick_pct}%"))
+                >
                     <span class=(if flip { "tick-label flip" } else { "tick-label" }) tabindex="0">
                         (tick_text)
                         <span class="tip">(tick_tip)</span>
@@ -267,8 +188,8 @@ async fn habits_track(
 }
 
 /// The "Your swaps, combined" bar. The picks arrive as one signal per cut
-/// ladder (0 = untouched, 1 = the mild cut, 2 = the deep one; the six
-/// single-cut habits packed into decimal digits of `habits`) so the shard
+/// ladder (0 = untouched, increasing values are deeper cuts; the six
+/// single-cut habits are packed into decimal digits of `habits`) so the shard
 /// can re-price everything server-side.
 #[shard]
 async fn combined_swaps(
@@ -386,82 +307,6 @@ async fn combined_swaps(
     }
 }
 
-/// The Compare view's domain rows. Each makeup chip writes its domain's
-/// signal (the chip id, or "" for none); the rows recompute server-side.
-#[shard]
-async fn compare_domain_rows(
-    scale_kg: f64,
-    transport: String,
-    food: String,
-    home: String,
-    habits: String,
-) -> Result {
-    let scale = if scale_kg > 0.0 { scale_kg } else { 1.0 };
-    let chips = list_makeup_chips();
-    let rows: Vec<_> = comparison_rows(scale, ComparisonMode::Absolute)
-        .into_iter()
-        .map(|row| {
-            let chip_id = match row.domain.as_str() {
-                "transport" => transport.as_str(),
-                "food" => food.as_str(),
-                "home" => home.as_str(),
-                "habits" => habits.as_str(),
-                _ => "",
-            };
-            if chip_id.is_empty() {
-                return row;
-            }
-            match chips
-                .iter()
-                .find(|c| c.id == chip_id && c.domain == row.domain)
-            {
-                Some(chip) => pick_makeup_row(scale, chip, ComparisonMode::Absolute, None),
-                None => row,
-            }
-        })
-        .collect();
-
-    view! {
-        for row in rows {
-            <div class="effort-row">
-                <span class="row-head">
-                    (row.label)
-                    <span class="row-detail">
-                        (row.detail)
-                        " "
-                        for id in row.source_ids.iter() {
-                            cite(id: id.as_str())
-                        }
-                    </span>
-                </span>
-                <div class="bar-cell">
-                    <div class="bar-h-track">
-                        <div
-                            class="bar-seg"
-                            tabindex="0"
-                            style=(format!(
-                                "width:{}%;background:{}",
-                                (row.bar_fill_kg / scale * 100.0).min(100.0),
-                                domain_color(&row.domain).unwrap_or("var(--ink)")
-                            ))
-                        >
-                            <span class="tip">(format!(
-                                "{} — {} {}",
-                                format_bar_value(row.bar_fill_kg),
-                                format_js_number(row.count),
-                                row.unit_label
-                            ))</span>
-                        </div>
-                    </div>
-                </div>
-                <span class="row-equals">
-                    <strong>(format_bar_value(row.bar_fill_kg))</strong>
-                </span>
-            </div>
-        }
-    }
-}
-
 /// The sticky sidebar beside the charts: the melted-ice line and figure.
 #[component]
 async fn ice_callout(ice_m2: f64) -> Result {
@@ -497,7 +342,7 @@ async fn cuts_data_tables(flight_tonnes: f64, trip_noun: String) -> Result {
             slice_rows.push(SliceRow {
                 year: if i == 0 { bar.noun } else { "" },
                 slice: slice.id.replace('-', " "),
-                erased_by: slice.cut.unwrap_or("nothing — this floor stays"),
+                erased_by: slice.cut.unwrap_or(""),
                 tonnes: format!("{:.3}", slice.kg / 1000.0),
             });
         }
@@ -579,9 +424,7 @@ async fn cuts_data_tables(flight_tonnes: f64, trip_noun: String) -> Result {
                             <td>
                                 (r.basis)
                                 " "
-                                for id in r.source_ids.iter().copied() {
-                                    cite(id: id)
-                                }
+                                cite_group(ids: r.source_ids.to_vec())
                             </td>
                         </tr>
                     }
@@ -591,10 +434,8 @@ async fn cuts_data_tables(flight_tonnes: f64, trip_noun: String) -> Result {
     }
 }
 
-/// "The flight vs. everything else": the Cuts / Compare / Receipt / Allowance
-/// tab shell, the chart cards (one visible at a time via a signal;
-/// `initial_view` is `"cuts"`, `"compare"`, `"receipt"`, or `"allowance"`),
-/// and the ice callout beside the chart views.
+/// "The flight vs. everything else": the Cuts chart, the flight share block,
+/// and the ice callout beside them.
 #[component]
 pub async fn charts_section(
     impact: FlightImpact,
@@ -603,8 +444,7 @@ pub async fn charts_section(
     vias: Vec<Airport>,
     to: Airport,
     cabin: Cabin,
-    share_path: String,
-    initial_view: String,
+    share_text: String,
 ) -> Result {
     let to_city = to.city.clone();
     let flight_tonnes = impact.tonnes_co2e;
@@ -613,21 +453,12 @@ pub async fn charts_section(
         .chain(std::iter::once(&to))
         .map(Airport::coordinates)
         .collect();
-    let cabin_years = |cabin: Cabin| route_impact(&stops, cabin, round_trip).travel_budget_years;
     let flight_kg = flight_tonnes * 1000.0;
     let monk_t = monk_tonnes();
     let scale_max = flight_tonnes.max(monk_t);
     let scale_max_kg = scale_max * 1000.0;
     let flight_pct = flight_tonnes / scale_max * 100.0;
     let trip_noun = if round_trip { "round trip" } else { "flight" };
-    let habits_kg: f64 = HABIT_BARS.iter().map(total_kg).sum();
-    let habit_max = HABIT_BARS.iter().map(total_kg).fold(0.0_f64, f64::max);
-    // The zoom panel's scale: the track is exactly one flight wide.
-    let zoom_kg = if flight_kg > 0.0 {
-        flight_kg
-    } else {
-        habit_max
-    };
     let show_ice = impact.ice_m2 >= ICE_SHOW_FLOOR_M2;
     // The margin instruments need a real route; a staycation has no rail.
     let show_rail = impact.distance_km > 0.0 || show_ice;
@@ -647,8 +478,6 @@ pub async fn charts_section(
         .fold(0.0_f64, f64::max);
     let long_haul = longest_leg_km >= 2000.0;
     let sac_len = SACRIFICE_BARS.len() as i64;
-    let start_view = initial_view.clone();
-
     let b_climate = find_bar("climate");
     let b_eating = find_bar("eating");
     let b_fashion = find_bar("fashion");
@@ -668,9 +497,6 @@ pub async fn charts_section(
 
     view! {
         <section class="section">
-            signal view = start_view;
-            signal zoom = false;
-            signal fkg = flight_kg;
             signal p_heat = 0.0;
             signal p_cool = 0.0;
             signal p_diet = 0.0;
@@ -683,86 +509,20 @@ pub async fn charts_section(
             signal p_stream = 0.0;
             signal p_gpt = 0.0;
             signal p_straw = 0.0;
-            signal m_transport = String::new();
-            signal m_food = String::new();
-            signal m_home = String::new();
-            signal m_habits = String::new();
+            signal fkg = flight_kg;
 
             <h2>"The flight vs. everything else"</h2>
-            <div class="chart-tabs" role="tablist" aria-label="Chart view">
-                <button
-                    type="button"
-                    role="tab"
-                    id="chart-tab-cuts"
-                    aria-controls="chart-panel"
-                    :aria-selected=$(if view.get() == "cuts" { "true" } else { "false" })
-                    :class=$(if view.get() == "cuts" { "chart-tab is-active" } else { "chart-tab" })
-                    @click=$(|_e| view.set("cuts".to_owned()))
-                >"Cuts"</button>
-                <button
-                    type="button"
-                    role="tab"
-                    id="chart-tab-compare"
-                    aria-controls="chart-panel"
-                    :aria-selected=$(if view.get() == "compare" { "true" } else { "false" })
-                    :class=$(if view.get() == "compare" { "chart-tab is-active" } else { "chart-tab" })
-                    @click=$(|_e| view.set("compare".to_owned()))
-                >"Compare"</button>
-                <button
-                    type="button"
-                    role="tab"
-                    id="chart-tab-receipt"
-                    aria-controls="chart-panel"
-                    :aria-selected=$(if view.get() == "receipt" { "true" } else { "false" })
-                    :class=$(if view.get() == "receipt" { "chart-tab is-active" } else { "chart-tab" })
-                    @click=$(|_e| view.set("receipt".to_owned()))
-                >"Receipt"</button>
-                <button
-                    type="button"
-                    role="tab"
-                    id="chart-tab-allowance"
-                    aria-controls="chart-panel"
-                    :aria-selected=$(if view.get() == "allowance" { "true" } else { "false" })
-                    :class=$(if view.get() == "allowance" { "chart-tab is-active" } else { "chart-tab" })
-                    @click=$(|_e| view.set("allowance".to_owned()))
-                >"Allowance"</button>
-            </div>
-            <div
-                :class=$(
-                    if view.get() == "receipt" {
-                        "scale-layout"
-                    } else if view.get() == "allowance" {
-                        "scale-layout"
-                    } else if show_rail {
-                        "scale-layout scale-layout--ice"
-                    } else {
-                        "scale-layout"
-                    }
-                )
-                id="chart-panel"
-                role="tabpanel"
-                :aria-labelledby=$(
-                    if view.get() == "receipt" {
-                        "chart-tab-receipt"
-                    } else if view.get() == "allowance" {
-                        "chart-tab-allowance"
-                    } else if view.get() == "compare" {
-                        "chart-tab-compare"
-                    } else {
-                        "chart-tab-cuts"
-                    }
-                )
-            >
+            <div class=(if show_rail { "scale-layout scale-layout--ice" } else { "scale-layout" })>
                 <div class="scale-main">
-                    <div :hidden=$(view.get() != "cuts")>
-                        <div class="chart-card">
+                    <div class="chart-card">
+                        <div class="chart-card-head cuts-card-head">
                             <p class="toggle-note">
-                                "the dashed line quotes the flight in each row’s own units, \
-                                 rounded to friendly numbers — hover a label for the exact count"
+                                "Tap a cut to see the slice it removes."
                             </p>
-
-                            <div
-                                class="effort-rows"
+                            share_block(text: share_text.as_str())
+                        </div>
+                        <div
+                            class="effort-rows"
                                 :data-pick-heat=$(p_heat.get())
                                 :data-pick-cool=$(p_cool.get())
                                 :data-pick-diet=$(p_diet.get())
@@ -778,11 +538,10 @@ pub async fn charts_section(
                             >
                                 <div class="effort-row">
                                     <span class="row-head">
-                                        <strong>"This flight"</strong>
+                                        <strong>"This itinerary"</strong>
                                         <span class="row-detail">
-                                            (format!("one {trip_noun} to {to_city}, one seat\u{a0}"))
-                                            cite(id: "myclimate")
-                                            cite(id: "lee2021")
+                                            (format!("one {trip_noun} ticket to {to_city}\u{a0}"))
+                                            cite_group(ids: vec!["myclimate", "lee2021"])
                                         </span>
                                     </span>
                                     <div class="bar-cell">
@@ -838,6 +597,12 @@ pub async fn charts_section(
                                                 :aria-pressed=$(if p_heat.get() == 2.0 { "true" } else { "false" })
                                                 @click=$(|_e| if p_heat.get() == 2.0 { p_heat.set(0.0) } else { p_heat.set(2.0) })
                                             >(opt_label("climate", "heat-pump"))</button>
+                                            <button
+                                                type="button"
+                                                class="cut-chip"
+                                                :aria-pressed=$(if p_heat.get() == 3.0 { "true" } else { "false" })
+                                                @click=$(|_e| if p_heat.get() == 3.0 { p_heat.set(0.0) } else { p_heat.set(3.0) })
+                                            >(opt_label("climate", "no-climate-control"))</button>
                                             <button
                                                 type="button"
                                                 class="cut-chip"
@@ -944,55 +709,6 @@ pub async fn charts_section(
                                 </div>
 
                                 <div class="effort-row">
-                                    <span class="row-head">
-                                        "…but what about?"
-                                        <span class="row-detail">
-                                            "lattes, new phones, soda, bottled water, streaming, ChatGPT, straws "
-                                            cite(id: "items")
-                                            cite(id: "soda")
-                                            cite(id: "phone")
-                                            cite(id: "streaming")
-                                            cite(id: "ai-openai")
-                                        </span>
-                                    </span>
-                                    <div class=(labeled_cell)>
-                                        habits_track(
-                                            flight_kg: flight_kg,
-                                            denom_kg: scale_max_kg,
-                                            seed_offset: sac_len,
-                                            tick_pct: flight_pct,
-                                            trip_noun: trip_noun.to_string(),
-                                        )
-                                        <p class="row-cuts">
-                                            "all seven together, a few pixels at this scale — "
-                                            <button
-                                                type="button"
-                                                class="link-btn"
-                                                :hidden=$(zoom.get())
-                                                :aria-expanded=$(if zoom.get() { "true" } else { "false" })
-                                                @click=$(|_e| zoom.set(true))
-                                            >"hold them up against the flight"</button>
-                                            <span :hidden=$(!zoom.get())>"held up against the flight below ↓"</span>
-                                        </p>
-                                    </div>
-                                    <span class="row-equals">
-                                        <strong>(format_tonnes_smart(habits_kg / 1000.0))</strong>
-                                    </span>
-                                </div>
-
-                                <div class="zoom-panel" :hidden=$(!zoom.get())>
-                                    <div class="zoom-head">
-                                        <p class="zoom-note">(format!(
-                                            "the track is now exactly one {trip_noun} wide — the dashed line is this flight"
-                                        ))</p>
-                                        <button
-                                            type="button"
-                                            class="link-btn zoom-close"
-                                            @click=$(|_e| zoom.set(false))
-                                        >"put them back ↑"</button>
-                                    </div>
-
-                                    <div class="effort-row">
                                         row_head(
                                             noun: b_coffee.noun,
                                             detail: b_coffee.detail,
@@ -1002,10 +718,10 @@ pub async fn charts_section(
                                             bar_track(
                                                 bar_id: "coffee",
                                                 flight_kg: flight_kg,
-                                                denom_kg: zoom_kg,
+                                                denom_kg: scale_max_kg,
                                                 tonnes_tips: false,
                                                 seed_offset: sac_len + 1,
-                                                tick_pct: 100.0,
+                                                tick_pct: flight_pct,
                                                 trip_noun: trip_noun.to_string(),
                                             )
                                             <div
@@ -1042,10 +758,10 @@ pub async fn charts_section(
                                             bar_track(
                                                 bar_id: "phone",
                                                 flight_kg: flight_kg,
-                                                denom_kg: zoom_kg,
+                                                denom_kg: scale_max_kg,
                                                 tonnes_tips: false,
                                                 seed_offset: sac_len + 2,
-                                                tick_pct: 100.0,
+                                                tick_pct: flight_pct,
                                                 trip_noun: trip_noun.to_string(),
                                             )
                                             <div
@@ -1076,10 +792,10 @@ pub async fn charts_section(
                                             bar_track(
                                                 bar_id: "soda",
                                                 flight_kg: flight_kg,
-                                                denom_kg: zoom_kg,
+                                                denom_kg: scale_max_kg,
                                                 tonnes_tips: false,
                                                 seed_offset: sac_len + 3,
-                                                tick_pct: 100.0,
+                                                tick_pct: flight_pct,
                                                 trip_noun: trip_noun.to_string(),
                                             )
                                             <div
@@ -1110,10 +826,10 @@ pub async fn charts_section(
                                             bar_track(
                                                 bar_id: "bottled-water",
                                                 flight_kg: flight_kg,
-                                                denom_kg: zoom_kg,
+                                                denom_kg: scale_max_kg,
                                                 tonnes_tips: false,
                                                 seed_offset: sac_len + 4,
-                                                tick_pct: 100.0,
+                                                tick_pct: flight_pct,
                                                 trip_noun: trip_noun.to_string(),
                                             )
                                             <div
@@ -1144,10 +860,10 @@ pub async fn charts_section(
                                             bar_track(
                                                 bar_id: "streaming",
                                                 flight_kg: flight_kg,
-                                                denom_kg: zoom_kg,
+                                                denom_kg: scale_max_kg,
                                                 tonnes_tips: false,
                                                 seed_offset: sac_len + 5,
-                                                tick_pct: 100.0,
+                                                tick_pct: flight_pct,
                                                 trip_noun: trip_noun.to_string(),
                                             )
                                             <div
@@ -1178,10 +894,10 @@ pub async fn charts_section(
                                             bar_track(
                                                 bar_id: "chatgpt",
                                                 flight_kg: flight_kg,
-                                                denom_kg: zoom_kg,
+                                                denom_kg: scale_max_kg,
                                                 tonnes_tips: false,
                                                 seed_offset: sac_len + 6,
-                                                tick_pct: 100.0,
+                                                tick_pct: flight_pct,
                                                 trip_noun: trip_noun.to_string(),
                                             )
                                             <div
@@ -1212,10 +928,10 @@ pub async fn charts_section(
                                             bar_track(
                                                 bar_id: "straws",
                                                 flight_kg: flight_kg,
-                                                denom_kg: zoom_kg,
+                                                denom_kg: scale_max_kg,
                                                 tonnes_tips: false,
                                                 seed_offset: sac_len + 7,
-                                                tick_pct: 100.0,
+                                                tick_pct: flight_pct,
                                                 trip_noun: trip_noun.to_string(),
                                             )
                                             <div
@@ -1235,14 +951,12 @@ pub async fn charts_section(
                                             <strong>(format_bar_value(total_kg(b_straw)))</strong>
                                         </span>
                                     </div>
-                                </div>
                                 <hr class="flight-row-divider">
 
                                 <div class="effort-row">
                                     <span class="row-head">
                                         "Your swaps, combined"
                                         <span class="row-detail">
-                                            "tap the cuts above to fill this bar — or "
                                             <button
                                                 type="button"
                                                 class="link-btn"
@@ -1282,130 +996,21 @@ pub async fn charts_section(
                             </div>
 
                             <p class="chart-note caveat">"
-                                Caveat: these bars measure greenhouse gases and nothing else.
-                                Land use, water use, and plastic in the ocean are real problems in their own right.
-                                A straw rounds to zero carbon and can still wash up on a beach or
-                                kill a turtle. These issues deserve pages of their own. This page measures the
-                                 one problem where flying towers over everything.
+                                Caveat: This whole page is about greenhouse gases.
+                                There are tons of other negative externalities from other aspects,
+                                like plastic, land use, water use, etc. I concede, for example,
+                                it's weird to say \"it's like buying 50 iPhones\" considering the main
+                                    problems with iPhones lie in the materials, not the carbon usage.
                             "</p>
                             cuts_data_tables(
                                 flight_tonnes: flight_tonnes,
                                 trip_noun: trip_noun.to_string(),
                             )
                         </div>
-                    </div>
-
-                    <div :hidden=$(view.get() != "compare")>
-                        <div class="chart-card">
-                            <div class="chart-card-head">
-                                <p class="toggle-note">
-                                    "each row picks units that fit this scale — tap a chip to \
-                                     see what would make up for it"
-                                </p>
-                                <div class="chart-card-controls">
-                                    <div class="makeup-chip" role="group" aria-label="Make up for it">
-                                        <button
-                                            type="button"
-                                            :class=$(if m_transport.get() == "drive-less" { "makeup-chip-btn is-active" } else { "makeup-chip-btn" })
-                                            :aria-pressed=$(if m_transport.get() == "drive-less" { "true" } else { "false" })
-                                            @click=$(|_e| if m_transport.get() == "drive-less" { m_transport.set("".to_owned()) } else { m_transport.set("drive-less".to_owned()) })
-                                        >"Drive less"</button>
-                                        <button
-                                            type="button"
-                                            :class=$(if m_transport.get() == "go-ev" { "makeup-chip-btn is-active" } else { "makeup-chip-btn" })
-                                            :aria-pressed=$(if m_transport.get() == "go-ev" { "true" } else { "false" })
-                                            @click=$(|_e| if m_transport.get() == "go-ev" { m_transport.set("".to_owned()) } else { m_transport.set("go-ev".to_owned()) })
-                                        >"Go EV"</button>
-                                        <button
-                                            type="button"
-                                            :class=$(if m_food.get() == "eat-plants" { "makeup-chip-btn is-active" } else { "makeup-chip-btn" })
-                                            :aria-pressed=$(if m_food.get() == "eat-plants" { "true" } else { "false" })
-                                            @click=$(|_e| if m_food.get() == "eat-plants" { m_food.set("".to_owned()) } else { m_food.set("eat-plants".to_owned()) })
-                                        >"Eat plants"</button>
-                                        <button
-                                            type="button"
-                                            :class=$(if m_home.get() == "sweat-it-out" { "makeup-chip-btn is-active" } else { "makeup-chip-btn" })
-                                            :aria-pressed=$(if m_home.get() == "sweat-it-out" { "true" } else { "false" })
-                                            @click=$(|_e| if m_home.get() == "sweat-it-out" { m_home.set("".to_owned()) } else { m_home.set("sweat-it-out".to_owned()) })
-                                        >"Sweat it out"</button>
-                                        <button
-                                            type="button"
-                                            :class=$(if m_habits.get() == "skip-soda" { "makeup-chip-btn is-active" } else { "makeup-chip-btn" })
-                                            :aria-pressed=$(if m_habits.get() == "skip-soda" { "true" } else { "false" })
-                                            @click=$(|_e| if m_habits.get() == "skip-soda" { m_habits.set("".to_owned()) } else { m_habits.set("skip-soda".to_owned()) })
-                                        >"Skip the soda"</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="effort-rows">
-                                if flight_tonnes > 0.0 {
-                                    <div class="effort-row">
-                                        <span class="row-head">
-                                            <strong>"This flight"</strong>
-                                            <span class="row-detail">
-                                                (format!("one {trip_noun} to {to_city}, one seat"))
-                                                cite(id: "myclimate")
-                                                cite(id: "lee2021")
-                                            </span>
-                                        </span>
-                                        <div class="bar-cell">
-                                            <div class="bar-h-track">
-                                                <div
-                                                    class="bar-seg"
-                                                    tabindex="0"
-                                                    style="width:100%;background:var(--cost)"
-                                                >
-                                                    <span class="tip">(format!("{} CO2e", format_bar_value(flight_kg)))</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <span class="row-equals">
-                                            <strong>(format_bar_value(flight_kg))</strong>
-                                        </span>
-                                    </div>
-                                    <hr class="flight-row-divider">
-                                }
-                                compare_domain_rows(
-                                    scale_kg: $(fkg.get()),
-                                    transport: $(m_transport.get()),
-                                    food: $(m_food.get()),
-                                    home: $(m_home.get()),
-                                    habits: $(m_habits.get()),
-                                )
-                            </div>
-                        </div>
-                    </div>
-
-                    <div :hidden=$(view.get() != "receipt")>
-                        receipt::receipt(
-                            from: from.clone(),
-                            vias: vias.clone(),
-                            to: to.clone(),
-                            cabin: cabin,
-                            round_trip: round_trip,
-                            impact: impact,
-                            share_path: share_path,
-                        )
-                    </div>
-
-                    <div :hidden=$(view.get() != "allowance")>
-                        budget_chart(
-                            flight_tonnes: flight_tonnes,
-                            economy_years: cabin_years(Cabin::Economy),
-                            business_years: cabin_years(Cabin::Business),
-                            first_years: cabin_years(Cabin::First),
-                        )
-                    </div>
+                    <script type="module" src=(SHARE_JS)></script>
                 </div>
                 if show_rail {
-                    <div class="instrument-rail" :hidden=$(
-                        if view.get() == "receipt" {
-                            true
-                        } else {
-                            view.get() == "allowance"
-                        }
-                    )>
+                    <div class="instrument-rail">
                         if impact.distance_km > 0.0 {
                             fuel_figure(
                                 litres: fuel_litres,
@@ -1425,209 +1030,6 @@ pub async fn charts_section(
                 }
             </div>
         </section>
-    }
-}
-
-/// "The flight vs. your travel allowance": the Paris aside, the arithmetic
-/// walk-through, and the budget columns. `id="allowance"` is the anchor the
-/// receipt's travel-allowance line links to.
-#[component]
-pub async fn budget_chart(
-    flight_tonnes: f64,
-    economy_years: f64,
-    business_years: f64,
-    first_years: f64,
-) -> Result {
-    const PLOT_HEIGHT: f64 = 190.0;
-    let scale_max = BUDGET_TARGETS
-        .iter()
-        .map(|t| t.total)
-        .fold(flight_tonnes, f64::max);
-    let px = |t: f64| ((t / scale_max) * PLOT_HEIGHT).max(2.0);
-
-    view! {
-        <div class="allowance-panel" id="allowance">
-            <aside class="aside-card">
-                <h3>"The Paris Agreement, in sixty seconds"</h3>
-                <p>
-                    <strong>"What it is."</strong>
-                    " A 2015 treaty adopted by 196 parties — nearly every country on Earth — to \
-                     hold warming “well below 2 °C” and pursue 1.5 °C. "
-                    cite(id: "paris")
-                </p>
-                <p>
-                    <strong>"Is it too strict?"</strong>
-                    " The people who run the numbers argue the opposite. In a 2024 survey of \
-                     senior IPCC scientists, only 6% expected the 1.5 °C limit to hold, and \
-                     nearly 80% foresee at least 2.5 °C. "
-                    cite(id: "parisview")
-                    " Among climate scientists, Paris isn’t ambitious — it’s the floor."
-                </p>
-                <p>
-                    <strong>"Why back it anyway?"</strong>
-                    " It’s the one plan everyone signed, it ratchets every five years, and the \
-                     science beneath it — that burning carbon warms the planet — carries 97%+ \
-                     agreement among publishing climate scientists. "
-                    cite(id: "consensus")
-                    " Every fraction of a degree it saves is suffering avoided."
-                </p>
-            </aside>
-            <p class="section-sub">
-                "The receipt ends with a line called “travel allowance used.” No treaty prints \
-                 that number: researchers took the Paris Agreement’s ceiling, divided it into \
-                 equal per-person shares, and asked how much of a share travel could claim. \
-                 Equal shares is one defensible choice among several — here’s the arithmetic, \
-                 so you can judge it."
-            </p>
-            <p class="section-sub">
-                "The treaty itself (the card at right has the sixty-second version) binds \
-                 countries, not people — it never mentions your vacation. Its core promise is a \
-                 ceiling: hold the rise in global average temperature to well below 2 °C above \
-                 pre-industrial levels, and pursue efforts to stop near 1.5 °C, the range past \
-                 which heat, harvests, and coastlines get much harder to live with."
-            </p>
-            <p class="section-sub">
-                "A temperature ceiling is secretly a carbon ceiling: past a certain total of \
-                 CO₂e, the thermometer follows, no matter who emitted it. Researchers at Aalto \
-                 University and Japan’s IGES turned that global total into a personal one — "
-                <em>"if"</em>
-                " you accept an equal per-person share (their arithmetic, not the treaty’s), a \
-                 1.5 °C-compatible life can spend roughly 2.5 t a year by 2030, falling to \
-                 0.7 t by 2050, for everything combined. "
-                cite(id: "budgets")
-                " The slice available for getting around — car, bus, train, ferry, and plane, \
-                 all of it — is the travel allowance on your receipt: about 0.43 t a year at \
-                 the 2030 milestone, tightening each decade after. Here, those allowances \
-                 stand next to this one flight."
-            </p>
-            <div class="chart-card">
-                <div class="budget-plot" style=(format!("height:{PLOT_HEIGHT}px"))>
-                    <div class="budget-col">
-                        <div class="col-value">(format_tonnes(flight_tonnes))</div>
-                        <div
-                            class="seg top"
-                            tabindex="0"
-                            style=(format!("height:{:.1}px;background:var(--cost)", px(flight_tonnes)))
-                        >
-                            <span class="tip">(format!(
-                                "This flight: {} CO₂e",
-                                format_tonnes(flight_tonnes)
-                            ))</span>
-                        </div>
-                    </div>
-                    for target in BUDGET_TARGETS.iter() {
-                        <div class="budget-col">
-                            <div class="col-value">(format_tonnes(target.total))</div>
-                            <div
-                                class="seg top"
-                                tabindex="0"
-                                style=(format!(
-                                    "height:{:.1}px;background:var(--save-soft)",
-                                    px(target.total - target.travel)
-                                ))
-                            >
-                                <span class="tip">(format!(
-                                    "{}: {}/yr per person in total — food, housing, goods, services",
-                                    target.year,
-                                    format_tonnes(target.total)
-                                ))</span>
-                            </div>
-                            <div
-                                class="seg"
-                                tabindex="0"
-                                style=(format!(
-                                    "height:{:.1}px;background:var(--save)",
-                                    px(target.travel)
-                                ))
-                            >
-                                <span class="tip">(format!(
-                                    "{}: {}/yr for all travel — car, bus, train, and plane combined",
-                                    target.year,
-                                    format_tonnes(target.travel)
-                                ))</span>
-                            </div>
-                        </div>
-                    }
-                </div>
-                <div class="budget-labels">
-                    <div class="col-label">"this flight"</div>
-                    for target in BUDGET_TARGETS.iter() {
-                        <div class="col-label">(target.year)</div>
-                    }
-                </div>
-                <dl class="benchmark-legend">
-                    <div>
-                        <dt>
-                            <span class="swatch" style="background:var(--cost)"></span>
-                            "this flight"
-                        </dt>
-                        <dd>"one itinerary, one seat — for comparison against whole years"</dd>
-                    </div>
-                    for target in BUDGET_TARGETS.iter() {
-                        <div>
-                            <dt>(target.year)</dt>
-                            <dd>(format!(
-                                "{} per person-year: {}",
-                                format_tonnes(target.total),
-                                target.meaning
-                            ))</dd>
-                        </div>
-                    }
-                    <div>
-                        <dt>
-                            <span class="swatch" style="background:var(--save)"></span>
-                            "dark slice"
-                        </dt>
-                        <dd>
-                            "the travel allowance: a full year of "
-                            <em>"all"</em>
-                            " mobility — every car trip, bus, train, ferry, and flight"
-                        </dd>
-                    </div>
-                    <div>
-                        <dt>
-                            <span class="swatch" style="background:var(--save-soft)"></span>
-                            "light slice"
-                        </dt>
-                        <dd>"everything else a life emits: food, housing, goods, services"</dd>
-                    </div>
-                </dl>
-                <p class="chart-note">(format!(
-                    "Whether or not you accept the budget, the levers are yours. This exact \
-                     route runs ≈{} allowance-years in economy, ≈{} in business, and ≈{} in \
-                     first — and the biggest lever of all is simply one trip fewer.",
-                    format_years_span(economy_years),
-                    format_years_span(business_years),
-                    format_years_span(first_years)
-                ))</p>
-                <details class="data-table">
-                    <summary>"Data table"</summary>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>"Bar"</th>
-                                <th>"Total tCO₂e/yr"</th>
-                                <th>"Travel share"</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>"This flight (one-off)"</td>
-                                <td>(format!("{flight_tonnes:.2}"))</td>
-                                <td>"—"</td>
-                            </tr>
-                            for target in BUDGET_TARGETS.iter() {
-                                <tr>
-                                    <td>(format!("{} target", target.year))</td>
-                                    <td>(format!("{:.2}", target.total))</td>
-                                    <td>(format!("{:.2}", target.travel))</td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                </details>
-            </div>
-        </div>
     }
 }
 
@@ -1694,6 +1096,12 @@ mod tests {
         }
     }
 
+    #[test]
+    fn citation_commas_require_an_explicit_group() {
+        assert!(CSS.contains(".dispatch .cite-group > sup.cite + sup.cite::before"));
+        assert!(!CSS.contains(".dispatch sup.cite + sup.cite::before"));
+    }
+
     /// The other direction: the tests above only prove CSS names exist in
     /// Rust, so a stylesheet rewrite could silently drop the whole erased
     /// table and still pass. Pin its shape — every declared pick attribute
@@ -1730,7 +1138,7 @@ mod price_tests {
     /// math computes the same saving from slice kg via `option_kg`. The two
     /// have drifted before; assert the displayed price rounds from the
     /// computed one (tolerance: half the label's last displayed digit).
-    /// On short flights a habit bar outweighs the zoom track; widths must
+    /// On short flights a habit bar outweighs the track; widths must
     /// truncate at 100%, never rescale (the flex-shrink lie this replaced).
     #[test]
     fn clamped_widths_truncate_overflow() {

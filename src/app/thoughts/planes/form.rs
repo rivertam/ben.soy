@@ -115,12 +115,12 @@ pub async fn flight_form(
                 </label>
             </div>
             if revealed && !total.is_empty() {
-                stamp_seal(text: format!("{total} CO₂e"))
+                stamp_seal(class: "flight-total-seal", text: format!("{total} CO₂e"))
             }
             // Unlike the original (where React recomputes live and the button
             // disappears after reveal), the server round-trip always needs a
             // submit control, so the button stays — condensed by .form-dock.
-            <button type="submit" class="print-btn">"See how it compares"</button>
+            <button type="submit" class="print-btn">"See the impact"</button>
         </form>
         <script type="module" src=(AIRPORT_COMBOBOX_JS)></script>
     }

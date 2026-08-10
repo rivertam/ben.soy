@@ -16,7 +16,7 @@ use super::{
     airports::Airport,
     emissions::{Cabin, cabin_weight},
     format::format_whole,
-    sources::cite,
+    sources::{cite, cite_group, great_circle_term},
 };
 
 /// A 55-US-gallon drum in litres — the standard barrel the fuel figure
@@ -290,7 +290,7 @@ pub async fn route_figure(stops: Vec<Airport>, round_trip: bool, km_flown: Strin
         .join(", ");
     let aria = if via_marks.is_empty() {
         format!(
-            "The great-circle route from {} to {} on a {}-degree graticule, {}",
+            "The shortest route over Earth's surface from {} to {} on a {}-degree graticule, {}",
             marks[0].iata,
             marks[marks.len() - 1].iata,
             step,
@@ -298,18 +298,13 @@ pub async fn route_figure(stops: Vec<Airport>, round_trip: bool, km_flown: Strin
         )
     } else {
         format!(
-            "The great-circle route from {} via {} to {} on a {}-degree graticule, {}",
+            "The shortest route over Earth's surface from {} via {} to {} on a {}-degree graticule, {}",
             marks[0].iata,
             via_names,
             marks[marks.len() - 1].iata,
             step,
             trip_label
         )
-    };
-    let fig_note = if leg_count == 1 {
-        format!("the great circle · {trip_label} · {step}° graticule")
-    } else {
-        format!("{leg_count} great circles · {trip_label} · {step}° graticule")
     };
     // Via labels stagger above/below the line and drop out rather than
     // pile up: a label only lands where it won't collide with one already
@@ -428,7 +423,17 @@ pub async fn route_figure(stops: Vec<Airport>, round_trip: bool, km_flown: Strin
                 >(to_iata.as_str())</text>
             </svg>
             <div class="fig-note">
-                (fig_note)
+                if leg_count == 1 {
+                    great_circle_term(id: "great-circle-figure", label: "great circle")
+                } else {
+                    (leg_count)
+                    " "
+                    great_circle_term(id: "great-circle-figure", label: "great circles")
+                }
+                " · "
+                (trip_label)
+                " · "
+                (format!("{step}° graticule"))
             </div>
         </aside>
     }
@@ -492,8 +497,7 @@ pub async fn fuel_figure(litres: f64, litres_label: String) -> Result {
                 "Jet fuel burned: "
                 <strong>(litres_label.as_str())</strong>
                 " "
-                cite(id: "myclimate")
-                cite(id: "jetfuel-density")
+                cite_group(ids: vec!["myclimate", "jetfuel-density"])
             </p>
             <svg
                 viewBox=(format!("0 0 {vw:.2} {vh:.2}"))
@@ -668,16 +672,18 @@ pub async fn driving_figure(flight_kg: f64) -> Result {
         <aside class="instrument" aria-label="The same CO₂e, by road">
             <p>
                 "The same CO₂e, by road "
-                cite(id: "cars")
-                if coast_pick {
-                    cite(id: "compact-mpg")
-                }
-                if commute_pick {
-                    cite(id: "sports-mpg")
-                }
-                if tanks_pick {
-                    cite(id: "hummer")
-                }
+                <span class="cite-group">
+                    cite(id: "cars")
+                    if coast_pick {
+                        cite(id: "compact-mpg")
+                    }
+                    if commute_pick {
+                        cite(id: "sports-mpg")
+                    }
+                    if tanks_pick {
+                        cite(id: "hummer")
+                    }
+                </span>
             </p>
             if coast_pick {
             <svg
@@ -749,10 +755,10 @@ pub async fn driving_figure(flight_kg: f64) -> Result {
             </svg>
             <div class="fig-note">
                 <strong>(format!("≈{}×", format_tally(runs)))</strong>
-                " New York → L.A. in a compact car"
+                " New York to L.A. in a compact car"
             </div>
             <div class="fig-note fig-mono">
-                "NY → L.A. ≈2,790 mi · compact ≈35 mpg · gas 8.9 kg CO₂/gal"
+                "2,790 mi · compact 35 mpg · gas 8.9 kg CO₂/gal"
             </div>
             }
             if commute_pick {
@@ -1174,9 +1180,6 @@ pub async fn seat_figure(cabin: Cabin, seat_fraction: f64, long_haul: bool) -> R
                     }
                 }
             </svg>
-            <div class="fig-note">
-                "each seat drawn to its share of the bill"
-            </div>
         </aside>
     }
 }

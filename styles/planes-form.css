@@ -162,6 +162,12 @@
   align-self: center;
 }
 
+/* The filed total is a readout, not a decorative rubber-stamp impression. */
+.dispatch .form-dock .stamp-seal.flight-total-seal,
+.dispatch .form-dock .stamp-seal.flight-total-seal:hover {
+  transform: none;
+}
+
 @container dispatch (max-width: 560px) {
   .dispatch .form-dock {
     padding: 0.35rem 0.6rem 0.4rem 1.6rem;

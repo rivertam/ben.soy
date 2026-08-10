@@ -26,12 +26,6 @@
   --save-soft: color-mix(in srgb, var(--color-patina) 45%, var(--color-card));
   --focus: var(--color-ink);
 
-  /* Compare-view domains: the shop metals, plus the habits' rose */
-  --domain-transport: var(--color-steel);
-  --domain-food: var(--color-patina);
-  --domain-home: var(--color-brass);
-  --domain-habits: var(--slice-habit-deep);
-
   /* Cuts-view slice families (consumed as inline styles from
      reference_data.rs — see its color field). Within a bar, deep < mild in
      lightness; floors are non-actionable and stay near the paper. */

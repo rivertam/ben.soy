@@ -115,10 +115,6 @@ pub fn format_ice(m2: f64) -> String {
     format!("{} m²", format_grouped(m2, 1))
 }
 
-pub fn format_years(years: f64) -> String {
-    format!("{} yr", format_grouped(years, 1))
-}
-
 fn round_to_sig(n: f64, sig: i32) -> f64 {
     let magnitude = 10f64.powi(n.log10().floor() as i32 - (sig - 1));
     (n / magnitude).round() * magnitude
@@ -142,40 +138,10 @@ pub fn format_count(n: f64) -> String {
     format_grouped(round_count(n), 0)
 }
 
-/// Like roundCount but allows values below 1 (e.g. 0.6 miles/day).
-pub fn round_rate_count(n: f64) -> f64 {
-    if n.is_nan() || n <= 0.0 {
-        return 0.0;
-    }
-    if n < 1.0 {
-        let rounded = (n * 10.0).round() / 10.0;
-        return if rounded > 0.0 {
-            rounded
-        } else {
-            (n * 100.0).round() / 100.0
-        };
-    }
-    if n < 10.0 {
-        return (n * 10.0).round() / 10.0;
-    }
-    round_count(n)
-}
-
 pub fn format_whole(n: f64) -> String {
     format_grouped(n.round(), 0)
 }
 
-pub fn format_years_span(years: f64) -> String {
-    if years >= 100.0 {
-        return "100+".to_string();
-    }
-    if years >= 10.0 {
-        return format!("{}", years.round() as i64);
-    }
-    format!("{years:.1}")
-}
-
-/// Shared by ComparisonScale bars and the receipt coupon so values don't drift.
 pub fn format_bar_value(kg: f64) -> String {
     if kg < 100.0 {
         if kg < 10.0 {
@@ -188,16 +154,6 @@ pub fn format_bar_value(kg: f64) -> String {
         return format!("{} kg", kg.round() as i64);
     }
     format_tonnes_smart(kg / 1000.0)
-}
-
-/// `${n}` as JavaScript prints it: integers bare ("8000"), fractions as-is
-/// ("0.6"). Shared by the comparison rows and the chart tooltips.
-pub fn format_js_number(n: f64) -> String {
-    if n == n.trunc() {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
-    }
 }
 
 #[cfg(test)]
@@ -239,20 +195,5 @@ mod tests {
         assert_eq!(round_count(7600.0), 8000.0); // within 12% of 1 sig fig
         assert_eq!(round_count(14.0), 14.0); // 10 would be off by 28%
         assert_eq!(round_count(0.3), 1.0); // never rounds to zero
-    }
-
-    #[test]
-    fn rate_counts_allow_fractions() {
-        assert_eq!(round_rate_count(0.63), 0.6);
-        assert_eq!(round_rate_count(0.04), 0.04);
-        assert_eq!(round_rate_count(0.0), 0.0);
-        assert_eq!(round_rate_count(f64::NAN), 0.0);
-    }
-
-    #[test]
-    fn years_span_bands() {
-        assert_eq!(format_years_span(150.0), "100+");
-        assert_eq!(format_years_span(15.4), "15");
-        assert_eq!(format_years_span(2.34), "2.3");
     }
 }

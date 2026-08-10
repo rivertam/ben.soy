@@ -320,10 +320,43 @@ fn host_label(url: &str) -> String {
 /// across the initial render and any shard re-renders.
 static CITE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
+/// A run of citations that belongs to one comma-separated group.
+///
+/// The wrapper is intentional: CSS adjacent-sibling selectors ignore text
+/// nodes, so the DOM needs an explicit boundary around citations that should
+/// receive the comma treatment.
+#[component]
+pub async fn cite_group(ids: Vec<&str>) -> Result {
+    view! {
+        <span class="cite-group">
+            for id in ids {
+                cite(id: id)
+            }
+        </span>
+    }
+}
+
+/// A short definition for the route geometry term used in the methodology
+/// and route figure. Each occurrence gets its own id because a page can have
+/// several triggers pointing at the same explanation.
+#[component]
+pub async fn great_circle_term(id: &str, label: &str) -> Result {
+    view! {
+        inline_popover(
+            id: id,
+            label: label,
+            <span class="inline-popover-preview">
+                "On a globe, the shortest surface path between two points follows a great circle —
+                 a circle whose center is the center of the Earth."
+            </span>
+        )
+    }
+}
+
 /// A citation superscript: still the small number, but it opens the source
 /// card in place as an inline popover — kicker, title, outbound link —
 /// instead of jumping to a list at the foot of the page. The panel lives
-/// inside the `<sup>` so consecutive cites stay adjacent for the CSS comma.
+/// inside the `<sup>` so each citation remains a self-contained inline unit.
 #[component]
 pub async fn cite(id: &str) -> Result {
     let s = source(id).unwrap_or_else(|| panic!("Unknown source anchor: {id}"));
@@ -388,156 +421,163 @@ pub async fn sources_section() -> Result {
                 " (2019–2024), the small site that made this calculation famous. Reporting at the \
                  time — the Thomson Reuters Foundation "
                 cite(id: "credit-trf")
-                " and Fast Company "
+                " and Fast Company"
                 cite(id: "credit-fastco")
                 " — credits Stockholm web and typeface designer "
                 <strong>"Victor Muller"</strong>
-                ", who built it as a personal project about his own flying; the site signed off \
-                 with a link to his studio page, "
-                <a href="https://web.archive.org/web/20210127130235/https://grafikprogram.com/">
-                    "Grafik + Program"
-                </a>
-                ". This version keeps his data and sources, fixes three calculation bugs (an \
-                 operator typo that silently dropped the distance-squared term, a hard model \
-                 cutoff where the documentation interpolates, and cabin-class weights swapped \
-                 between the short- and long-haul models), and retires the shame: it’s a bill, \
-                 not a verdict. No affiliation, no funding, nothing for sale."
+                ", who built it as a personal project about his own flying"
             </p>
             <details class="methodology">
                 <summary>"How the numbers are computed"</summary>
-                <ul>
-                    <li>
-                        "Per-passenger "
-                        <em>"fuel"</em>
-                        " follows the myclimate flight formula "
-                        <code>"F = (a·x² + b·x + c) / (S·PLF) · (1−CF) · CW"</code>
-                        ", where "
-                        <code>"x"</code>
-                        " is great-circle distance plus a detour constant (50 km short-haul / \
-                         125 km long-haul). Flights under 1,500 km use the short-haul curve, \
-                         over 2,500 km the long-haul curve, linearly interpolated between. \
-                         Burning a kg of jet fuel emits 3.15 kg of CO₂; making and delivering \
-                         that kg adds 0.51 kg CO₂e (“making the fuel”). "
-                        cite(id: "myclimate")
-                        " The 2018 parameters are kept from the original site; fleets have grown \
-                         somewhat more efficient since, so per-seat numbers likely run slightly \
-                         high."
+                <p class="methodology-lede">
+                    "The receipt follows a simple chain: estimate the fuel for one passenger, add the \
+                     flight’s climate effects, then translate the total into the comparisons shown \
+                     below. It is an estimate for a typical flight on this route — not a measurement \
+                     of the particular plane or the weather on your departure day."
+                </p>
+                <ol class="methodology-steps">
+                    <li class="methodology-step">
+                        <h3>"Estimate the fuel"</h3>
+                        <p>
+                            "We start with the myclimate model for fuel per passenger:"
+                        </p>
+                        <p class="methodology-formula" aria-label="Fuel per passenger formula">
+                            <span class="methodology-formula-label">"Fuel per passenger"</span>
+                            <code>"F = (a·x² + b·x + c) / (S·PLF) · (1−CF) · CW"</code>
+                        </p>
+                        <p>
+                            "Here, "
+                            <code>"x"</code>
+                            " is the "
+                            great_circle_term(id: "great-circle-distance", label: "great-circle distance")
+                            " plus 50 km for a short-haul flight or \
+                             125 km for a long-haul flight. Below 1,500 km we use the short-haul \
+                             curve; above 2,500 km we use the long-haul curve; in between, we blend \
+                             the two. The formula allocates the aircraft’s fuel across its seats using \
+                             a 77% passenger load factor, the passenger share of the aircraft, and a \
+                             cabin weight. Burning 1 kg of jet fuel emits 3.15 kg of CO₂; producing \
+                             and delivering it adds 0.51 kg CO₂e (“making the fuel”). "
+                            cite(id: "myclimate")
+                            " The model keeps the original site’s 2018 parameters. Fleets have become \
+                             somewhat more efficient since then, so per-seat figures probably run a \
+                             little high."
+                        </p>
                     </li>
-                    <li>
-                        "The altitude lines price aviation’s non-CO₂ warming on the 100-year \
-                         clock (GWP100): contrail cirrus at 0.63× the combustion CO₂, and net \
-                         NOx + aerosols + water vapour at 0.11×, both from Lee et al. (2021), \
-                         Table 5 "
-                        cite(id: "lee2021")
-                        " — the same table the UK’s official 2025 conversion factors round to \
-                         their ×1.7 aviation uplift, likewise applied to combustion CO₂ only. "
-                        cite(id: "defra2025")
-                        " GWP100 keeps flights in the same currency as every other number on \
-                         this page; a 20-year clock would run the altitude lines ≈4× larger."
+                    <li class="methodology-step">
+                        <h3>"Add the climate effects"</h3>
+                        <p>
+                            "The fuel’s combustion CO₂ is the base. We then add aviation’s non-CO₂ \
+                             warming on a 100-year clock (GWP100): contrail cirrus at 0.63× the \
+                             combustion CO₂, plus net NOx, aerosols, and water vapour at 0.11×. "
+                            cite(id: "lee2021")
+                            " The UK’s official 2025 conversion factors round the same table to a \
+                             ×1.7 aviation uplift; like this page, that uplift applies to combustion \
+                             CO₂ only. "
+                            cite(id: "defra2025")
+                            " GWP100 keeps the flight in the same currency as the other comparisons; \
+                             using a 20-year clock would make these altitude effects roughly four \
+                             times larger."
+                        </p>
+                        <p>
+                            "Contrails also depend on where the route flies. Teoh et al. (2024) \
+                             provide contrail forcing per kilometre for eleven regions. Dividing by \
+                             the global average gives the receipt’s “sky factor”: North Atlantic \
+                             ≈2.4×, Europe ≈1.4×, China ≈0.28×, and 1.0 for unlisted airspace, \
+                             averaged along the "
+                            great_circle_term(id: "great-circle-sky", label: "great circle")
+                            ". "
+                            cite(id: "teoh2024")
+                            " Weather decides what happens on an individual flight: about 2.7% of \
+                             flights cause 80% of contrail forcing. This line is therefore the route’s \
+                             expected value, not a measurement of your flight. Lee’s 5–95% range spans \
+                             roughly ⅓×–1.7× the central estimate, and Teoh’s newer simulation lands \
+                             near its lower end. Premium cabins scale every line alike, using a \
+                             floor-space share of the aircraft; the plane, not the seat, makes the \
+                             contrail."
+                        </p>
                     </li>
-                    <li>
-                        "The contrail line is then re-priced by where the route flies. Teoh et \
-                         al. (2024) publish contrail climate forcing per km flown in eleven \
-                         regions; divided by the global mean these become the receipt’s “sky \
-                         factor” — North Atlantic ≈2.4×, Europe ≈1.4×, China ≈0.28×, unlisted \
-                         airspace 1.0 — averaged along the great circle. "
-                        cite(id: "teoh2024")
-                        " Contrails are weather: ≈2.7% of flights cause 80% of the forcing, so \
-                         the line is this route’s expected value, not a measurement of your \
-                         flight — and its central estimate is genuinely uncertain (Lee’s 5–95% \
-                         band spans ≈⅓×–1.7×; Teoh’s newer simulation lands near the bottom of \
-                         it). Premium cabins scale every line alike — a floor-space allocation \
-                         of the whole aircraft, the same convention as the UK seating-class \
-                         factors; the plane, not the seat, makes the contrail."
+                    <li class="methodology-step">
+                        <h3>"Put the total in perspective"</h3>
+                        <p>
+                            <strong>"Sea ice. "</strong>
+                            "We use 3 m² of September Arctic sea-ice loss per tonne of CO₂. The \
+                             coefficient is defined per tonne of CO₂ — not CO₂e — so the receipt \
+                             applies it to the jet-fuel CO₂ line only; contrails do not melt receipt \
+                             ice. "
+                            cite(id: "seaice")
+                        </p>
+                        <p>
+                            <strong>"Travel allowance. "</strong>
+                            "The 1.5-Degree Lifestyles report’s 2030 milestone leaves 0.425 tCO₂e \
+                             per person per year for all mobility: 17% of its 2.5 t/yr footprint \
+                             target. That is the ≈0.43 t/yr shown on the receipt, and “travel allowance \
+                             used” is this flight divided by that allowance. The report calls the \
+                             domain split indicative, not prescriptive: spending less on housing or \
+                             food could leave more room for travel. "
+                            cite(id: "budgets")
+                        </p>
+                        <p>
+                            <strong>"Cuts chart. "</strong>
+                            "The chart sets this flight against a year of an ordinary thing — \
+                             climate control, food, clothing, or small daily habits. The dashed \
+                             marker prices the flight in that row’s units; tap a cut to see the \
+                             slice it removes. The rows are comparisons of greenhouse-gas impact, \
+                             not claims that the activities are otherwise interchangeable."
+                        </p>
                     </li>
-                    <li>
-                        "Three corrections to the original Shame Plane implementation: its "
+                    <li class="methodology-step">
+                        <h3>"Keep the scale in perspective"</h3>
+                        <p>
+                            <strong>"AI queries. "</strong>
+                            "OpenAI reports ≈0.34 Wh for an average ChatGPT query — about 0.13 g \
+                             CO₂e on the US grid average, the figure used here. "
+                            cite(id: "ai-openai")
+                            " Google reports a lower median for a Gemini text prompt: 0.24 Wh and \
+                             0.03 g CO₂e market-based. "
+                            cite(id: "ai-google")
+                            " Both figures are company-reported and exclude model training, so the \
+                             chart uses the higher one. A year of heavy chatbot use is still tiny next \
+                             to a flight. The “vibe coding this site” row prices this site’s own build: \
+                             about 15 hours of Claude (Fable 5) at max effort. Couch’s coding-agent \
+                             estimate uses Anthropic’s billing rates and Epoch AI’s ≈0.3 Wh GPT-4o \
+                             measurement as its energy anchor "
+                            <span class="cite-group">
+                                cite(id: "ai-agent")
+                                cite(id: "ai-epoch")
+                            </span>
+                            "; at Fable’s price tier, the build is ≈6 kWh, or ≈2.2 kg CO₂e at the \
+                             US grid average "
+                            cite(id: "grid")
+                            ". That is roughly a year and a half of the thirty-queries-a-day habit — \
+                             still a rounding error next to the flight."
+                        </p>
+                    </li>
+                </ol>
+                <aside class="methodology-note">
+                    <h3>"Corrections to the original"</h3>
+                    <p>
+                        "Three fixes distinguish this from the original Shame Plane implementation. \
+                         We restore the "
                         <code>"a·x²"</code>
-                        " term was silently dropped by a JavaScript operator bug ("
+                        " term, which a JavaScript "
                         <code>"^"</code>
-                        " is XOR, not power), understating long-haul flights by roughly 10–15%; \
-                         it used a hard 2,000 km cutoff instead of the documented interpolation; \
-                         and it swapped the cabin-class weights between the haul models — the \
-                         myclimate table gives short-haul economy 0.96 / business 1.26 and \
-                         long-haul economy 0.80 / business 1.54 (lie-flat business claims more \
-                         of a wide-body’s floor), so the original overbilled long-haul economy \
-                         by ≈20% and underbilled long-haul business by ≈18%."
-                    </li>
-                    <li>
-                        "Arctic sea ice: 3 m² of September sea-ice loss per tonne of CO₂ (Notz \
-                         & Stroeve, Science, 2016). The coefficient is defined per tonne of CO₂ \
-                         — not CO₂e — so the receipt bills it on the jet-fuel CO₂ line only; \
-                         contrails don’t melt receipt ice. "
-                        cite(id: "seaice")
-                    </li>
-                    <li>
-                        "Travel allowance: the 1.5-Degree Lifestyles report’s 2030 milestone \
-                         leaves 0.425 tCO₂e per person per year for all mobility — 17% of the \
-                         2.5 t/yr footprint target (Annex D, Table D.1); that’s the ≈0.43 t/yr \
-                         on the receipt, and “travel allowance used” divides this flight by it. \
-                         The report calls the per-domain split indicative — a person who spends \
-                         less of their total on housing or diet can spend more of it on travel. "
-                        cite(id: "budgets")
-                    </li>
-                    <li>
-                        "The comparison chart sets one CO2e scale as full bar width: a flight, \
-                         an order, or — on the hub — one person’s 2030 1.5 °C year (≈2.5 t), \
-                         drawn as a stacked bar of indicative domain shares (food ≈0.725 t, \
-                         housing, travel ≈0.425 t, goods, services, leisure). "
-                        cite(id: "budgets")
-                        " Each domain row — transport, food, home, habits — picks a concrete \
-                         unit and count so the bar stays readable (miles, tanks of gas, NYC→LA \
-                         drives, meals, A/C hours) instead of “average American” period ladders. \
-                         Header chips rewrite a row into a make-up story (skip driving, switch \
-                         those miles to an EV, swap meals to vegan, sweat out the A/C, skip the \
-                         soda). When a habit has a frequency (e.g. burgers per week), rows \
-                         switch to per-day rates and a Day/Week/Month chip sets how much of \
-                         that rate the bar shows; the hub and one-off orders stay absolute \
-                         counts. Factors: gas car ≈0.40 kg/mi "
-                        cite(id: "cars")
-                        "; EV ≈0.10 kg/mi "
-                        cite(id: "ev")
-                        "; Scarborough meals "
-                        cite(id: "diets")
-                        "; hamburger ≈3.6 kg US-typical "
-                        cite(id: "meat")
-                        cite(id: "heller")
-                        "; A/C, bottles, soda, ChatGPT as cited on their rows. \
-                         Order-of-magnitude by design."
-                    </li>
-                    <li>
-                        "AI queries: OpenAI puts the average ChatGPT query at ≈0.34 Wh — ≈0.13 \
-                         g CO₂e at the US grid average, the figure used here. "
-                        cite(id: "ai-openai")
-                        " Google’s measured median for a Gemini text prompt is lower still \
-                         (0.24 Wh, 0.03 g CO₂e market-based). "
-                        cite(id: "ai-google")
-                        " Both numbers are company-reported and exclude model training; the \
-                         chart deliberately uses the higher of the two. Either way, a year of \
-                         heavy chatbot use is invisible next to a flight. The “vibe coding this \
-                         site” line prices this site’s own build — ≈15 hours of Claude (Fable \
-                         5) at max effort. Per-token energy follows Couch’s coding-agent \
-                         estimate, which hangs Anthropic’s billing rates on Epoch AI’s measured \
-                         ≈0.3 Wh GPT-4o query "
-                        cite(id: "ai-agent")
-                        cite(id: "ai-epoch")
-                        "; at Fable’s price tier, ≈1.5M generated tokens (≈2.9 kWh) plus ≈80M \
-                         re-read, nearly all prompt-cache hits (≈3.1 kWh), come to ≈6 kWh — an \
-                         H100 loafing along at ≈40% for the full 15 hours — ≈2.2 kg CO₂e at \
-                         the U.S. grid average "
-                        cite(id: "grid")
-                        ". Call it a year and a half of the thirty-queries-a-day habit per \
-                         build, and still a rounding error on the flight."
-                    </li>
-                    <li>
-                        "“Externalities billed separately” is the literal situation, not just a \
-                         joke: a web of postwar aviation treaties keeps jet fuel on \
-                         international flights effectively untaxed, and most international \
-                         fares still reach the gate without a carbon price — flights within \
-                         Europe, covered by the EU and UK emissions trading schemes, are the \
-                         main exception."
-                    </li>
-                </ul>
+                        "-operator bug treated as XOR instead of a power; blend the haul models \
+                         between 1,500 and 2,500 km instead of using a hard 2,000 km cutoff; and use \
+                         the correct cabin weights. The myclimate table gives short-haul economy \
+                         0.96 / business 1.26 and long-haul economy 0.80 / business 1.54. The \
+                         original therefore overbilled long-haul economy by ≈20% and underbilled \
+                         long-haul business by ≈18%."
+                    </p>
+                </aside>
+                <aside class="methodology-note">
+                    <h3>"What the receipt does not include"</h3>
+                    <p>
+                        "“Externalities billed separately” is literal: postwar aviation treaties \
+                         keep international jet fuel effectively untaxed, and most international \
+                         fares still reach the gate without a carbon price. Flights within Europe, \
+                         covered by the EU and UK emissions trading schemes, are the main exception."
+                    </p>
+                </aside>
             </details>
         </footer>
     }

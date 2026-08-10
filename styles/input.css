@@ -9,7 +9,6 @@
 @import "./planes-tokens.css";
 @import "./planes-desk.css";
 @import "./planes-form.css";
-@import "./planes-receipt.css";
 @import "./planes-charts.css";
 /* Core session chrome and theme packages are last so their surface rules and
    tokens win same-specificity ties against every section above. */

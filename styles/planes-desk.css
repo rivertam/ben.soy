@@ -94,7 +94,7 @@
   container: dispatch / inline-size;
 }
 
-/* anchor jumps (#allowance, #sources) surface below the racked strip */
+/* anchor jumps (#sources) surface below the racked strip */
 .dispatch :target {
   scroll-margin-top: calc(var(--strip-h) + 1rem);
 }

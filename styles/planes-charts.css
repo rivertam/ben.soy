@@ -1,7 +1,7 @@
 /*
- * Charts for the planes post: chart tabs, the FlightScale "Cuts" view
- * (effort rows, sacrifice bars, cut chips, zoom panel), the ComparisonScale
- * "Compare" view (makeup chips), the ice callout and the budget chart.
+ * Charts for the planes post: the FlightScale "Cuts" view (effort rows,
+ * sacrifice bars, cut chips), the flight share block, the ice callout, and
+ * the data tables.
  * Ported from ~/how-bad/src/index.css, scoped under .dispatch.
  *
  * Two departures from the original, both CSS stand-ins for what was
@@ -60,9 +60,10 @@
 }
 
 /* "7, 8" — the comma hugs the number before it, with a breath after. The
-   markup keeps consecutive cites with no text between them, so the comma
-   (and its spacing) is this rule's alone to manage. */
-.dispatch sup.cite + sup.cite::before {
+   cite-group wrapper makes the grouping explicit: CSS adjacent-sibling
+   selectors ignore intervening text nodes, so the wrapper is necessary to
+   keep prose-separated cites from acquiring a comma. */
+.dispatch .cite-group > sup.cite + sup.cite::before {
   content: ',';
   color: var(--save);
   padding-right: 0.35em;
@@ -159,33 +160,6 @@
 
 .dispatch .scale-main {
   min-width: 0;
-}
-
-.dispatch .chart-tabs {
-  display: flex;
-  gap: 0.35rem;
-  margin: 0 0 0.85rem;
-}
-
-.dispatch .chart-tab {
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 0.35rem 0.75rem;
-  border: 1px solid var(--hairline);
-  border-radius: 2px;
-  background: transparent;
-  color: var(--ink-2);
-  cursor: pointer;
-}
-
-.dispatch .chart-tab:hover {
-  border-color: var(--ink);
-}
-
-.dispatch .chart-tab.is-active {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--card);
 }
 
 @container dispatch (min-width: 580px) {
@@ -325,13 +299,17 @@
 
 /* a slice the chosen cut erases stays in the chart as a shadow of itself.
    The data-pick-* attributes mirror the cut-chip signals (see charts.rs);
-   within a ladder 1 = the mild cut, 2 = the deep cut, and a deeper cut also
+   within a ladder, larger values are deeper cuts, and a deeper cut also
    erases every slice outside it. */
 .dispatch .bar-seg.erased,
 .dispatch .effort-rows[data-pick-heat='2'] .seg-climate-gas-premium,
+.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-heat-pump-floor,
+.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-gas-premium,
 .dispatch .effort-rows[data-pick-heat='1'] .seg-climate-thermostat,
 .dispatch .effort-rows[data-pick-heat='2'] .seg-climate-thermostat,
+.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-thermostat,
 .dispatch .effort-rows[data-pick-cool='1'] .seg-climate-ac-all,
+.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-ac-all,
 .dispatch .effort-rows[data-pick-diet='2'] .seg-eating-veg-to-vegan,
 .dispatch .effort-rows[data-pick-diet='1'] .seg-eating-avg-to-veg,
 .dispatch .effort-rows[data-pick-diet='2'] .seg-eating-avg-to-veg,
@@ -385,35 +363,6 @@
   color: var(--card);
 }
 
-/* the rounding errors, redrawn at their own scale */
-.dispatch .zoom-panel {
-  display: grid;
-  gap: 0.7rem;
-  border: 1px dashed var(--baseline);
-  border-radius: 2px;
-  padding: 0.85rem 0.9rem;
-  margin: 0.1rem 0;
-}
-
-.dispatch .zoom-panel .zoom-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 1rem;
-}
-
-.dispatch .zoom-panel .zoom-note {
-  margin: 0;
-  font-size: 0.74rem;
-  color: var(--muted);
-}
-
-.dispatch .zoom-panel .zoom-close {
-  font-size: 0.74rem;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
 .dispatch .link-btn {
   font: inherit;
   color: inherit;
@@ -438,8 +387,12 @@
 .dispatch .flight-tick .tick-label {
   position: absolute;
   bottom: calc(100% + 1px);
-  left: 5px;
-  white-space: nowrap;
+  left: calc(var(--tick-left) + 5px);
+  width: max-content;
+  max-width: calc(100% - var(--tick-left) - 5px);
+  white-space: normal;
+  overflow-wrap: break-word;
+  box-sizing: border-box;
   font-size: 0.68rem;
   font-weight: 600;
   line-height: 1;
@@ -451,7 +404,31 @@
 /* near the right edge, hang the label off the line's left side instead */
 .dispatch .flight-tick .tick-label.flip {
   left: auto;
-  right: 5px;
+  right: calc(100% - var(--tick-left) + 5px);
+  max-width: calc(var(--tick-left) - 5px);
+}
+
+/* Labeled ticks need the full track as their containing block so a long
+   quote can shrink and wrap; the pseudo-element puts the dashed line back at
+   the percentage supplied by the row. */
+.dispatch .flight-tick.flight-tick--labeled {
+  left: 0;
+  right: 0;
+  width: auto;
+  border-left: 0;
+  transform: none;
+}
+
+.dispatch .flight-tick.flight-tick--labeled::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--tick-left);
+  width: 0;
+  border-left: 2px dashed var(--cost);
+  transform: translateX(-1px);
+  pointer-events: none;
 }
 
 /* rows with a quoted line need headroom above the bar for the label */
@@ -485,9 +462,7 @@
 .dispatch .bar-seg:hover > .tip,
 .dispatch .bar-seg:focus-visible > .tip,
 .dispatch .tick-label:hover > .tip,
-.dispatch .tick-label:focus-visible > .tip,
-.dispatch .budget-col .seg:hover > .tip,
-.dispatch .budget-col .seg:focus-visible > .tip {
+.dispatch .tick-label:focus-visible > .tip {
   display: block;
 }
 
@@ -603,58 +578,10 @@
   flex: 1;
 }
 
-.dispatch .chart-card-controls {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.45rem;
-  flex-shrink: 0;
-}
-
-.dispatch .makeup-chip {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.25rem;
-  max-width: 22rem;
-}
-
-.dispatch .makeup-chip-btn {
-  font: inherit;
-  font-size: 0.7rem;
-  line-height: 1.2;
-  color: var(--ink-2);
-  background: transparent;
-  border: 1px solid var(--hairline);
-  border-radius: 0.3rem;
-  padding: 0.2rem 0.55rem;
-  cursor: pointer;
-}
-
-.dispatch .makeup-chip-btn:hover {
-  color: var(--ink);
-  border-color: var(--baseline);
-}
-
-.dispatch .makeup-chip-btn.is-active {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--card);
-}
-
 @container dispatch (max-width: 560px) {
   .dispatch .chart-card-head {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .dispatch .chart-card-controls {
-    align-items: flex-start;
-  }
-
-  .dispatch .makeup-chip {
-    justify-content: flex-start;
-    max-width: none;
   }
 }
 
@@ -718,80 +645,6 @@
   margin: 0.35rem 0;
 }
 
-/* ---------- budget chart ---------- */
-
-.dispatch .budget-plot {
-  display: flex;
-  align-items: flex-end;
-  gap: 4%;
-  border-bottom: 1px solid var(--baseline);
-  min-height: 60px;
-  margin-top: 2.25rem;
-}
-
-.dispatch .budget-col {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 2px;
-}
-
-.dispatch .budget-col .seg {
-  width: 100%;
-  position: relative; /* anchors the CSS tooltip */
-}
-
-.dispatch .budget-col .seg.top {
-  border-radius: 4px 4px 0 0;
-}
-
-.dispatch .budget-col .col-value {
-  text-align: center;
-  font-size: 0.82rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-2);
-  margin-bottom: 0.25rem;
-}
-
-.dispatch .budget-labels {
-  display: flex;
-  gap: 4%;
-  margin-top: 0.4rem;
-}
-
-.dispatch .budget-labels .col-label {
-  flex: 1;
-  text-align: center;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.dispatch .benchmark-legend {
-  margin: 1.25rem 0 0;
-  padding: 0;
-  display: grid;
-  gap: 0.5rem;
-  font-size: 0.88rem;
-  color: var(--ink-2);
-}
-
-.dispatch .benchmark-legend div {
-  display: grid;
-  grid-template-columns: 5.5rem 1fr;
-  gap: 0.75rem;
-}
-
-.dispatch .benchmark-legend dt {
-  font-weight: 700;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.dispatch .benchmark-legend dd {
-  margin: 0;
-}
-
 /* ---------- sources ----------
  * The original's sources drawer (.sources-drawer-body in index.css) becomes an
  * in-page footer of credit + methodology notes; the source cards themselves
@@ -833,6 +686,62 @@
   font-weight: 700;
 }
 
+.dispatch .methodology-lede {
+  max-width: 68ch;
+  margin: 1rem 0 0;
+  line-height: 1.5;
+}
+
+.dispatch .methodology-steps {
+  max-width: 70ch;
+  margin: 1.2rem 0 0;
+  padding-left: 1.5rem;
+}
+
+.dispatch .methodology-step {
+  padding-left: 0.35rem;
+}
+
+.dispatch .methodology-step + .methodology-step {
+  margin-top: 1.35rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--hairline);
+}
+
+.dispatch .methodology-step h3,
+.dispatch .methodology-note h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.dispatch .methodology-step p,
+.dispatch .methodology-note p {
+  max-width: 70ch;
+  margin: 0.55rem 0 0;
+  line-height: 1.5;
+}
+
+.dispatch .methodology-formula {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.7rem;
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.7rem;
+  border-left: 2px solid var(--save);
+  background: var(--card);
+}
+
+.dispatch .methodology-formula-label {
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .dispatch .methodology code {
   background: var(--card);
   border: 1px solid var(--hairline);
@@ -844,4 +753,13 @@
 
 .dispatch .methodology ul {
   padding-left: 1.2rem;
+}
+
+.dispatch .methodology-note {
+  max-width: 70ch;
+  margin-top: 1.2rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--baseline);
+  background: var(--card);
 }

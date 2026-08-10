@@ -1,22 +1,20 @@
 //! The flight page as a dispatch desk: a full-bleed working surface where
-//! the route form is a flight-progress strip, the charts/receipt are the
-//! climate paperwork the desk returns, and the essay rides alongside as the
+//! the route form is a flight-progress strip, the charts are the climate
+//! paperwork the desk returns, and the essay rides alongside as the
 //! dispatcher's margin notes. The page-level composition still mirrors the
 //! original `App.tsx` data flow: resolve the route from the query string,
-//! compute the impact server-side, and render form → charts (cuts / compare /
-//! receipt / allowance tabs) → sources. URLs stay shareable exactly like the
-//! original.
+//! compute the impact server-side, and render form → cuts → sources. URLs stay
+//! shareable exactly like the original.
 
 mod airports;
 mod charts;
-mod comparison_scale;
 mod emissions;
 mod form;
 mod format;
 mod ice;
 mod instruments;
-mod receipt;
 mod reference_data;
+mod share;
 mod sources;
 
 crate::register_post!(
@@ -60,7 +58,6 @@ struct PlanesQuery {
     cabin: Option<String>,
     oneway: Option<String>,
     trip: Option<String>,
-    view: Option<String>,
 }
 
 fn resolve(param: Option<&str>) -> Option<&'static Airport> {
@@ -84,9 +81,9 @@ fn parse_vias(query: &str) -> Vec<&'static Airport> {
 }
 
 /// The share query mirrors the original's `routeSearchParams`: defaults
-/// (economy, round trip) are omitted, the chart view never rides along, and
-/// layovers ride as repeated `via` params in flight order. `iatas` is the
-/// whole chain — origin, layovers, destination.
+/// (economy, round trip) are omitted, and layovers ride as repeated `via`
+/// params in flight order. `iatas` is the whole chain — origin, layovers,
+/// destination.
 fn share_path(iatas: &[&str], cabin: Cabin, round_trip: bool) -> String {
     let mut path = format!(
         "/thoughts/how-bad-are-planes?from={}&to={}",
@@ -123,12 +120,6 @@ async fn planes(cx: &Cx) -> Result {
     // value); the form's trip radios say `trip=oneway`. Accept both so old
     // share URLs keep working.
     let round_trip = !(q.oneway.is_some() || q.trip.as_deref() == Some("oneway"));
-    let chart_view = match q.view.as_deref() {
-        Some("compare") => "compare",
-        Some("receipt") => "receipt",
-        Some("allowance") => "allowance",
-        _ => "cuts",
-    };
     let revealed = from.is_some() && to.is_some();
 
     let title;
@@ -177,7 +168,17 @@ async fn planes(cx: &Cx) -> Result {
 
             let iatas: Vec<&str> = chain.iter().map(|a| a.iata.as_str()).collect();
             let share_path = share_path(&iatas, cabin, round_trip);
-
+            let share_origin = share::request_origin(cx);
+            let share_text = share::share_text(
+                share_origin.as_deref(),
+                from,
+                &route_vias,
+                to,
+                cabin,
+                round_trip,
+                &impact,
+                &share_path,
+            );
             seal_total = format_tonnes(impact.tonnes_co2e);
             title = format!(
                 "{} · {} CO₂e — {}",
@@ -194,8 +195,7 @@ async fn planes(cx: &Cx) -> Result {
                     vias: route_vias,
                     to: to.clone(),
                     cabin: cabin,
-                    share_path: share_path,
-                    initial_view: chart_view.to_string(),
+                    share_text: share_text,
                 )
                 sources_section()
             }?)
@@ -258,7 +258,7 @@ async fn planes(cx: &Cx) -> Result {
                                 )
                             )
                             " by Mike Berners-Lee a couple days before a trip I took to Asheville, \
-                             North Carolina to visit my mom. I learned not just that planes were bad \
+                             North Carolina to visit my mom. I learned not just " <em>"that"</em>" planes are bad \
                              for the environment, but the magnitude."
                         </p>
                         <p>
@@ -282,8 +282,8 @@ async fn planes(cx: &Cx) -> Result {
                              myself historically, flying planes eclipses almost all of our other habits. \
                              I would say for most people I know, four domestic flights (round trip) \
                              each year is quite typical, with international trips at least once every \
-                             2-3 years. I strongly encourage you to play with the calculator below to \
-                             see why I think most flights are simply not worth it."
+                             2-3 years. I personally feel this calculator typically illustrates \
+                             why I think most flights are simply not worth it."
                         </p>
 
                         <p>

@@ -307,9 +307,6 @@ pub const JET_FUEL_KG_PER_LITRE: f64 = 0.8;
 /// Paris-aligned personal allowance for all mobility (car, bus, train,
 /// plane), tonnes CO₂e per person per year: the 2030 milestone of the
 /// 1.5-Degree Lifestyles technical report (IGES/Aalto/D-mat 2019) —
-/// 17% of the 2.5 t/yr footprint target, Annex D Table D.1.
-pub const TRAVEL_BUDGET_TONNES_PER_YEAR: f64 = 0.425;
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Coordinates {
     pub lat: f64,
@@ -346,7 +343,6 @@ pub struct FlightImpact {
     /// Whole-aircraft bill for the same itinerary, tonnes CO₂e at GWP100.
     pub aircraft_tonnes_co2e: f64,
     pub ice_m2: f64,
-    pub travel_budget_years: f64,
 }
 
 /// The all-zeros bill: `distance_km` is an exact 0.0 because the receipt's
@@ -364,7 +360,6 @@ fn zero_impact() -> FlightImpact {
         seat_share_of_aircraft: 1.0,
         aircraft_tonnes_co2e: 0.0,
         ice_m2: 0.0,
-        travel_budget_years: 0.0,
     }
 }
 
@@ -403,7 +398,6 @@ pub fn flight_impact(input: &FlightInput) -> FlightImpact {
         seat_share_of_aircraft,
         aircraft_tonnes_co2e: tonnes_co2e / seat_share_of_aircraft,
         ice_m2: co2_tonnes * ICE_M2_PER_TONNE,
-        travel_budget_years: tonnes_co2e / TRAVEL_BUDGET_TONNES_PER_YEAR,
     }
 }
 
@@ -470,7 +464,6 @@ pub fn route_impact(stops: &[Coordinates], cabin: Cabin, round_trip: bool) -> Fl
         seat_share_of_aircraft: tonnes_co2e / aircraft_tonnes_co2e,
         aircraft_tonnes_co2e,
         ice_m2: co2_tonnes * ICE_M2_PER_TONNE,
-        travel_budget_years: tonnes_co2e / TRAVEL_BUDGET_TONNES_PER_YEAR,
     }
 }
 
@@ -619,11 +612,6 @@ mod tests {
             route.aircraft_tonnes_co2e,
             nonstop.aircraft_tonnes_co2e,
             "aircraft",
-        );
-        assert_close(
-            route.travel_budget_years,
-            nonstop.travel_budget_years,
-            "budget years",
         );
     }
 
