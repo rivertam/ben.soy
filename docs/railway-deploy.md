@@ -48,9 +48,11 @@ deployment check with the server's private listener.
 Set all five connection variables on the web service:
 
 ```text
-SURREALDB_ENDPOINT=http://surrealdb.railway.internal:8000
-# Prefer http:// for large fitness reads; ws:// still works for
-# smaller queries. The site binary enables both protocol-http and protocol-ws.
+SURREALDB_ENDPOINT=ws://surrealdb.railway.internal:8000
+# Prefer ws://. The site binary also enables protocol-http, and http://
+# can help with large fitness reads, but SurrealDB's HTTP /rpc session
+# has expired ~1h after connect in production (401 Unauthorized on every
+# subsequent query) while the same credentials kept working over ws://.
 SURREALDB_NAMESPACE=benjisponge
 SURREALDB_DATABASE=benjisponge
 SURREALDB_USERNAME=${{surrealdb.SURREAL_USER}}

@@ -118,7 +118,9 @@ fn session_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> 
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
 /// join the session windows (and the `~` listing renders them as dotfiles),
 /// and a barely-there "signed in" line replaces
-/// the footer's login link. Both personalize the HTML, which is why
+/// the footer's login link. The home listing and default session bar also
+/// expose the door as a small terminal action. These personalize the HTML,
+/// which is why
 /// `response_layer.rs` forces `private, no-store` whenever the viewer cookie
 /// rides the request — the header below only governs anonymous renders.
 #[component]
@@ -321,6 +323,15 @@ pub async fn shell(
                         <span class="tmux-prefix" aria-hidden="true">"^A"</span>
                         <span class="tmux-host">"sponge"</span>
                         <span class="tmux-clock" data-session-clock=""></span>
+                        if signed_in.is_some() {
+                            <a
+                                class="tmux-login"
+                                href="/login"
+                                aria-label="signed-in account"
+                            >"signed in"</a>
+                        } else {
+                            <a class="tmux-login" href="/login" aria-label="log in">"login"</a>
+                        }
                     </span>
                     <button
                         type="button"

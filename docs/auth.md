@@ -159,7 +159,9 @@ Invariants:
 ## Signed-in rendering and the CDN
 
 The shell personalizes for viewers: allowlisted hidden pages join the
-tmux windows and the `~` listing, and the quiet "log in with google" link
+tmux windows and the `~` listing, and the home listing plus the default tmux
+bar expose a small login/signed-in action. The home listing also carries the
+logout control. The quiet "log in with google" link
 at the footer's bottom right becomes a "signed in as … · sign out" line — for
 the admin it also carries the `/admin` link. Personalized
 HTML must never be edge-cached, so the site-wide response layer

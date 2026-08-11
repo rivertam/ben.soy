@@ -50,7 +50,8 @@ async fn home(cx: &Cx) -> Result {
 
     // Allowlisted hidden pages join the listing for their viewers only, the
     // way netrw shows dotfiles to people who ask.
-    let granted: Vec<&access::HiddenPage> = match viewer(cx) {
+    let current = viewer(cx);
+    let granted: Vec<&access::HiddenPage> = match current.as_ref() {
         Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
         None => Vec::new(),
     };
@@ -102,6 +103,18 @@ async fn home(cx: &Cx) -> Result {
                 <p class="overflow-hidden text-ellipsis whitespace-pre">"\"   Quick Help:    "<span class="netrw-keys">"j/k:move  <cr>:open  f:follow  "</span>"clicking also works"</p>
                 <p class="overflow-hidden text-ellipsis whitespace-pre">"\" ============================================================"</p>
             </header>
+            <div class="mt-1 overflow-hidden text-ellipsis whitespace-pre text-muted">
+                "\"   Session:       "
+                if current.is_some() {
+                    <a class="netrw-login" href="/login" aria-label="signed-in account">"signed in"</a>
+                    <form method="post" action="/logout" class="inline">
+                        " · "
+                        <button type="submit" class="netrw-logout cursor-pointer">"logout"</button>
+                    </form>
+                } else {
+                    <a class="netrw-login" href="/login" aria-label="log in">"login"</a>
+                }
+            </div>
             <ul class="mt-1 space-y-1">
                 <li class="text-muted" title="there is no up from here">"../"</li>
                 for row in rows.iter() {

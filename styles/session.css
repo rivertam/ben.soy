@@ -144,6 +144,25 @@
   color: var(--color-brass);
 }
 
+/* Auth is a status action, not another numbered window. The small framed
+   chip gives the terminal door enough contrast without competing with the
+   active window. */
+:root:not([data-theme]) .tmux-login {
+  flex: none;
+  padding: 0 0.45em;
+  color: var(--tmux-lime);
+  border: 1px solid color-mix(in srgb, var(--tmux-lime) 55%, var(--tmux-border));
+  border-radius: 2px;
+  text-decoration: none;
+}
+
+:root:not([data-theme]) .tmux-login:hover,
+:root:not([data-theme]) .tmux-login:focus-visible {
+  color: var(--tmux-coal);
+  background: var(--tmux-lime);
+  border-color: var(--tmux-lime);
+}
+
 .tmux-prefix {
   display: none;
 }

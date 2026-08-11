@@ -361,5 +361,10 @@ mod tests {
         assert!(SESSION_JS.contains("querySelector(\"[data-session-clock]\")"));
         assert!(CHROME_RS.contains("tmux-note"));
         assert!(SESSION_CSS.contains(".tmux-note"));
+        assert!(CHROME_RS.contains("tmux-login"));
+        assert!(HOME_RS.contains("netrw-login"));
+        assert!(HOME_RS.contains("netrw-logout"));
+        assert!(SESSION_CSS.contains(".tmux-login"));
+        assert!(SITE_CSS.contains(".netrw-login"));
     }
 }

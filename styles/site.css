@@ -274,6 +274,38 @@ a.chip:focus-visible {
   text-underline-offset: 0.3em;
 }
 
+/* The home directory's auth action is louder than footer chrome, but still
+   speaks in the same oxide/underline language as the site's links. */
+.netrw-login {
+  color: var(--color-oxide);
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-oxide) 55%, transparent);
+  text-decoration-thickness: 0.1em;
+  text-underline-offset: 0.25em;
+}
+
+.netrw-login:hover,
+.netrw-login:focus-visible {
+  color: var(--color-oxide-hot);
+  text-decoration-color: currentColor;
+}
+
+.netrw-logout {
+  padding: 0;
+  color: var(--color-muted);
+  background: transparent;
+  border: 0;
+  font: inherit;
+}
+
+.netrw-logout:hover,
+.netrw-logout:focus-visible {
+  color: var(--color-oxide);
+  text-decoration-line: underline;
+  text-decoration-thickness: 0.1em;
+  text-underline-offset: 0.25em;
+}
+
 /* Em dashes linked to /llms: typographic at rest, oxide on interest. */
 .emdash-link {
   color: inherit;
