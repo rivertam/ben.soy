@@ -17,15 +17,25 @@ async fn lifting_log(cx: &Cx) -> Result {
     }
 
     let meta = interest("lifting");
+    let can_edit = viewer(cx).is_some_and(|current| is_admin(&current.email));
     let api_pairs = filters.api_pairs();
-    let (facets, sets, calendar) = fitness::load(app_context::<FitnessStore>(cx), &api_pairs).await;
+    let (facets, sets, calendar, interruptions, page_interruptions) =
+        fitness::load(app_context::<FitnessStore>(cx), &api_pairs).await;
     if let Err(error) = &facets {
         eprintln!("fitness facets fetch failed: {error}");
     }
     if let Err(error) = &sets {
         eprintln!("fitness sets fetch failed: {error}");
     }
+    if let Err(error) = &interruptions {
+        eprintln!("fitness interruptions fetch failed: {error}");
+    }
+    if let Err(error) = &page_interruptions {
+        eprintln!("fitness log interruptions fetch failed: {error}");
+    }
     let calendar_days = calendar.ok().map(|calendar| calendar.days);
+    let interruption_rows = interruptions.unwrap_or_default();
+    let page_interruption_rows = page_interruptions.unwrap_or_default();
     let day_link_query = filters.day_link_query();
     if let Ok(page) = &sets {
         let last_page = total_pages(page);
@@ -81,6 +91,10 @@ async fn lifting_log(cx: &Cx) -> Result {
         .ok()
         .and_then(|page| make_pager(page, &filters));
     let retry_url = filters.url(true);
+    let log_items = sets
+        .as_ref()
+        .ok()
+        .map(|page| interruptions::merge_log_items(&page.workouts, &page_interruption_rows));
 
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
@@ -112,7 +126,8 @@ async fn lifting_log(cx: &Cx) -> Result {
                             heatmap::calendar_heatmap(
                                 days: days,
                                 link_query: day_link_query,
-                                filtered: !active_filters.is_empty()
+                                filtered: !active_filters.is_empty(),
+                                interruptions: interruption_rows.clone()
                             )
                         </div>
                     )
@@ -154,7 +169,10 @@ async fn lifting_log(cx: &Cx) -> Result {
                             }
                         </div>
                     }
-                    if let Ok(page) = &sets && page.workouts.is_empty() {
+                    if let Ok(page) = &sets
+                        && page.workouts.is_empty()
+                        && page_interruption_rows.is_empty()
+                    {
                         <div class=(EMPTY_CARD)>
                             <p class=(EMPTY_TITLE)>
                                 if page.total_sets > 0 {
@@ -175,9 +193,14 @@ async fn lifting_log(cx: &Cx) -> Result {
                             </a>
                         </div>
                     }
-                    if let Ok(page) = &sets {
-                        for workout in page.workouts.iter() {
-                            workout_sheet(workout: workout, permalink: true)
+                    if let Some(items) = &log_items {
+                        for item in items.iter() {
+                            if let interruptions::LogItem::Workout(workout) = item {
+                                workout_sheet(workout: workout, permalink: true)
+                            }
+                            if let interruptions::LogItem::Interruption(row) = item {
+                                interruptions::log_entry(row: row, can_edit: can_edit)
+                            }
                         }
                     }
                 </section>

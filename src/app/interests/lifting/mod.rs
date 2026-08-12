@@ -10,6 +10,7 @@ mod filters;
 mod format;
 mod heatmap;
 mod home;
+mod interruptions;
 mod log;
 mod muscle_seed;
 mod muscle_taxonomy;

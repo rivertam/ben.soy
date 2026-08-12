@@ -137,6 +137,23 @@ DEFINE FIELD OVERWRITE source ON exercise_muscles TYPE string
 DEFINE FIELD OVERWRITE updated_at ON exercise_muscles TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799;
 
+-- Annotate-only gym interruptions (illness, travel, …). Inclusive Eastern
+-- calendar dates plus a free-text note; never affect volume points, records,
+-- or training-focus pace. Opaque string ids keep identity across edits.
+DEFINE TABLE OVERWRITE fitness_interruptions SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON fitness_interruptions TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{32}$');
+DEFINE FIELD OVERWRITE from_date ON fitness_interruptions TYPE string
+    ASSERT string::matches($value, '^\\d{4}-\\d{2}-\\d{2}$');
+DEFINE FIELD OVERWRITE to_date ON fitness_interruptions TYPE option<string>
+    ASSERT $value IS NONE OR string::matches($value, '^\\d{4}-\\d{2}-\\d{2}$');
+DEFINE FIELD OVERWRITE note ON fitness_interruptions TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 200;
+DEFINE FIELD OVERWRITE emoji ON fitness_interruptions TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 16;
+DEFINE FIELD OVERWRITE updated_at ON fitness_interruptions TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
 -- Hidden-page allowlists (docs/auth.md). One row grants one email one page;
 -- the record key is content::access::grant_id(page_path, email), so the pair
 -- is the identity and re-granting is an UPSERT of the same record. Emails are

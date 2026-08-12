@@ -76,3 +76,17 @@ pub struct FitnessMeta {
     pub k: String,
     pub v: i64,
 }
+
+/// Inclusive Eastern date range explaining a gap in training. Annotate-only:
+/// never feeds volume points, records, or training-focus pace. `to_date` is
+/// `None` for an open (still ongoing) interruption.
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue, PartialEq, Eq)]
+pub struct Interruption {
+    pub id: String,
+    pub from_date: String,
+    pub to_date: Option<String>,
+    pub note: String,
+    /// Heatmap marker; one of the curated choices in `interruptions::EMOJI_CHOICES`.
+    pub emoji: String,
+    pub updated_at: i64,
+}

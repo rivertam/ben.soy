@@ -12,7 +12,8 @@ async fn lifting(cx: &Cx) -> Result {
 
     let meta = interest("lifting");
     let can_upload = viewer(cx).is_some_and(|current| is_admin(&current.email));
-    let (calendar, latest, focus) = fitness::load_home(app_context::<FitnessStore>(cx)).await;
+    let (calendar, latest, focus, interruptions) =
+        fitness::load_home(app_context::<FitnessStore>(cx)).await;
     if let Err(error) = &calendar {
         eprintln!("fitness calendar fetch failed: {error}");
     }
@@ -22,8 +23,13 @@ async fn lifting(cx: &Cx) -> Result {
     if let Err(error) = &focus {
         eprintln!("fitness training focus failed: {error}");
     }
+    if let Err(error) = &interruptions {
+        eprintln!("fitness interruptions fetch failed: {error}");
+    }
 
     let calendar_days = calendar.ok().map(|calendar| calendar.days);
+    let interruption_rows = interruptions.unwrap_or_default();
+    let open_interruptions = interruptions::open_rows(&interruption_rows);
     let focus_summary = focus
         .as_ref()
         .ok()
@@ -52,7 +58,10 @@ async fn lifting(cx: &Cx) -> Result {
                         (meta.title)
                     </h1>
                     if can_upload {
-                        workout_upload_dialog()
+                        <div class="flex flex-none flex-wrap items-start justify-end gap-2">
+                            interruptions::create_dialog()
+                            workout_upload_dialog()
+                        </div>
                     }
                 </div>
             </header>
@@ -108,7 +117,10 @@ async fn lifting(cx: &Cx) -> Result {
                     stamp: "volume",
                     <header id="volume">
                         if let Some(days) = calendar_days {
-                            heatmap::calendar_heatmap(days: days)
+                            heatmap::calendar_heatmap(
+                                days: days,
+                                interruptions: interruption_rows.clone()
+                            )
                         } else {
                             <section class="p-4 bg-card border border-hairline">
                                 <p class=(EMPTY_COPY)>
@@ -118,6 +130,17 @@ async fn lifting(cx: &Cx) -> Result {
                         }
                     </header>
                 )
+
+                if !open_interruptions.is_empty() {
+                    rail_section(
+                        class: "mt-12",
+                        stamp: "notes",
+                        interruptions::open_panel(
+                            rows: open_interruptions.as_slice(),
+                            can_edit: can_upload
+                        )
+                    )
+                }
 
                 rail_section(
                     class: "mt-12",

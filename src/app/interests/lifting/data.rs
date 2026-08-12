@@ -16,6 +16,7 @@ use super::training_focus::TrainingFocus;
 pub use super::archive::api::{
     Calendar, CalendarDay, Facets, Record, Set, SetPage, Workout, WorkoutDetail,
 };
+pub use benjisponge::data::fitness_models::Interruption;
 
 /// A rejected filter is safe to show to the reader. Snapshot failures are
 /// logged by the page but deliberately rendered generically.
@@ -61,6 +62,8 @@ pub async fn load(
     Result<Facets, LoadError>,
     Result<SetPage, LoadError>,
     Result<Calendar, LoadError>,
+    Result<Vec<Interruption>, LoadError>,
+    Result<Vec<Interruption>, LoadError>,
 ) {
     let snapshot = match store.snapshot().await {
         Ok(snapshot) => snapshot,
@@ -69,21 +72,31 @@ pub async fn load(
             return (
                 Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message.clone())),
+                Err(LoadError::Unavailable(message.clone())),
+                Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message)),
             );
         }
     };
-    let (sets, calendar) = match parse_filters(filters) {
+    let (sets, calendar, page_interruptions) = match parse_filters(filters) {
         Ok(parsed) => (
             Ok(snapshot.sets_page(&parsed)),
             Ok(snapshot.calendar_filtered(&parsed)),
+            Ok(snapshot.closed_interruptions_for_log_page(&parsed)),
         ),
         Err(message) => (
+            Err(LoadError::Rejected(message.clone())),
             Err(LoadError::Rejected(message.clone())),
             Err(LoadError::Rejected(message)),
         ),
     };
-    (Ok(snapshot.facets()), sets, calendar)
+    (
+        Ok(snapshot.facets()),
+        sets,
+        calendar,
+        Ok(snapshot.interruptions().to_vec()),
+        page_interruptions,
+    )
 }
 
 /// The landing view: archive-wide daily totals plus the newest workout.
@@ -93,6 +106,7 @@ pub async fn load_home(
     Result<Calendar, LoadError>,
     Result<WorkoutDetail, LoadError>,
     Result<TrainingFocus, LoadError>,
+    Result<Vec<Interruption>, LoadError>,
 ) {
     match store.snapshot().await {
         Ok(snapshot) => {
@@ -101,11 +115,13 @@ pub async fn load_home(
                 Ok(snapshot.calendar()),
                 Ok(snapshot.latest()),
                 Ok(snapshot.training_focus(today)),
+                Ok(snapshot.interruptions().to_vec()),
             )
         }
         Err(error) => {
             let message = error.to_string();
             (
+                Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message.clone())),
                 Err(LoadError::Unavailable(message)),

@@ -9,7 +9,7 @@ use std::{
 use anyhow::Context;
 use benjisponge::data::{
     Db,
-    fitness_models::{Exercise, ExerciseMuscle, ExerciseTag, LiftSet, Workout},
+    fitness_models::{Exercise, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,6 +35,7 @@ struct ArchiveRows {
     sets: Vec<LiftSet>,
     tags: Vec<ExerciseTag>,
     weights: Vec<ExerciseMuscle>,
+    interruptions: Vec<Interruption>,
 }
 
 /// The version and everything its snapshot needs from one read transaction.
@@ -47,6 +48,7 @@ pub async fn load_archive(
     Vec<LiftSet>,
     Vec<ExerciseTag>,
     Vec<ExerciseMuscle>,
+    Vec<Interruption>,
 )> {
     let mut response = db
         .query(
@@ -60,6 +62,16 @@ pub async fn load_archive(
                  weights: (
                      SELECT exercise_name, muscle, ratio_hundredths
                      FROM exercise_muscles
+                 ),
+                 interruptions: (
+                     SELECT
+                         record::id(id) AS id,
+                         from_date,
+                         to_date,
+                         note,
+                         emoji ?? '🤒' AS emoji,
+                         updated_at
+                     FROM fitness_interruptions
                  )
              };",
         )
@@ -73,6 +85,7 @@ pub async fn load_archive(
         rows.sets,
         rows.tags,
         rows.weights,
+        rows.interruptions,
     ))
 }
 
@@ -572,6 +585,146 @@ fn same_manual_workout(workout: &Workout, sets: &[LiftSet], payload: &Payload) -
             && stored.set_type == incoming.set_type
             && stored.incomplete == incoming.incomplete
     })
+}
+
+/// Validated fields for creating or updating an interruption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InterruptionWrite {
+    pub from_date: String,
+    /// `None` keeps the interruption open through today on the heatmap.
+    pub to_date: Option<String>,
+    pub note: String,
+    pub emoji: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrittenInterruption {
+    pub id: String,
+    pub version: i64,
+}
+
+/// Create one annotate-only interruption and bump the fitness version.
+pub async fn create_interruption(
+    db: &Db,
+    write: &InterruptionWrite,
+    updated_at: i64,
+) -> anyhow::Result<WrittenInterruption> {
+    let id = interruption_id();
+    let row = Interruption {
+        id: id.clone(),
+        from_date: write.from_date.clone(),
+        to_date: write.to_date.clone(),
+        note: write.note.clone(),
+        emoji: write.emoji.clone(),
+        updated_at,
+    };
+    db.query(
+        "BEGIN TRANSACTION;
+         CREATE ONLY type::record('fitness_interruptions', $row.id) CONTENT $row;
+         UPSERT fitness_meta:version SET k = 'version', v = (v ?? 0) + 1;
+         COMMIT TRANSACTION;",
+    )
+    .bind(("row", row))
+    .await?
+    .check()?;
+    Ok(WrittenInterruption {
+        id,
+        version: current_version(db).await?,
+    })
+}
+
+/// Update an existing interruption in place. `Ok(None)` when the id is absent.
+pub async fn update_interruption(
+    db: &Db,
+    id: &str,
+    write: &InterruptionWrite,
+    updated_at: i64,
+) -> anyhow::Result<Option<WrittenInterruption>> {
+    if !is_interruption_id(id) {
+        return Ok(None);
+    }
+    let mut response = db
+        .query(
+            "SELECT VALUE record::id(id)
+             FROM type::record('fitness_interruptions', $id)",
+        )
+        .bind(("id", id.to_string()))
+        .await?
+        .check()?;
+    let existing: Vec<String> = response.take(0)?;
+    if existing.is_empty() {
+        return Ok(None);
+    }
+
+    db.query(
+        "BEGIN TRANSACTION;
+         UPDATE type::record('fitness_interruptions', $id) SET
+             from_date = $from_date,
+             to_date = $to_date,
+             note = $note,
+             emoji = $emoji,
+             updated_at = $updated_at;
+         UPSERT fitness_meta:version SET k = 'version', v = (v ?? 0) + 1;
+         COMMIT TRANSACTION;",
+    )
+    .bind(("id", id.to_string()))
+    .bind(("from_date", write.from_date.clone()))
+    .bind(("to_date", write.to_date.clone()))
+    .bind(("note", write.note.clone()))
+    .bind(("emoji", write.emoji.clone()))
+    .bind(("updated_at", updated_at))
+    .await?
+    .check()?;
+
+    Ok(Some(WrittenInterruption {
+        id: id.to_string(),
+        version: current_version(db).await?,
+    }))
+}
+
+/// Delete one interruption. `Ok(None)` when the id is absent.
+pub async fn delete_interruption(db: &Db, id: &str) -> anyhow::Result<Option<WrittenInterruption>> {
+    if !is_interruption_id(id) {
+        return Ok(None);
+    }
+    let mut response = db
+        .query(
+            "SELECT VALUE record::id(id)
+             FROM type::record('fitness_interruptions', $id)",
+        )
+        .bind(("id", id.to_string()))
+        .await?
+        .check()?;
+    let existing: Vec<String> = response.take(0)?;
+    if existing.is_empty() {
+        return Ok(None);
+    }
+
+    db.query(
+        "BEGIN TRANSACTION;
+         DELETE type::record('fitness_interruptions', $id);
+         UPSERT fitness_meta:version SET k = 'version', v = (v ?? 0) + 1;
+         COMMIT TRANSACTION;",
+    )
+    .bind(("id", id.to_string()))
+    .await?
+    .check()?;
+
+    Ok(Some(WrittenInterruption {
+        id: id.to_string(),
+        version: current_version(db).await?,
+    }))
+}
+
+fn interruption_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+pub fn is_interruption_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// What a delete removed, for the caller's receipt.

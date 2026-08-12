@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use jiff::{ToSpan, civil::Date};
+use jiff::{Timestamp, ToSpan, civil::Date};
 use topcoat::{
     Result,
     asset::{Asset, asset},
@@ -17,12 +17,13 @@ use topcoat::{
 
 use super::{
     META_LABEL,
-    archive::store::FitnessStore,
+    archive::{eastern, store::FitnessStore},
     data::CalendarDay,
     format::{format_duration, plural},
-    muscles,
+    interruptions, muscles,
     results::workout_url,
 };
+use benjisponge::data::fitness_models::Interruption;
 
 const WEEK_COUNT: usize = 53;
 const DAYS_PER_WEEK: usize = 7;
@@ -43,7 +44,11 @@ const CELL_HOVER: &str = "hover:border-oxide \
      hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-oxide)_25%,transparent)] \
      hover:-translate-y-px focus-visible:z-[1] focus-visible:outline-solid \
      focus-visible:outline-2 focus-visible:outline-oxide focus-visible:outline-offset-2";
-const CELL_BUTTON: &str = "appearance-none p-0 size-full cursor-pointer";
+const CELL_BUTTON: &str = "appearance-none p-0 size-full cursor-pointer \
+     flex items-center justify-center";
+const CELL_EMOJI: &str = "pointer-events-none select-none text-[0.55rem] leading-none \
+     sm:text-[0.62rem]";
+const PREVIEW_INTERRUPTION: &str = "mt-[0.55rem] font-meta text-[0.72rem] leading-[1.45] text-ink2";
 const PREVIEW_WORKOUT_TITLE: &str = "font-display text-[0.95rem] font-semibold leading-[1.25] \
      text-ink decoration-oxide/45 decoration-1 underline-offset-[0.18em] \
      hover:text-oxide hover:decoration-current focus-visible:text-oxide \
@@ -59,13 +64,17 @@ const HEATMAP_PREVIEW_JS: Asset = asset!("./heatmap-preview.js");
 /// (canonical, minus `from`/`to`/`page`) into the preview's day-log link.
 /// Day lift bodies are not embedded here — they load through
 /// [`day_preview_shard`] when `preview_day` is set.
+/// `interruptions` annotate covered days without changing volume points.
 #[component]
 pub(super) async fn calendar_heatmap(
     days: Vec<CalendarDay>,
     #[default(String::new())] link_query: String,
     #[default(false)] filtered: bool,
+    #[default(Vec::new())] interruptions: Vec<Interruption>,
 ) -> Result {
-    let Some(calendar) = Calendar::from_days(&days) else {
+    // Always run through today (Eastern), or a later workout day if one exists.
+    let through = eastern::eastern_date(Timestamp::now());
+    let Some(calendar) = Calendar::from_days(&days, &interruptions, through) else {
         return view! {
             <section aria-labelledby="fitness-heatmap-title">
                 <header
@@ -254,9 +263,23 @@ async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result 
         }
     };
     let summaries = snapshot.workouts_on_date(&date);
+    let marks = interruptions::marks_covering_today(snapshot.interruptions(), &date);
     if summaries.is_empty() {
+        let interrupted_copy = (!marks.is_empty()).then(|| {
+            format!(
+                "Interrupted · {}",
+                marks
+                    .iter()
+                    .map(|mark| format!("{} {}", mark.emoji, mark.note))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            )
+        });
         return view! {
             <span class="inline-popover-kicker">(format_long(parsed).as_str())</span>
+            if let Some(copy) = &interrupted_copy {
+                <p class=(PREVIEW_INTERRUPTION)>(copy.as_str())</p>
+            }
             <p class=(HEAT_NOTE)>"No lifts are stored for this day."</p>
             <a class=(PREVIEW_LOG_LINK) href=(href.as_str())>"view day in log →"</a>
         };
@@ -289,10 +312,23 @@ async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result 
             "points"
         }
     );
+    let interrupted_copy = (!marks.is_empty()).then(|| {
+        format!(
+            "Interrupted · {}",
+            marks
+                .iter()
+                .map(|mark| format!("{} {}", mark.emoji, mark.note))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        )
+    });
 
     view! {
         <span class="inline-popover-kicker">(heading.as_str())</span>
         <span class="inline-popover-detail">(points_label.as_str())</span>
+        if let Some(copy) = &interrupted_copy {
+            <p class=(PREVIEW_INTERRUPTION)>(copy.as_str())</p>
+        }
         <div class="space-y-[0.75rem]">
             for workout in workouts.iter() {
                 workout_block(workout: workout)
@@ -362,7 +398,9 @@ async fn day_cell(cell: &HeatmapCell) -> Result {
                 aria-label=(cell.label.as_str())
                 style=(style.as_str())
             >
-
+                if let Some(emoji) = &cell.emoji {
+                    <span class=(CELL_EMOJI) aria-hidden="true">(emoji.as_str())</span>
+                }
             </button>
         }
     } else {
@@ -411,14 +449,29 @@ struct Calendar {
 }
 
 impl Calendar {
-    fn from_days(days: &[CalendarDay]) -> Option<Self> {
+    /// 53 Sunday–Saturday weeks ending on the Saturday of the week that
+    /// contains `through`, after raising `through` to any later logged day.
+    /// That keeps recent empty days (and interruption chrome) visible even
+    /// when the newest lift is older than today.
+    fn from_days(
+        days: &[CalendarDay],
+        interruptions: &[Interruption],
+        through: Date,
+    ) -> Option<Self> {
         let mut points_by_day = BTreeMap::new();
         for day in days {
             let date: Date = day.date.parse().ok()?;
             let points = points_by_day.entry(date).or_insert(0_u32);
             *points = points.saturating_add(day.volume_points);
         }
-        let latest = *points_by_day.last_key_value()?.0;
+        if points_by_day.is_empty() && interruptions.is_empty() {
+            return None;
+        }
+        let latest = points_by_day
+            .keys()
+            .next_back()
+            .copied()
+            .map_or(through, |logged| logged.max(through));
         let end_offset =
             DAYS_PER_WEEK as i64 - 1 - i64::from(latest.weekday().to_sunday_zero_offset());
         let end = latest.checked_add(end_offset.days()).ok()?;
@@ -427,12 +480,15 @@ impl Calendar {
         let mut logged_days = 0;
         for offset in 0..CELL_COUNT {
             let date = start + (offset as i64).days();
+            let date_key = date.to_string();
             let points = points_by_day.get(&date).copied().unwrap_or(0);
             let has_lift = points_by_day.contains_key(&date);
+            let marks =
+                interruptions::marks_covering(interruptions, &date_key, &through.to_string());
             if has_lift {
                 logged_days += 1;
             }
-            cells.push(HeatmapCell::new(date, points, has_lift));
+            cells.push(HeatmapCell::new(date, points, has_lift, &marks));
         }
         let month_labels = MonthLabel::from_cells(&cells);
         Some(Self {
@@ -450,11 +506,13 @@ struct HeatmapCell {
     border: &'static str,
     label: String,
     style: String,
+    emoji: Option<String>,
 }
 
 impl HeatmapCell {
-    fn new(date: Date, points: u32, has_lift: bool) -> Self {
+    fn new(date: Date, points: u32, has_lift: bool, marks: &[interruptions::DayMark<'_>]) -> Self {
         let intensity = intensity(points);
+        let interrupted = !marks.is_empty();
         let border = if has_lift && points == 0 {
             CELL_BORDER_ZERO
         } else {
@@ -465,17 +523,31 @@ impl HeatmapCell {
             "{points} volume {}",
             if points == 1 { "point" } else { "points" }
         );
-        let label = if has_lift {
-            format!("{date_label}: {points_label}. Preview lifts from this day.")
-        } else {
-            format!("{date_label}: no volume points")
+        let notes_label = marks
+            .iter()
+            .map(|mark| format!("{} {}", mark.emoji, mark.note))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let label = match (has_lift, interrupted) {
+            (true, true) => format!(
+                "{date_label}: {points_label}. Interrupted · {notes_label}. Preview lifts from this day."
+            ),
+            (true, false) => {
+                format!("{date_label}: {points_label}. Preview lifts from this day.")
+            }
+            (false, true) => {
+                format!("{date_label}: no volume points. Interrupted · {notes_label}.")
+            }
+            (false, false) => format!("{date_label}: no volume points"),
         };
         Self {
             date,
-            date_key: has_lift.then(|| date.to_string()),
+            // Interrupted empty days open the same preview so the note is readable.
+            date_key: (has_lift || interrupted).then(|| date.to_string()),
             border,
             label,
             style: heat_style(intensity),
+            emoji: marks.first().map(|mark| mark.emoji.to_string()),
         }
     }
 }
@@ -547,7 +619,9 @@ mod tests {
 
     #[test]
     fn grid_is_53_complete_sunday_to_saturday_weeks_anchored_to_latest_day() {
-        let calendar = Calendar::from_days(&[day("2026-07-21", 42)]).expect("calendar");
+        let through = "2026-07-21".parse().unwrap();
+        let calendar =
+            Calendar::from_days(&[day("2026-07-21", 42)], &[], through).expect("calendar");
 
         assert_eq!(calendar.cells.len(), 371);
         assert_eq!(calendar.latest.to_string(), "2026-07-21");
@@ -573,6 +647,86 @@ mod tests {
     }
 
     #[test]
+    fn grid_extends_through_today_when_newest_lift_is_older() {
+        let through = "2026-08-11".parse().unwrap();
+        let rows = [Interruption {
+            id: "a".into(),
+            from_date: "2026-08-02".into(),
+            to_date: Some("2026-08-09".into()),
+            note: "cold".into(),
+            emoji: "🤒".into(),
+            updated_at: 0,
+        }];
+        let calendar =
+            Calendar::from_days(&[day("2026-07-21", 42)], &rows, through).expect("calendar");
+
+        assert_eq!(calendar.latest.to_string(), "2026-08-11");
+        let interrupted = calendar
+            .cells
+            .iter()
+            .find(|cell| cell.date.to_string() == "2026-08-05")
+            .expect("day inside interruption");
+        assert!(interrupted.label.contains("Interrupted · 🤒 cold"));
+        assert_eq!(interrupted.emoji.as_deref(), Some("🤒"));
+        assert_eq!(interrupted.date_key.as_deref(), Some("2026-08-05"));
+        // Future relative to through still wins if a workout lands there.
+        let ahead =
+            Calendar::from_days(&[day("2026-08-20", 10)], &[], "2026-08-11".parse().unwrap())
+                .expect("future calendar");
+        assert_eq!(ahead.latest.to_string(), "2026-08-20");
+    }
+
+    #[test]
+    fn interrupted_empty_days_are_linkable_and_labeled() {
+        let rows = [Interruption {
+            id: "a".into(),
+            from_date: "2026-07-20".into(),
+            to_date: Some("2026-07-20".into()),
+            note: "cold".into(),
+            emoji: "🤧".into(),
+            updated_at: 0,
+        }];
+        let through = "2026-07-21".parse().unwrap();
+        let calendar =
+            Calendar::from_days(&[day("2026-07-21", 42)], &rows, through).expect("calendar");
+        let cell = calendar
+            .cells
+            .iter()
+            .find(|cell| cell.date.to_string() == "2026-07-20")
+            .expect("interrupted day");
+        assert_eq!(cell.date_key.as_deref(), Some("2026-07-20"));
+        assert!(cell.label.contains("Interrupted · 🤧 cold"));
+        assert_eq!(cell.emoji.as_deref(), Some("🤧"));
+        assert_eq!(cell.border, CELL_BORDER);
+    }
+
+    #[test]
+    fn open_interruptions_cover_through_today_only() {
+        let through = "2026-08-11".parse().unwrap();
+        let rows = [Interruption {
+            id: "a".into(),
+            from_date: "2026-08-02".into(),
+            to_date: None,
+            note: "ongoing".into(),
+            emoji: "😴".into(),
+            updated_at: 0,
+        }];
+        let calendar = Calendar::from_days(&[], &rows, through).expect("calendar");
+        let covered = calendar
+            .cells
+            .iter()
+            .find(|cell| cell.date.to_string() == "2026-08-11")
+            .expect("today");
+        assert_eq!(covered.emoji.as_deref(), Some("😴"));
+        let future = calendar
+            .cells
+            .iter()
+            .find(|cell| cell.date.to_string() == "2026-08-12")
+            .expect("day after today still in week");
+        assert!(future.emoji.is_none());
+    }
+
+    #[test]
     fn intensity_bands_are_fixed_at_their_inclusive_edges() {
         assert_eq!(intensity(0), 0);
         assert_eq!(intensity(1), 1);
@@ -587,8 +741,13 @@ mod tests {
 
     #[test]
     fn duplicate_calendar_days_sum_without_losing_their_link() {
-        let calendar =
-            Calendar::from_days(&[day("2024-02-29", 20), day("2024-02-29", 25)]).expect("calendar");
+        let through = "2024-02-29".parse().unwrap();
+        let calendar = Calendar::from_days(
+            &[day("2024-02-29", 20), day("2024-02-29", 25)],
+            &[],
+            through,
+        )
+        .expect("calendar");
         let leap_day = calendar
             .cells
             .iter()
@@ -596,6 +755,24 @@ mod tests {
             .expect("leap day cell");
         assert!(leap_day.label.contains("45 volume points"));
         assert_eq!(leap_day.style, heat_style(3));
+    }
+
+    #[test]
+    fn empty_archive_still_renders_through_today_when_interruptions_exist() {
+        let through = "2026-08-11".parse().unwrap();
+        assert!(Calendar::from_days(&[], &[], through).is_none());
+        let rows = [Interruption {
+            id: "a".into(),
+            from_date: "2026-08-02".into(),
+            to_date: Some("2026-08-09".into()),
+            note: "cold".into(),
+            emoji: "🤒".into(),
+            updated_at: 0,
+        }];
+        let calendar = Calendar::from_days(&[], &rows, through).expect("calendar");
+        assert_eq!(calendar.latest.to_string(), "2026-08-11");
+        assert_eq!(calendar.logged_days, 0);
+        assert_eq!(calendar.cells.len(), 371);
     }
 
     #[test]
