@@ -43,6 +43,7 @@ const VIEWER_COOKIE: &str = "viewer";
 /// this name to decide cacheability before any decryption happens.
 pub(crate) const VIEWER_COOKIE_BROWSER_NAME: &str = "__Host-viewer";
 const FLIGHT_COOKIE: &str = "google-flight";
+pub(crate) const POPUP_ERROR_PARAM: &str = "auth_error";
 const VIEWER_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const FLIGHT_TTL_SECONDS: i64 = 10 * 60;
 const NO_STORE: &str = "no-store";
@@ -94,6 +95,10 @@ struct Flight {
     state: String,
     verifier: String,
     next: String,
+    /// Only the progressively enhanced shell dialog requests an in-place
+    /// error return. Old in-flight cookies deserialize as the fallback flow.
+    #[serde(default)]
+    popup: bool,
     exp: i64,
 }
 
@@ -113,14 +118,10 @@ async fn login(cx: &Cx) -> Result {
     let query = query_params::<LoginQuery>(cx)?;
     let next = sanitize_next(query.next.as_deref());
     let google_href = format!("/auth/google?next={}", urlencode(&next));
-    let notice = query.error.as_deref().map(|code| match code {
-        "denied" => "Google sign-in was cancelled.",
-        "noaccess" => "That Google account doesn't have access to anything here.",
-        "expired" => "That sign-in attempt expired — try again.",
-        _ => "Sign-in failed — try again.",
-    });
+    let notice = query.error.as_deref().map(login_notice);
     let current = viewer(cx);
-    let configured = google_env().is_some();
+    let configured = login_configured();
+    let logout_action = format!("/logout?next={}", urlencode(&next));
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
@@ -143,7 +144,7 @@ async fn login(cx: &Cx) -> Result {
                                 <span class="font-meta">(current.email.as_str())</span>
                                 "."
                             </p>
-                            <form method="post" action="/logout" class="mt-6">
+                            <form method="post" action=(logout_action.as_str()) class="mt-6">
                                 <button type="submit" class="oxlink cursor-pointer font-meta text-sm">
                                     "sign out"
                                 </button>
@@ -185,6 +186,7 @@ async fn google_start(cx: &Cx) -> Result<Response> {
         state: state.clone(),
         verifier: verifier.clone(),
         next,
+        popup: query_value(cx, "popup").as_deref() == Some("1"),
         exp: Timestamp::now().as_second() + FLIGHT_TTL_SECONDS,
     })
     .expect("flight serializes");
@@ -227,32 +229,32 @@ async fn google_callback(cx: &Cx) -> Result<Response> {
     let state_ok =
         query_value(cx, "state").is_some_and(|state| secrets_match(&state, &flight.state));
     if !state_ok {
-        return Ok(see_other("/login?error=expired"));
+        return Ok(callback_error(&flight, "expired"));
     }
     jar(cx).remove((FLIGHT_COOKIE, ""));
     if query_value(cx, "error").is_some() {
-        return Ok(see_other("/login?error=denied"));
+        return Ok(callback_error(&flight, "denied"));
     }
     let Some(code) = query_value(cx, "code") else {
-        return Ok(see_other("/login?error=failed"));
+        return Ok(callback_error(&flight, "failed"));
     };
     let id_token = match exchange_code(&code, &client_id, &client_secret, &flight.verifier).await {
         Ok(token) => token,
         Err(error) => {
             log_failure("token exchange", &error.to_string());
-            return Ok(see_other("/login?error=failed"));
+            return Ok(callback_error(&flight, "failed"));
         }
     };
     let claims = match validate_id_token(&id_token, &client_id, now) {
         Ok(claims) => claims,
         Err(reason) => {
             log_failure("id_token validation", reason);
-            return Ok(see_other("/login?error=failed"));
+            return Ok(callback_error(&flight, "failed"));
         }
     };
     let email = claims.email.to_ascii_lowercase();
     if !known_viewer(app_context::<Data>(cx), &email).await {
-        return Ok(see_other("/login?error=noaccess"));
+        return Ok(callback_error(&flight, "noaccess"));
     }
     let viewer_value = serde_json::to_string(&ViewerClaims {
         sub: claims.sub,
@@ -273,8 +275,9 @@ async fn logout(cx: &Cx) -> Result<Response> {
     if cross_site(headers(cx)) {
         return Ok(plain(StatusCode::FORBIDDEN, "forbidden"));
     }
+    let next = sanitize_next(query_value(cx, "next").as_deref());
     jar(cx).remove((VIEWER_COOKIE, ""));
-    Ok(see_other("/login"))
+    Ok(see_other(&next))
 }
 
 /// A logout POST forged from another site is only a nuisance, but the header
@@ -297,6 +300,104 @@ fn sanitize_next(raw: Option<&str>) -> String {
         && raw.len() <= 512
         && raw.bytes().all(|b| (0x21..0x7f).contains(&b));
     if ok { raw.to_string() } else { fallback() }
+}
+
+fn login_notice(code: &str) -> &'static str {
+    match code {
+        "denied" => "Google sign-in was cancelled.",
+        "noaccess" => "That Google account doesn't have access to anything here.",
+        "expired" => "That sign-in attempt expired — try again.",
+        _ => "Sign-in failed — try again.",
+    }
+}
+
+/// A callback from the enhanced dialog returns to the original document and
+/// asks that document to reopen the dialog with this generic notice.
+pub(crate) fn popup_notice(cx: &Cx) -> Option<&'static str> {
+    query_value(cx, POPUP_ERROR_PARAM)
+        .as_deref()
+        .map(login_notice)
+}
+
+/// The local destination represented by this document. On the fallback login
+/// page, the intended destination is its sanitized `next`; elsewhere it is
+/// the live path/query with our one-shot popup marker removed.
+pub(crate) fn auth_return_target(cx: &Cx) -> String {
+    if uri(cx).path() == "/login" {
+        return sanitize_next(query_value(cx, "next").as_deref());
+    }
+    let target = uri(cx).path_and_query().map_or("/", |value| value.as_str());
+    sanitize_next(Some(&without_popup_error(target)))
+}
+
+fn without_popup_error(target: &str) -> String {
+    let (path_query, fragment) = target
+        .split_once('#')
+        .map_or((target, None), |(before, after)| (before, Some(after)));
+    let (path, query) = path_query
+        .split_once('?')
+        .map_or((path_query, None), |(path, query)| (path, Some(query)));
+    let kept = query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter(|pair| pair.split('=').next() != Some(POPUP_ERROR_PARAM))
+        .collect::<Vec<_>>()
+        .join("&");
+    let mut clean = path.to_string();
+    if !kept.is_empty() {
+        clean.push('?');
+        clean.push_str(&kept);
+    }
+    if let Some(fragment) = fragment {
+        clean.push('#');
+        clean.push_str(fragment);
+    }
+    clean
+}
+
+fn popup_error_location(next: &str, code: &str) -> String {
+    let next = without_popup_error(&sanitize_next(Some(next)));
+    let (base, fragment) = next
+        .split_once('#')
+        .map_or((next.as_str(), None), |(before, after)| {
+            (before, Some(after))
+        });
+    let separator = if !base.contains('?') {
+        "?"
+    } else if base.ends_with('?') || base.ends_with('&') {
+        ""
+    } else {
+        "&"
+    };
+    let fragment = fragment.map_or_else(String::new, |value| format!("#{value}"));
+    format!(
+        "{base}{separator}{POPUP_ERROR_PARAM}={}{}",
+        urlencode(code),
+        fragment
+    )
+}
+
+fn callback_error(flight: &Flight, code: &str) -> Response {
+    if flight.popup {
+        see_other(&popup_error_location(&flight.next, code))
+    } else {
+        login_error(&flight.next, code)
+    }
+}
+
+/// Keep OAuth failures attached to the flight's original destination. A
+/// retry from the fallback login page therefore still lands where the user
+/// began instead of silently collapsing to the homepage.
+fn login_error(next: &str, code: &str) -> Response {
+    let next = sanitize_next(Some(next));
+    let location = format!("/login?next={}&error={}", urlencode(&next), urlencode(code));
+    see_other(&location)
+}
+
+/// The shell uses this only to decide whether its account dialog should show
+/// the Google action. Secrets never leave this module or enter the page.
+pub(crate) fn login_configured() -> bool {
+    google_env().is_some()
 }
 
 fn google_env() -> Option<(String, String)> {
@@ -466,6 +567,7 @@ mod tests {
     fn sanitize_next_keeps_local_paths_only() {
         assert_eq!(sanitize_next(Some("/motorcycles")), "/motorcycles");
         assert_eq!(sanitize_next(Some("/a/b?c=d")), "/a/b?c=d");
+        assert_eq!(sanitize_next(Some("/a/b?c=d#notes")), "/a/b?c=d#notes");
         assert_eq!(sanitize_next(None), "/");
         assert_eq!(sanitize_next(Some("")), "/");
         assert_eq!(sanitize_next(Some("https://evil.example")), "/");
@@ -473,6 +575,28 @@ mod tests {
         assert_eq!(sanitize_next(Some("/\\evil.example")), "/");
         assert_eq!(sanitize_next(Some("/a\r\nSet-Cookie: x")), "/");
         assert_eq!(sanitize_next(Some(&format!("/{}", "a".repeat(600)))), "/");
+    }
+
+    #[test]
+    fn fallback_oauth_error_keeps_the_original_destination() {
+        let response = login_error("/thoughts/a-post?view=wide#notes", "denied");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/login?next=%2Fthoughts%2Fa-post%3Fview%3Dwide%23notes&error=denied"
+        );
+    }
+
+    #[test]
+    fn popup_oauth_error_returns_to_the_document_and_keeps_its_fragment() {
+        assert_eq!(
+            popup_error_location("/thoughts/a-post?view=wide#notes", "denied"),
+            "/thoughts/a-post?view=wide&auth_error=denied#notes"
+        );
+        assert_eq!(
+            without_popup_error("/thoughts/a-post?view=wide&auth_error=denied&mode=full#notes"),
+            "/thoughts/a-post?view=wide&mode=full#notes"
+        );
     }
 
     #[test]
@@ -510,11 +634,17 @@ mod tests {
             state: "s".into(),
             verifier: "v".into(),
             next: "/motorcycles".into(),
+            popup: true,
             exp: 500,
         })
         .unwrap();
-        assert_eq!(parse_flight(&value, 499).unwrap().next, "/motorcycles");
+        let flight = parse_flight(&value, 499).unwrap();
+        assert_eq!(flight.next, "/motorcycles");
+        assert!(flight.popup);
         assert!(parse_flight(&value, 500).is_none());
+
+        let old_cookie = r#"{"state":"s","verifier":"v","next":"/","exp":500}"#;
+        assert!(!parse_flight(old_cookie, 499).unwrap().popup);
     }
 
     fn token_with(claims: &serde_json::Value) -> String {

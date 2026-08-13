@@ -106,13 +106,25 @@ async fn home(cx: &Cx) -> Result {
             <div class="mt-1 overflow-hidden text-ellipsis whitespace-pre text-muted">
                 "\"   Session:       "
                 if current.is_some() {
-                    <a class="netrw-login" href="/login" aria-label="signed-in account">"signed in"</a>
-                    <form method="post" action="/logout" class="inline">
-                        " · "
-                        <button type="submit" class="netrw-logout cursor-pointer">"logout"</button>
-                    </form>
+                    <a
+                        class="netrw-login"
+                        href="/login?next=%2F"
+                        data-modal-open="account-dialog"
+                        aria-label="signed-in account"
+                    >"signed in"</a>
+                    " · "
+                    <a
+                        class="netrw-logout cursor-pointer"
+                        href="/login?next=%2F"
+                        data-modal-open="account-dialog"
+                    >"logout"</a>
                 } else {
-                    <a class="netrw-login" href="/login" aria-label="log in">"login"</a>
+                    <a
+                        class="netrw-login"
+                        href="/login?next=%2F"
+                        data-modal-open="account-dialog"
+                        aria-label="log in"
+                    >"login"</a>
                 }
             </div>
             <ul class="mt-1 space-y-1">

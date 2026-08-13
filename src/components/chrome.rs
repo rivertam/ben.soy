@@ -11,8 +11,12 @@ use topcoat::{
     view::{Unescaped, View, component, view},
 };
 
-use crate::app::login::viewer;
+use crate::app::login::{
+    POPUP_ERROR_PARAM, auth_return_target, login_configured, popup_notice, viewer,
+};
+use crate::components::modal;
 use crate::content::{access, interests::INTERESTS, logbook::LOG, themes};
+use crate::util::urlencode;
 
 pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
 pub const FIRA_SANS: Font = fontsource_font!(FIRA_SANS, host: Asset);
@@ -34,6 +38,8 @@ pub const SITE_CSS: Asset = topcoat::tailwind::stylesheet!();
 // toolchain or generated JS needs to enter the Rust-only build. Theme package
 // entry points and their optional assets live in content/themes.rs.
 const APPEARANCE_JS: Asset = asset!("./browser/appearance.js");
+const AUTH_DIALOG_JS: Asset = asset!("./browser/auth-dialog.js");
+const MODALS_JS: Asset = asset!("./browser/modals.js");
 const NAVIGATION_JS: Asset = asset!("./browser/navigation.js");
 const NAVIGATION_HINTS_JS: Asset = asset!("./browser/navigation/hints.js");
 const SESSION_JS: Asset = asset!("./browser/session.js");
@@ -158,7 +164,10 @@ pub async fn shell(
     // The session bar is the default navigation. It rides along in every
     // render because cached HTML cannot know whether localStorage will apply
     // an alternate finish before paint.
-    let windows = session_windows(uri(cx).path(), &hidden_pages);
+    let request_uri = uri(cx);
+    let return_to = auth_return_target(cx);
+    let login_href = format!("/login?next={}", urlencode(&return_to));
+    let windows = session_windows(request_uri.path(), &hidden_pages);
     let pane_title = windows
         .iter()
         .find(|win| win.current)
@@ -195,6 +204,12 @@ pub async fn shell(
                     data-default-theme=(themes::DEFAULT_THEME_ID)
                     data-theme-key=(themes::THEME_STORAGE_KEY)
                 ></script>
+                // The account dialog's companion loads before the generic
+                // modal driver so its `modal:open` listener is attached when
+                // the driver opens a returned error notice on load. Neither
+                // needs Topcoat's runtime; both are plain delegated modules.
+                <script type="module" src=(AUTH_DIALOG_JS)></script>
+                <script type="module" src=(MODALS_JS)></script>
                 <script
                     type="module"
                     src=(NAVIGATION_JS)
@@ -284,11 +299,7 @@ pub async fn shell(
                         </span>
                     </div>
                     if let Some(current) = signed_in.as_ref() {
-                        <form
-                            method="post"
-                            action="/logout"
-                            class="mt-2 text-right font-meta text-[11px] text-muted opacity-60 transition-opacity hover:opacity-100"
-                        >
+                        <p class="mt-2 text-right font-meta text-[11px] text-muted opacity-60 transition-opacity hover:opacity-100">
                             "signed in as "
                             (current.email.as_str())
                             " · "
@@ -296,11 +307,19 @@ pub async fn shell(
                                 <a class="quiet-link" href="/admin">"admin"</a>
                                 " · "
                             }
-                            <button type="submit" class="quiet-link cursor-pointer">"sign out"</button>
-                        </form>
+                            <a
+                                class="quiet-link"
+                                href=(login_href.as_str())
+                                data-modal-open="account-dialog"
+                            >"sign out"</a>
+                        </p>
                     } else {
                         <p class="mt-2 text-right font-meta text-[11px] text-muted opacity-60 transition-opacity hover:opacity-100">
-                            <a class="quiet-link" href="/login">"log in with google"</a>
+                            <a
+                                class="quiet-link"
+                                href=(login_href.as_str())
+                                data-modal-open="account-dialog"
+                            >"log in with google"</a>
                         </p>
                     }
                 </footer>
@@ -326,11 +345,17 @@ pub async fn shell(
                         if signed_in.is_some() {
                             <a
                                 class="tmux-login"
-                                href="/login"
+                                href=(login_href.as_str())
+                                data-modal-open="account-dialog"
                                 aria-label="signed-in account"
                             >"signed in"</a>
                         } else {
-                            <a class="tmux-login" href="/login" aria-label="log in">"login"</a>
+                            <a
+                                class="tmux-login"
+                                href=(login_href.as_str())
+                                data-modal-open="account-dialog"
+                                aria-label="log in"
+                            >"login"</a>
                         }
                     </span>
                     <button
@@ -342,9 +367,87 @@ pub async fn shell(
                         hidden=""
                     ></button>
                 </nav>
+                account_dialog(return_to: return_to.as_str())
                 corner_rack()
             </body>
         </html>
+    }
+}
+
+/// One account surface for the whole document, built on the generic `modal`
+/// component. Identity and OAuth configuration are known while the shell
+/// renders; the shared driver (`modals.js`) opens and traps the dialog, while
+/// the thin auth companion (`auth-dialog.js`) keeps each `next` pointed at the
+/// live URL, fragment included. `/login?next=…` remains every trigger's
+/// fallback.
+#[component]
+async fn account_dialog(cx: &Cx, return_to: &str) -> Result {
+    let current = viewer(cx);
+    let configured = login_configured();
+    let notice = popup_notice(cx);
+    let (kicker, heading) = if current.is_some() {
+        ("authenticated", "Signed in.")
+    } else {
+        ("sign in", "Sign in.")
+    };
+    let google_href = format!("/auth/google?next={}&popup=1", urlencode(return_to));
+    let logout_action = format!("/logout?next={}", urlencode(return_to));
+    view! {
+        modal(
+            id: "account-dialog",
+            label: "Account",
+            labelledby: "account-dialog-heading",
+            open_on_load: notice.is_some(),
+            // Config for the auth companion (auth-dialog.js): it finds the
+            // dialog from here and reads the return/error contract, keeping the
+            // OAuth and logout `next` aimed at the live URL.
+            <span
+                hidden=""
+                data-account-config=""
+                data-auth-return=(return_to)
+                data-auth-error-param=(POPUP_ERROR_PARAM)
+            ></span>
+            <p class="auth-dialog-kicker">(kicker)</p>
+            <h2 id="account-dialog-heading" class="auth-dialog-heading">(heading)</h2>
+            if let Some(message) = notice {
+                <p class="auth-dialog-notice" role="status">(message)</p>
+            }
+            if let Some(current) = current.as_ref() {
+                <p class="auth-dialog-copy">
+                    "You’re signed in as "
+                    <span class="auth-dialog-email">(current.email.as_str())</span>
+                    "."
+                </p>
+                <div class="auth-dialog-actions">
+                    <form method="post" action=(logout_action.as_str()) data-auth-logout="">
+                        <button type="submit" class="auth-dialog-primary" autofocus="">
+                            "sign out"
+                        </button>
+                    </form>
+                    if access::is_admin(&current.email) {
+                        <a class="auth-dialog-secondary" href="/admin">"admin tools"</a>
+                    }
+                </div>
+            } else {
+                if configured {
+                    <p class="auth-dialog-copy">
+                        "A few pages here are shared with particular people. If you’re one of them, this is the door."
+                    </p>
+                    <div class="auth-dialog-actions">
+                        <a
+                            class="auth-dialog-primary"
+                            href=(google_href.as_str())
+                            data-auth-google=""
+                            autofocus=""
+                        >"continue with Google "<span aria-hidden="true">"→"</span></a>
+                    </div>
+                } else {
+                    <p class="auth-dialog-copy">
+                        "Sign-in isn’t configured in this environment."
+                    </p>
+                }
+            }
+        )
     }
 }
 

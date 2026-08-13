@@ -160,11 +160,18 @@ Invariants:
 
 The shell personalizes for viewers: allowlisted hidden pages join the
 tmux windows and the `~` listing, and the home listing plus the default tmux
-bar expose a small login/signed-in action. The home listing also carries the
-logout control. The quiet "log in with google" link
-at the footer's bottom right becomes a "signed in as … · sign out" line — for
-the admin it also carries the `/admin` link. Personalized
-HTML must never be edge-cached, so the site-wide response layer
+bar expose a small login/signed-in action. Every shell account action opens
+one server-rendered native `<dialog>` over the current page: the generic modal
+driver (`src/components/browser/modals.js`) shows it with `showModal()`, so the
+platform supplies the focus trap, the inert background, Escape, and the
+`::backdrop`, and a thin companion (`auth-dialog.js`) adds the live path, query,
+and fragment to its OAuth/logout `next` target. The dialog itself is the shared
+`components::modal` surface, opened by any `data-modal-open="account-dialog"`
+trigger. The real `/login?next=…` links remain as no-JavaScript and
+unsupported-browser fallbacks. The quiet "log in with google" link at the footer's bottom right
+becomes a "signed in as … · sign out" line — for the admin it also carries the
+`/admin` link. Personalized HTML must never be edge-cached, so the site-wide
+response layer
 (`src/app/response_layer.rs`) forces `Cache-Control: private, no-store`
 on any request carrying a `__Host-viewer` cookie — keyed on presence,
 not validity, so a garbage cookie fails closed; framework error
@@ -197,6 +204,12 @@ after the eligible-for-cache rule (later cache rules win).
 - Routes that touch the cookie jar return hand-built `Ok(303)` responses —
   the topcoat cookie layer only flushes `Set-Cookie` on `Ok`, so
   `Err(redirect(…))` would silently drop the write.
+- The account dialog does not need a shard: viewer state and OAuth
+  configuration are known during the shell render, and both login and logout
+  perform full navigations. Successful login/logout return to sanitized local
+  `next` paths. An OAuth failure started in the dialog returns there and
+  reopens it with a one-shot notice; failures from the no-JavaScript login page
+  carry the same `next` onto that page so a retry does not forget its origin.
 
 ## Environment
 
