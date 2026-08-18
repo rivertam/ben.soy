@@ -1,0 +1,380 @@
+/*
+ * The standalone /resume page doubles as the source for a submission-ready
+ * PDF. Screen presentation stays in the site's rail language; print sheds the
+ * application chrome and composes the same semantic content onto US Letter.
+ */
+
+.resume-print-only {
+  display: none;
+}
+
+@page resume {
+  size: letter;
+  /* Chrome only paints its optional URL/date furniture into page margins.
+     Own the whitespace inside the résumé instead so even that default yields
+     a clean PDF without asking the reader to find another print setting. */
+  margin: 0;
+}
+
+@media print {
+  body:has(> main > .resume-page) {
+    --color-page: #fff;
+    --color-card: #fff;
+    --color-ink: #171717;
+    --color-ink2: #353535;
+    --color-muted: #5f6368;
+    --color-hairline: #c9c9c9;
+    --color-oxide: #8f3518;
+    --color-oxide-hot: #8f3518;
+    --color-patina: #353535;
+    --color-steel: #353535;
+    --font-display: "Fira Sans", Arial, sans-serif;
+    --font-body: "Fira Sans", Arial, sans-serif;
+    --font-meta: "Fira Mono", "Courier New", monospace;
+
+    display: block !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    color: var(--color-ink) !important;
+    background: #fff !important;
+    font-family: var(--font-body);
+    font-size: 10pt;
+    line-height: 1.4;
+    color-scheme: light;
+  }
+
+  body:has(> main > .resume-page)::after,
+  body:has(> main > .resume-page) > :not(main) {
+    display: none !important;
+    content: none !important;
+  }
+
+  body:has(> main > .resume-page) > main {
+    display: block !important;
+    flex: none !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    border: 0 !important;
+  }
+
+  body:has(> main > .resume-page) > main::before {
+    display: none !important;
+    content: none !important;
+  }
+
+  .resume-page {
+    page: resume;
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0.52in 0.62in;
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    print-color-adjust: exact;
+  }
+
+  .resume-page *,
+  .resume-page *::before,
+  .resume-page *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+    animation: none !important;
+  }
+
+  .resume-page a {
+    color: inherit;
+  }
+
+  .resume-print-only {
+    display: block;
+  }
+
+  .resume-print-header {
+    padding-bottom: 9pt;
+    margin-bottom: 12pt;
+    text-align: center;
+    border-bottom: 1.5pt solid var(--color-oxide);
+    break-after: avoid-page;
+  }
+
+  .resume-print-header h1 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 26pt;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.025em;
+  }
+
+  .resume-print-header h1::after {
+    display: none !important;
+    content: none !important;
+  }
+
+  .resume-print-header > p {
+    margin-top: 3.5pt;
+    color: var(--color-ink2);
+    font-size: 10pt;
+    font-weight: 500;
+    line-height: 1.2;
+  }
+
+  .resume-print-header address {
+    margin-top: 7pt;
+    color: var(--color-ink2);
+    font-family: var(--font-meta);
+    font-size: 7.7pt;
+    font-style: normal;
+    line-height: 1.3;
+  }
+
+  .resume-print-header ul {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 1pt 0;
+  }
+
+  .resume-print-header li:not(:last-child)::after {
+    content: "·";
+    padding-inline: 6pt;
+    color: var(--color-oxide);
+  }
+
+  .resume-print-header a {
+    text-decoration: none;
+  }
+
+  .resume-content > header:first-child,
+  .resume-filter,
+  .resume-web-only,
+  .resume-patches,
+  .resume-page .chip-clear-marker {
+    display: none !important;
+  }
+
+  .resume-section-title {
+    padding-bottom: 3.5pt;
+    margin: 0 0 8pt !important;
+    color: var(--color-oxide);
+    font-family: var(--font-meta);
+    font-size: 8.75pt;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border-bottom: 0.5pt solid var(--color-hairline);
+    break-after: avoid-page;
+  }
+
+  .resume-experience {
+    margin-top: 0 !important;
+  }
+
+  .resume-experience > *,
+  .resume-education > * {
+    margin-block: 0 !important;
+  }
+
+  .resume-experience > .resume-role + .resume-role {
+    margin-top: 13pt !important;
+  }
+
+  .resume-role {
+    display: block;
+    break-inside: avoid-page;
+  }
+
+  .resume-role > .rail-stamp {
+    display: none;
+  }
+
+  .resume-role-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    column-gap: 12pt;
+    align-items: baseline;
+  }
+
+  .resume-role-title {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 0;
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    font-size: 12pt;
+    font-weight: 700;
+    line-height: 1.15;
+  }
+
+  .resume-role-org {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin: 1.5pt 0 0;
+    color: var(--color-ink2);
+    font-size: 9.75pt;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .resume-role-dates {
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    color: var(--color-muted);
+    font-family: var(--font-meta);
+    font-size: 8pt;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .resume-role-bullets {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    max-width: none;
+    margin: 5pt 0 0;
+    color: var(--color-ink2);
+    font-size: 9.5pt;
+    line-height: 1.36;
+  }
+
+  .resume-role-bullets > li {
+    padding-left: 10pt;
+    break-inside: avoid;
+  }
+
+  .resume-role-bullets > li + li {
+    margin-top: 2.5pt;
+  }
+
+  .resume-role-bullets > li::before {
+    content: "•";
+    color: var(--color-oxide);
+    font-family: var(--font-body);
+  }
+
+  .resume-role-stack {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    display: block;
+    margin-top: 4.5pt;
+    color: var(--color-muted);
+    font-family: var(--font-meta);
+    font-size: 7.75pt;
+    line-height: 1.3;
+  }
+
+  .resume-role-stack .chip,
+  .resume-skills .chip {
+    display: inline;
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    font: inherit;
+    letter-spacing: 0;
+    white-space: normal;
+    text-decoration: none;
+  }
+
+  .resume-role-stack .chip:not(:last-child)::after,
+  .resume-skills .chip:not(:last-child)::after {
+    content: " · ";
+    color: var(--color-oxide);
+  }
+
+  .resume-education {
+    margin-top: 15pt !important;
+    padding-top: 0 !important;
+    border-top: 0 !important;
+    break-inside: avoid-page;
+  }
+
+  .resume-education-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    column-gap: 12pt;
+    align-items: baseline;
+  }
+
+  .resume-education-row > .rail-stamp {
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 8pt;
+    line-height: 1.2;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .resume-education-body {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .resume-education-school {
+    margin: 0;
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    font-size: 11pt;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .resume-education-degree,
+  .resume-education-note {
+    display: inline;
+    margin: 0;
+    color: var(--color-ink2);
+    font-size: 9.5pt;
+    line-height: 1.3;
+  }
+
+  .resume-education-degree::after {
+    content: " · ";
+    color: var(--color-oxide);
+  }
+
+  .resume-skills {
+    display: grid;
+    grid-template-columns: 42pt minmax(0, 1fr);
+    column-gap: 6pt;
+    align-items: baseline;
+    margin-top: 7pt !important;
+  }
+
+  .resume-skills > .rail-stamp {
+    color: var(--color-ink2);
+    font-size: 8pt;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: 0.08em;
+    text-align: left;
+  }
+
+  .resume-skills > div {
+    display: block;
+    color: var(--color-muted);
+    font-family: var(--font-meta);
+    font-size: 7.75pt;
+    line-height: 1.3;
+  }
+
+  .resume-page .emdash-link,
+  .resume-page .oxlink {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .resume-page .rail-stamp::before {
+    content: none !important;
+  }
+}

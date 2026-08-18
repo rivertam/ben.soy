@@ -2,6 +2,7 @@
 
 /* Section stylesheets (kept separate so each area owns its file). */
 @import "./site.css";
+@import "./resume.css";
 @import "./felix.css";
 @import "./swing.css";
 @import "./logbook.css";

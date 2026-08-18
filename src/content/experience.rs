@@ -12,6 +12,10 @@ pub struct Role {
     /// constructors below: [`language`], [`library`], [`discipline`],
     /// [`tool`].
     pub stack: &'static [Tech],
+    /// Whether this role belongs in the concise, submission-ready print
+    /// résumé. The web timeline keeps the older internships and their more
+    /// personal notes; the printable résumé follows the shorter source PDF.
+    pub include_in_print: bool,
 }
 
 /// What kind of thing a chip names. Purely semantic — the résumé page
@@ -72,17 +76,19 @@ pub const fn tool(name: &'static str) -> Tech {
 pub static ROLES: [Role; 6] = [
     Role {
         span: "2024–now",
-        title: "Co-founder, Executive Software Lead / Board Member",
+        title: "Co-founder, Executive Software Lead",
         org: "DigiChem",
         place: "New York",
         dates: "Aug 2024 – present",
         bullets: &[
             "Co-founded a chemical synthesis startup with two chemists",
             "Raised a seed round with MVP",
-            "Lead and mentored a team of three engineers building a custom ERP/MRP for novel \
-             chemical synthesis and optimization from zero to one, along with a handful of \
-             domain-oriented pivots",
-            "Product powered by LLM-powered durable workflows",
+            "Lead / mentored a team of three engineers",
+            "Heavy involvement with strategy, market research, investor relations etc.",
+            "Product: a custom ERP/MRP for novel specialty chemical synthesis and optimization",
+            "LLM-powered workflows used cheminformatics tools such as retrosynthesis,
+            property prediction, and vendor price lists to propose and optimize
+            synthetic routes",
         ],
         stack: &[
             language("TypeScript"),
@@ -95,6 +101,7 @@ pub static ROLES: [Role; 6] = [
             tool("GitHub Actions"),
             tool("Graphite").at("https://graphite.dev"),
         ],
+        include_in_print: true,
     },
     Role {
         span: "2017–2023",
@@ -121,6 +128,7 @@ pub static ROLES: [Role; 6] = [
             tool("Docker"),
             library("ROS").at("https://www.ros.org"),
         ],
+        include_in_print: true,
     },
     Role {
         span: "2015–2016",
@@ -140,6 +148,7 @@ pub static ROLES: [Role; 6] = [
             library("React"),
             tool("AWS"),
         ],
+        include_in_print: true,
     },
     Role {
         span: "2014",
@@ -154,6 +163,7 @@ pub static ROLES: [Role; 6] = [
              trading course in which I learned a lot",
         ],
         stack: &[],
+        include_in_print: false,
     },
     Role {
         span: "2012",
@@ -163,6 +173,7 @@ pub static ROLES: [Role; 6] = [
         dates: "Summer 2012",
         bullets: &["Kinda regret this one. Cruises are terrible for the environment!"],
         stack: &[],
+        include_in_print: false,
     },
     Role {
         span: "2009",
@@ -174,6 +185,7 @@ pub static ROLES: [Role; 6] = [
             "Kinda regret this one too. A lotta mice died, fortunately none directly by my hand.",
         ],
         stack: &[],
+        include_in_print: false,
     },
 ];
 

@@ -21,6 +21,14 @@ fn org_line(role: &Role) -> String {
     }
 }
 
+fn role_class(role: &Role) -> &'static str {
+    if role.include_in_print {
+        "rail-row resume-role"
+    } else {
+        "rail-row resume-role resume-web-only"
+    }
+}
+
 /// Kind → accent: languages oxidize, libraries and disciplines patina,
 /// tools and infrastructure stay steel.
 fn chip_class(tech: &Tech) -> &'static str {
@@ -89,7 +97,36 @@ async fn resume(cx: &Cx) -> Result {
         shell(
             title: title.as_str(),
             active: "resume",
-            resume_content()
+            <div class="resume-page">
+                <header class="resume-print-header resume-print-only">
+                    <h1>"Ben Berman"</h1>
+                    <p>"Software engineer · technical founder"</p>
+                    <address>
+                        <ul>
+                            <li>"New York, NY"</li>
+                            <li>
+                                <a href="mailto:ben.m.berman@gmail.com">
+                                    "ben.m.berman@gmail.com"
+                                </a>
+                            </li>
+                            <li>
+                                <a href="https://benjisponge.com">"benjisponge.com"</a>
+                            </li>
+                            <li>
+                                <a href="https://github.com/rivertam">
+                                    "github.com/rivertam"
+                                </a>
+                            </li>
+                            <li>
+                                <a href="https://www.linkedin.com/in/benmberman">
+                                    "linkedin.com/in/benmberman"
+                                </a>
+                            </li>
+                        </ul>
+                    </address>
+                </header>
+                resume_content()
+            </div>
         )
     }
 }
@@ -118,9 +155,10 @@ pub(crate) async fn resume_content(cx: &Cx) -> Result {
     });
 
     view! {
+        <div class="resume-content">
             page_head(stamp: "timeline", title: "Résumé", lede: "")
             if let Some(line) = filter_line {
-                <div class="rail-row mt-8">
+                <div class="rail-row resume-filter mt-8">
                     <p class="rail-stamp rail-stamp-label">"filter"</p>
                     <div class="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-1">
                         <p class="text-ink2">(line)</p>
@@ -137,31 +175,32 @@ pub(crate) async fn resume_content(cx: &Cx) -> Result {
                     </div>
                 </div>
             }
-            <section class="mt-14 space-y-12">
+            <section class="resume-experience mt-14 space-y-12">
+                <h2 class="resume-section-title resume-print-only">"Experience"</h2>
                 for role in shown.iter() {
-                    <article class="rail-row">
+                    <article class=(role_class(role))>
                         <p class="rail-stamp">(role.span)</p>
-                        <div class="min-w-0">
+                        <div class="resume-role-body min-w-0">
                             <h2
-                                class="font-display text-2xl leading-snug font-semibold"
+                                class="resume-role-title font-display text-2xl leading-snug font-semibold"
                             >
                                 (role.title)
                             </h2>
-                            <p class="mt-1 text-ink2">(org_line(role))</p>
+                            <p class="resume-role-org mt-1 text-ink2">(org_line(role))</p>
                             if !role.bullets.is_empty() {
                                 <ul
-                                    class="role-bullets mt-3 max-w-prose space-y-1.5 text-ink2"
+                                    class="role-bullets resume-role-bullets mt-3 max-w-prose space-y-1.5 text-ink2"
                                 >
                                     for bullet in role.bullets.iter() {
                                         <li>(*bullet)</li>
                                     }
                                 </ul>
                             }
-                            <p class="mt-3 font-meta text-xs text-muted">
+                            <p class="resume-role-dates mt-3 font-meta text-xs text-muted">
                                 (role.dates)
                             </p>
                             if !role.stack.is_empty() {
-                                <div class="mt-2 flex flex-wrap gap-1.5">
+                                <div class="resume-role-stack mt-2 flex flex-wrap gap-1.5">
                                     for tech in role.stack.iter() {
                                         <a
                                             class=(stack_chip_class(tech, filter))
@@ -169,7 +208,7 @@ pub(crate) async fn resume_content(cx: &Cx) -> Result {
                                         >
                                             (tech.name)
                                             if is_active(tech, filter) {
-                                                " ×"
+                                                <span class="chip-clear-marker">" ×"</span>
                                             }
                                         </a>
                                     }
@@ -180,18 +219,19 @@ pub(crate) async fn resume_content(cx: &Cx) -> Result {
                 }
             </section>
 
-            <section class="mt-16 space-y-10 border-t border-hairline pt-10">
-                <article class="rail-row">
+            <section class="resume-education mt-16 space-y-10 border-t border-hairline pt-10">
+                <h2 class="resume-section-title resume-print-only">"Education & skills"</h2>
+                <article class="rail-row resume-education-row">
                     <p class="rail-stamp">(EDUCATION.span)</p>
-                    <div class="min-w-0">
-                        <h2 class="font-display text-2xl leading-snug font-semibold">
+                    <div class="resume-education-body min-w-0">
+                        <h2 class="resume-education-school font-display text-2xl leading-snug font-semibold">
                             (EDUCATION.school)
                         </h2>
-                        <p class="mt-1 text-ink2">(EDUCATION.degree)</p>
-                        <p class="mt-1 text-ink2">(EDUCATION.note)</p>
+                        <p class="resume-education-degree mt-1 text-ink2">(EDUCATION.degree)</p>
+                        <p class="resume-education-note mt-1 text-ink2">(EDUCATION.note)</p>
                     </div>
                 </article>
-                <div class="rail-row">
+                <div class="rail-row resume-skills">
                     <p class="rail-stamp rail-stamp-label">"Skills"</p>
                     <div class="flex min-w-0 flex-wrap gap-1.5">
                         for skill in SKILLS.iter() {
@@ -204,7 +244,7 @@ pub(crate) async fn resume_content(cx: &Cx) -> Result {
                                 >
                                     (skill.name)
                                     if is_active(skill, filter) {
-                                        " ×"
+                                        <span class="chip-clear-marker">" ×"</span>
                                     }
                                 </a>
                             } else if let Some(href) = skill.href {
@@ -219,7 +259,7 @@ pub(crate) async fn resume_content(cx: &Cx) -> Result {
 
             // The aside: hand-picked merged patches, shortlog-style. Small type
             // on purpose — the timeline above is the résumé; this is a hobby.
-            <section class="mt-16 space-y-3 border-t border-hairline pt-10">
+            <section class="resume-patches mt-16 space-y-3 border-t border-hairline pt-10">
                 <div class="rail-row">
                     <p class="rail-stamp rail-stamp-label">"patches"</p>
                     <p class="min-w-0 max-w-prose text-ink2">
@@ -240,5 +280,6 @@ pub(crate) async fn resume_content(cx: &Cx) -> Result {
                     </div>
                 }
             </section>
+        </div>
     }
 }
