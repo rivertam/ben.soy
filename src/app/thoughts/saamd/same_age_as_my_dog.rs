@@ -7,7 +7,7 @@ use topcoat::{
     view::view,
 };
 
-use crate::components::{back_link, page_head, rail_prose, rail_section, shell};
+use crate::components::{page_head, rail_prose, rail_section, shell};
 
 crate::register_post!(
     essay,
@@ -249,7 +249,6 @@ async fn same_age_as_my_dog(cx: &Cx) -> Result {
                       Hey, maybe it is right."
                     </p>
                 )
-                back_link(href: "/thoughts", label: "all thoughts")
             </article>
         )
     }

@@ -1,9 +1,10 @@
-# Sign-in, hidden pages, and admin controls
+# Sign-in, comments, hidden pages, and admin controls
 
-Google OIDC login gates hidden pages (currently `/motorcycles` and `/podrick`) and
-admin-only controls on public pages. Identity is a 30-day encrypted
-`__Host-viewer` cookie (`src/app/login.rs`); authorization is
-`src/content/access.rs`, checked on every request.
+Google OIDC login identifies comment authors, gates hidden pages (currently
+`/motorcycles` and `/podrick`), and gates admin-only controls on public pages.
+Identity is a 30-day encrypted `__Host-viewer` cookie (`src/app/login.rs`). Any
+verified Google account may sign in to comment; hidden-page and admin
+authorization remain separate checks on every request (`src/content/access.rs`).
 
 ## Allowlisting someone
 
@@ -17,14 +18,15 @@ Allowlists are database-only, NEVER committed: the repo is public, so a
 friend's grant in `src/content/access.rs` would publish their email to git
 history forever. `ADMIN_EMAIL` is the deliberately committed, app-wide
 administrator: it sees every hidden page without being granted, and it is
-the only identity `/admin/permissions` opens for. The login callback
-refuses to mint a cookie for emails holding no grants, so strangers who
-find `/login` end up holding nothing.
+the only identity `/admin/permissions` opens for. Signing in proves identity
+but grants no hidden-page access by itself; non-admin viewers still need a
+row for the particular hidden page.
 
 When the database is unreachable, grant checks fail closed: hidden pages
-404 for signed-in non-admins, the login callback reports "no access", and
-the admin page says the store is unreachable instead of rendering every
-list empty. The admin rule is a constant comparison and survives outages.
+404 for signed-in non-admins, and the admin page says the store is
+unreachable instead of rendering every list empty. Google sign-in itself
+does not depend on the grant store. The admin rule is a constant comparison
+and survives outages.
 
 A grant opens only the named hidden page. It never grants admin
 capabilities. For example, `/lifting` renders its "upload lift" dialog only
@@ -197,10 +199,17 @@ after the eligible-for-cache rule (later cache rules win).
 
 - Authorization-code flow + PKCE + `state`, both parked in an encrypted
   10-minute `__Host-google-flight` cookie during the Google round-trip.
+- The requested `openid email profile` scopes provide Google's stable `sub`,
+  a verified email, and an optional display name. Comment ownership keys off
+  `sub`, never the mutable display name or a browser-submitted author field.
+  Email remains private viewer/admin data; public comment rendering must not
+  expose it. Treat the profile name as untrusted text and render it through
+  Topcoat's normal escaped interpolation.
 - The `id_token` signature is deliberately unchecked: the token arrives
   directly from Google's token endpoint over TLS, which OIDC permits for
   confidential clients. Issuer, audience, expiry, and `email_verified` are
-  still validated, and emails are lowercased before allowlist checks.
+  still validated, and emails are lowercased before entering the viewer
+  cookie. Older viewer cookies without the optional profile name remain valid.
 - Routes that touch the cookie jar return hand-built `Ok(303)` responses —
   the topcoat cookie layer only flushes `Set-Cookie` on `Ok`, so
   `Err(redirect(…))` would silently drop the write.
@@ -228,7 +237,7 @@ after the eligible-for-cache rule (later cache rules win).
 ## Creating the Google OAuth client (one-time, dashboard)
 
 1. console.cloud.google.com → a project → APIs & Services → OAuth consent
-   screen: External, then publish. The `openid`/`email` scopes are
+   screen: External, then publish. The `openid`/`email`/`profile` scopes are
    non-sensitive, so publishing needs no Google verification review.
 2. Credentials → Create credentials → OAuth client ID → Web application,
    with authorized redirect URIs

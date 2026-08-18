@@ -27,6 +27,7 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 
 ## Gotchas
 
+- Thought comments are live DB state automatically appended by `shell()` to every exact registered post path; ownership is hashed Google `sub`, deletes are body/name-clearing tombstones, and missing settings mean open. Read `docs/comments.md` before changing auth, post slugs, comment routes, schema, or caching
 - A `#[page]` module not declared in its parent `mod` silently doesn't route
 - Tailwind classes are scanned from `.rs` files at build time; a class rendering unstyled means a stale scan: `touch styles/input.css && cargo build`
 - Prose lives in Rust string literals; a `\` continuation eats the newline and the next line's leading spaces, so keep the word-space before the `\`; escape `"`

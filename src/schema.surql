@@ -263,3 +263,55 @@ DEFINE FIELD OVERWRITE k ON podrick_meta TYPE string
     ASSERT string::len($value) >= 1 AND string::len($value) <= 64;
 DEFINE FIELD OVERWRITE v ON podrick_meta TYPE string
     ASSERT string::len($value) <= 256;
+
+-- Threaded comments on registered thoughts. Thoughts themselves remain
+-- code-owned (`content::posts::POSTS`); every row carries that post's stable
+-- slug so reads, replies, and tombstones stay inside one thought. Parent ids
+-- are soft string references: a deleted parent remains as a tombstone, keeping
+-- its descendants connected to the tree. `author_id` is the SHA-256 digest of
+-- Google's stable subject claim; names are display snapshots, not identity.
+DEFINE TABLE OVERWRITE thought_comments SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON thought_comments TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{32}$');
+DEFINE FIELD OVERWRITE thought_slug ON thought_comments TYPE string
+    ASSERT string::len($value) >= 1
+        AND string::len($value) <= 120
+        AND string::matches($value, '^[a-z0-9]+(-[a-z0-9]+)*$');
+DEFINE FIELD OVERWRITE parent_id ON thought_comments TYPE option<string>
+    ASSERT $value IS NONE OR string::matches($value, '^[0-9a-f]{32}$');
+DEFINE FIELD OVERWRITE author_id ON thought_comments TYPE string
+    ASSERT string::matches($value, '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE author_name ON thought_comments TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1 AND string::len($value) <= 100
+    );
+DEFINE FIELD OVERWRITE body ON thought_comments TYPE option<string>
+    ASSERT $value IS NONE OR (
+        string::len($value) >= 1 AND string::len($value) <= 5000
+    );
+DEFINE FIELD OVERWRITE created_at ON thought_comments TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+DEFINE FIELD OVERWRITE deleted_at ON thought_comments TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 253402300799);
+
+-- A missing settings row means comments are enabled. The record key is the
+-- thought slug; the duplicated field makes stored configuration inspectable
+-- without depending on SurrealDB's record-id shape.
+DEFINE TABLE OVERWRITE thought_comment_settings SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON thought_comment_settings TYPE string
+    ASSERT string::len(record::id($value)) >= 1
+        AND string::len(record::id($value)) <= 120
+        AND string::matches(record::id($value), '^[a-z0-9]+(-[a-z0-9]+)*$');
+DEFINE FIELD OVERWRITE thought_slug ON thought_comment_settings TYPE string
+    ASSERT string::len($value) >= 1
+        AND string::len($value) <= 120
+        AND string::matches($value, '^[a-z0-9]+(-[a-z0-9]+)*$');
+DEFINE FIELD OVERWRITE comments_enabled ON thought_comment_settings TYPE bool;
+DEFINE FIELD OVERWRITE updated_at ON thought_comment_settings TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+-- Every create increments this shared per-thought value inside its transaction.
+-- That turns otherwise-disjoint comment inserts into a write conflict, making
+-- the transactional count and cooldown checks authoritative under SurrealDB's
+-- optimistic snapshot isolation. Admin-only settings writes leave it intact.
+DEFINE FIELD OVERWRITE create_version ON thought_comment_settings TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 253402300799);

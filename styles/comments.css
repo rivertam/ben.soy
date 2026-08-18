@@ -1,0 +1,283 @@
+/*
+ * Thought discussions: one server-rendered preorder whose hierarchy is
+ * exposed with aria-level and carried visually in --comment-depth. The capped
+ * indent leaves deep conversations readable on narrow screens.
+ */
+.comments {
+  margin-top: 5rem;
+  padding-top: 2.5rem;
+  border-top: 1px solid var(--color-hairline);
+}
+
+.comments-heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.comments-admin-action,
+.comment-form button,
+.comment-delete-confirm button {
+  border: 1px solid var(--color-oxide);
+  border-radius: 0.2rem;
+  color: var(--color-oxide);
+  background: transparent;
+  font-family: var(--font-meta);
+  cursor: pointer;
+}
+
+.comments-admin-action {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.7rem;
+}
+
+.comments-admin-action:hover,
+.comments-admin-action:focus-visible,
+.comment-form button:hover,
+.comment-form button:focus-visible,
+.comment-delete-confirm button:hover,
+.comment-delete-confirm button:focus-visible {
+  color: var(--color-page);
+  background: var(--color-oxide);
+}
+
+.comments-notice {
+  max-width: 42rem;
+  margin-top: 1.25rem;
+  padding: 0.65rem 0.8rem;
+  border-left: 2px solid var(--color-oxide);
+  color: var(--color-ink2);
+  background: color-mix(in srgb, var(--color-oxide) 7%, transparent);
+  font-family: var(--font-meta);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.comments-state,
+.comments-empty {
+  max-width: 42rem;
+  margin-top: 1.5rem;
+  color: var(--color-ink2);
+  line-height: 1.6;
+}
+
+.comments-empty {
+  color: var(--color-muted);
+  font-family: var(--font-meta);
+  font-size: 0.8rem;
+}
+
+.comments-composer-wrap {
+  max-width: 42rem;
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--color-hairline);
+  background: color-mix(in srgb, var(--color-card) 65%, transparent);
+}
+
+.comments-signed-in {
+  margin-bottom: 0.75rem;
+  color: var(--color-muted);
+  font-family: var(--font-meta);
+  font-size: 0.72rem;
+}
+
+.comments-signed-in span {
+  color: var(--color-ink2);
+}
+
+.comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.comment-form label {
+  color: var(--color-ink2);
+  font-family: var(--font-meta);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.comment-form textarea {
+  width: 100%;
+  min-height: 6.5rem;
+  resize: vertical;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: 0.2rem;
+  outline: none;
+  color: var(--color-ink);
+  background: var(--color-page);
+  font: inherit;
+  line-height: 1.55;
+}
+
+.comment-form textarea:hover {
+  border-color: color-mix(in srgb, var(--color-ink2) 45%, var(--color-hairline));
+}
+
+.comment-form textarea:focus-visible {
+  border-color: var(--color-oxide);
+  outline: 2px solid color-mix(in srgb, var(--color-oxide) 35%, transparent);
+  outline-offset: 1px;
+}
+
+.comment-form-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.comment-form-footer span {
+  color: var(--color-muted);
+  font-family: var(--font-meta);
+  font-size: 0.65rem;
+}
+
+.comment-form button {
+  padding: 0.42rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+.comment-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 2rem;
+  padding: 0;
+  list-style: none;
+}
+
+.comment {
+  --comment-indent: min(calc(var(--comment-depth) * 1.35rem), 12rem);
+
+  margin-left: var(--comment-indent);
+  padding: 0.8rem 0.9rem;
+  border-left: 2px solid
+    color-mix(in srgb, var(--color-patina) 45%, var(--color-hairline));
+  background: color-mix(in srgb, var(--color-card) 38%, transparent);
+  scroll-margin-top: 1.5rem;
+}
+
+.comment:target {
+  border-left-color: var(--color-oxide);
+  background: color-mix(in srgb, var(--color-oxide) 8%, transparent);
+}
+
+.comment-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  color: var(--color-muted);
+  font-family: var(--font-meta);
+  font-size: 0.67rem;
+  line-height: 1.4;
+}
+
+.comment-depth-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.comment-author {
+  color: var(--color-patina);
+  font-weight: 700;
+}
+
+.comment-author-deleted,
+.comment-body-deleted {
+  color: var(--color-muted);
+  font-style: italic;
+}
+
+.comment-body {
+  max-width: 44rem;
+  margin-top: 0.55rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-top: 0.7rem;
+  color: var(--color-muted);
+  font-family: var(--font-meta);
+  font-size: 0.68rem;
+}
+
+.comment-action > summary {
+  width: max-content;
+  color: var(--color-muted);
+  list-style: none;
+  cursor: pointer;
+}
+
+.comment-action > summary::-webkit-details-marker {
+  display: none;
+}
+
+.comment-action > summary:hover,
+.comment-action > summary:focus-visible,
+.comment-action[open] > summary {
+  color: var(--color-oxide);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.comment-action-panel {
+  width: min(38rem, calc(100vw - 5rem));
+  margin-top: 0.7rem;
+  padding: 0.8rem;
+  border: 1px solid var(--color-hairline);
+  background: var(--color-card);
+}
+
+.comment-delete-confirm {
+  display: flex;
+  max-width: 32rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.65rem;
+  padding: 0.7rem;
+  border: 1px solid var(--color-hairline);
+  color: var(--color-ink2);
+  background: var(--color-card);
+  line-height: 1.45;
+}
+
+.comment-delete-confirm button {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.68rem;
+}
+
+@media (max-width: 40rem) {
+  .comment {
+    --comment-indent: min(calc(var(--comment-depth) * 0.55rem), 3.3rem);
+
+    padding-inline: 0.65rem;
+  }
+
+  .comment-action-panel {
+    width: calc(100vw - 4rem - var(--comment-indent));
+  }
+}

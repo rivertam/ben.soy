@@ -13,7 +13,7 @@ mod not_found;
 mod pwa;
 mod response_layer;
 mod resume;
-mod thoughts;
+pub(crate) mod thoughts;
 mod workout_upload;
 
 use benjisponge::data::Data;

@@ -1,4 +1,4 @@
-//! Google sign-in for hidden pages.
+//! Google sign-in for comments, hidden pages, and admin controls.
 //!
 //! Authorization-code flow with PKCE and a `state` check, both stashed in a
 //! short-lived encrypted cookie while the browser round-trips through Google.
@@ -6,9 +6,10 @@
 //! `id_token`'s claims without checking its signature — it arrived directly
 //! from Google's token endpoint over TLS, which OIDC permits — but still
 //! validates issuer, audience, expiry, and `email_verified`. Identity then
-//! lives in an encrypted `__Host-viewer` cookie; what that identity may see
-//! is decided per request by `content::access`, so revoking someone is an
-//! allowlist edit, not a session hunt.
+//! lives in an encrypted `__Host-viewer` cookie. Any verified Google account
+//! may hold that identity so it can author comments; what hidden pages it may
+//! see is still decided per request by `content::access`, so revoking a hidden
+//! page is an allowlist edit, not a session hunt.
 //!
 //! Every route here that touches the cookie jar returns a hand-built
 //! `Ok(Response)`: the cookie layer only flushes `Set-Cookie` on `Ok`, so the
@@ -21,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use topcoat::{
     Result,
-    context::{Cx, app_context},
+    context::Cx,
     cookie::{Cookie, Cookies, SameSite, private_cookies, time},
     router::{
         Body, HeaderMap, HeaderValue, Response, StatusCode, header, headers, page, query_params,
@@ -30,12 +31,9 @@ use topcoat::{
     view::view,
 };
 
-use benjisponge::auth::secrets_match;
-use benjisponge::data::Data;
-
 use crate::components::shell;
-use crate::content::access::known_viewer;
 use crate::util::urlencode;
+use benjisponge::auth::secrets_match;
 
 const VIEWER_COOKIE: &str = "viewer";
 /// What the browser calls the viewer cookie: `jar()`'s `override_prefix_host`
@@ -44,17 +42,23 @@ const VIEWER_COOKIE: &str = "viewer";
 pub(crate) const VIEWER_COOKIE_BROWSER_NAME: &str = "__Host-viewer";
 const FLIGHT_COOKIE: &str = "google-flight";
 pub(crate) const POPUP_ERROR_PARAM: &str = "auth_error";
+/// Maximum local return target carried through the OAuth round trip. Features
+/// that append a fragment before login derive their own raw-path ceiling from
+/// this value so a valid target is not later collapsed to `/`.
+pub(crate) const MAX_AUTH_RETURN_BYTES: usize = 512;
 const VIEWER_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const FLIGHT_TTL_SECONDS: i64 = 10 * 60;
 const NO_STORE: &str = "no-store";
 
 /// The signed-in identity, decrypted from the viewer cookie. Holding one
 /// proves who the visitor is, never what they may see — pages check
-/// `content::access` on every request. (The cookie also carries Google's
-/// stable `sub`, unused today, so authorization could pin ids over emails
-/// without re-issuing sessions.)
+/// `content::access` on every request. Google's stable `sub` is the ownership
+/// identity for authored records; `name` is optional display metadata and must
+/// never be used for authorization.
 pub struct Viewer {
+    pub sub: String,
     pub email: String,
+    pub name: Option<String>,
 }
 
 /// The current request's verified viewer, if any. Any parse or expiry
@@ -79,13 +83,18 @@ fn jar(cx: &Cx) -> impl Cookies + '_ {
 struct ViewerClaims {
     sub: String,
     email: String,
+    /// Added after viewer cookies first shipped; old cookies remain readable.
+    #[serde(default)]
+    name: Option<String>,
     exp: i64,
 }
 
 fn parse_viewer(value: &str, now: i64) -> Option<Viewer> {
     let claims: ViewerClaims = serde_json::from_str(value).ok()?;
     (claims.exp > now).then_some(Viewer {
+        sub: claims.sub,
         email: claims.email,
+        name: claims.name,
     })
 }
 
@@ -151,8 +160,9 @@ async fn login(cx: &Cx) -> Result {
                             </form>
                         } else if configured {
                             <p class="mt-4 max-w-prose text-ink2">
-                                "A few pages here are shared with particular people. If "
-                                "you're one of them, this is the door."
+                                "Sign in with Google to join the conversation on thoughts. "
+                                "A few private pages are also shared with particular people; "
+                                "signing in does not grant access to those."
                             </p>
                             <p class="mt-6">
                                 <a class="oxlink font-meta" href=(google_href.as_str())>
@@ -197,7 +207,7 @@ async fn google_start(cx: &Cx) -> Result<Response> {
     );
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth\
-         ?client_id={}&redirect_uri={}&response_type=code&scope=openid%20email\
+         ?client_id={}&redirect_uri={}&response_type=code&scope=openid%20email%20profile\
          &state={}&code_challenge={}&code_challenge_method=S256&prompt=select_account",
         urlencode(&client_id),
         urlencode(&redirect_uri()),
@@ -253,12 +263,10 @@ async fn google_callback(cx: &Cx) -> Result<Response> {
         }
     };
     let email = claims.email.to_ascii_lowercase();
-    if !known_viewer(app_context::<Data>(cx), &email).await {
-        return Ok(callback_error(&flight, "noaccess"));
-    }
     let viewer_value = serde_json::to_string(&ViewerClaims {
         sub: claims.sub,
         email,
+        name: claims.name,
         exp: now + VIEWER_TTL_SECONDS,
     })
     .expect("viewer serializes");
@@ -297,7 +305,7 @@ fn sanitize_next(raw: Option<&str>) -> String {
     let ok = raw.starts_with('/')
         && !raw.starts_with("//")
         && !raw.contains('\\')
-        && raw.len() <= 512
+        && raw.len() <= MAX_AUTH_RETURN_BYTES
         && raw.bytes().all(|b| (0x21..0x7f).contains(&b));
     if ok { raw.to_string() } else { fallback() }
 }
@@ -305,7 +313,6 @@ fn sanitize_next(raw: Option<&str>) -> String {
 fn login_notice(code: &str) -> &'static str {
     match code {
         "denied" => "Google sign-in was cancelled.",
-        "noaccess" => "That Google account doesn't have access to anything here.",
         "expired" => "That sign-in attempt expired — try again.",
         _ => "Sign-in failed — try again.",
     }
@@ -482,6 +489,8 @@ struct GoogleClaims {
     sub: String,
     email: String,
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     email_verified: bool,
 }
 
@@ -574,7 +583,12 @@ mod tests {
         assert_eq!(sanitize_next(Some("//evil.example")), "/");
         assert_eq!(sanitize_next(Some("/\\evil.example")), "/");
         assert_eq!(sanitize_next(Some("/a\r\nSet-Cookie: x")), "/");
-        assert_eq!(sanitize_next(Some(&format!("/{}", "a".repeat(600)))), "/");
+        let boundary = format!("/{}", "a".repeat(MAX_AUTH_RETURN_BYTES - 1));
+        assert_eq!(sanitize_next(Some(&boundary)), boundary);
+        assert_eq!(
+            sanitize_next(Some(&format!("/{}", "a".repeat(MAX_AUTH_RETURN_BYTES)))),
+            "/"
+        );
     }
 
     #[test]
@@ -619,13 +633,21 @@ mod tests {
         let value = serde_json::to_string(&ViewerClaims {
             sub: "google-sub-1".into(),
             email: "friend@example.com".into(),
+            name: Some("Friendly Person".into()),
             exp: 1_000,
         })
         .unwrap();
         let viewer = parse_viewer(&value, 999).expect("not yet expired");
+        assert_eq!(viewer.sub, "google-sub-1");
         assert_eq!(viewer.email, "friend@example.com");
+        assert_eq!(viewer.name.as_deref(), Some("Friendly Person"));
         assert!(parse_viewer(&value, 1_000).is_none());
         assert!(parse_viewer("not json", 0).is_none());
+
+        let old_value = r#"{"sub":"google-sub-2","email":"old@example.com","exp":1000}"#;
+        let old_viewer = parse_viewer(old_value, 999).expect("old cookies remain readable");
+        assert_eq!(old_viewer.sub, "google-sub-2");
+        assert_eq!(old_viewer.name, None);
     }
 
     #[test]
@@ -659,6 +681,7 @@ mod tests {
             "exp": 2_000,
             "sub": "google-sub-1",
             "email": "Friend@Example.com",
+            "name": "Friendly Person",
             "email_verified": true,
         })
     }
@@ -668,6 +691,12 @@ mod tests {
         let claims = validate_id_token(&token_with(&good_claims()), "client-123", 1_000).unwrap();
         assert_eq!(claims.sub, "google-sub-1");
         assert_eq!(claims.email, "Friend@Example.com");
+        assert_eq!(claims.name.as_deref(), Some("Friendly Person"));
+
+        let mut without_profile = good_claims();
+        without_profile.as_object_mut().unwrap().remove("name");
+        let claims = validate_id_token(&token_with(&without_profile), "client-123", 1_000).unwrap();
+        assert_eq!(claims.name, None);
     }
 
     #[test]

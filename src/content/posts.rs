@@ -131,14 +131,38 @@ pub static POSTS: LazyLock<Vec<&'static Post>> = LazyLock::new(|| {
     posts
 });
 
+/// The registered post at an exact canonical `/thoughts/{slug}` path.
+///
+/// Matching through the registry keeps page-wide behavior attached to posts,
+/// not merely to anything that happens to live below the `/thoughts` prefix.
+pub fn post_for_path(path: &str) -> Option<&'static Post> {
+    let slug = path.strip_prefix("/thoughts/")?;
+    POSTS.iter().copied().find(|post| post.slug == slug)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn canonical_slug(slug: &str) -> bool {
+        !slug.is_empty()
+            && slug.split('-').all(|part| {
+                !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            })
+    }
 
     #[test]
     fn metadata_is_unique_complete_and_newest_first() {
         assert!(!POSTS.is_empty());
         for post in POSTS.iter() {
+            assert!(
+                canonical_slug(post.slug),
+                "non-canonical slug {}",
+                post.slug
+            );
             assert!(
                 !post.slug.is_empty()
                     && !post.title.is_empty()
@@ -167,5 +191,22 @@ mod tests {
                 post.slug
             );
         }
+    }
+
+    #[test]
+    fn exact_thought_paths_resolve_through_the_registry() {
+        for post in POSTS.iter() {
+            let path = format!("/thoughts/{}", post.slug);
+            assert_eq!(
+                post_for_path(&path).map(|found| found.slug),
+                Some(post.slug)
+            );
+            assert!(post_for_path(&format!("{path}/")).is_none());
+            assert!(post_for_path(&format!("{path}/replies")).is_none());
+        }
+
+        assert!(post_for_path("/thoughts").is_none());
+        assert!(post_for_path("/thoughts/").is_none());
+        assert!(post_for_path("/log").is_none());
     }
 }

@@ -14,8 +14,8 @@ use topcoat::{
 use crate::app::login::{
     POPUP_ERROR_PARAM, auth_return_target, login_configured, popup_notice, viewer,
 };
-use crate::components::modal;
-use crate::content::{access, interests::INTERESTS, logbook::LOG, themes};
+use crate::components::{back_link, modal};
+use crate::content::{access, interests::INTERESTS, logbook::LOG, posts::post_for_path, themes};
 use crate::util::urlencode;
 
 pub const ZILLA_SLAB: Font = fontsource_font!(ZILLA_SLAB, host: Asset);
@@ -165,6 +165,7 @@ pub async fn shell(
     // render because cached HTML cannot know whether localStorage will apply
     // an alternate finish before paint.
     let request_uri = uri(cx);
+    let post = post_for_path(request_uri.path());
     let return_to = auth_return_target(cx);
     let login_href = format!("/login?next={}", urlencode(&return_to));
     let windows = session_windows(request_uri.path(), &hidden_pages);
@@ -174,6 +175,13 @@ pub async fn shell(
         .map(|win| win.label.clone())
         .unwrap_or_default();
     let theme_boot_js = themes::boot_script();
+    let cache_control = if post.is_some() {
+        // Comments and their deletion tombstones are live database state.
+        // Never let an anonymous edge copy hide a write or an admin closure.
+        HeaderValue::from_static("no-store")
+    } else {
+        HeaderValue::from_static("public, max-age=0, s-maxage=86400")
+    };
     view! {
         // Default edge TTL for HTML that does not set Cache-Control itself.
         // First mention wins: pages that emit their own header before shell()
@@ -181,7 +189,7 @@ pub async fn shell(
         // Cloudflare CDN honors s-maxage when the zone Cache Rule makes HTML
         // eligible; deploy CI purges the zone so RELEASE_ID-style busting is
         // not needed.
-        ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=86400")))
+        ((header::CACHE_CONTROL, cache_control))
         <!DOCTYPE html>
         <html lang="en">
             <head>
@@ -278,7 +286,13 @@ pub async fn shell(
                 <main
                     class="mx-auto w-full max-w-4xl flex-1 px-5 pb-20"
                     data-session-title=(pane_title.as_str())
-                >(child)</main>
+                >
+                    (child)
+                    if let Some(post) = post {
+                        crate::app::thoughts::comments::comment_section(slug: post.slug)
+                        back_link(href: "/thoughts", label: "all thoughts")
+                    }
+                </main>
                 <footer class="mx-auto w-full max-w-4xl px-5 pb-8">
                     <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-t border-hairline pt-4 font-meta text-xs text-muted">
                         <span class="flex flex-wrap gap-x-5 gap-y-2">
@@ -431,7 +445,7 @@ async fn account_dialog(cx: &Cx, return_to: &str) -> Result {
             } else {
                 if configured {
                     <p class="auth-dialog-copy">
-                        "A few pages here are shared with particular people. If you’re one of them, this is the door."
+                        "Sign in with Google to join the comments or open a private page shared with you."
                     </p>
                     <div class="auth-dialog-actions">
                         <a

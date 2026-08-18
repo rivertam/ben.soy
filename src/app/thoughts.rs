@@ -1,3 +1,4 @@
+pub(crate) mod comments;
 pub mod pesky_code;
 pub mod planes;
 pub mod saamd;

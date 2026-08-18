@@ -87,22 +87,6 @@ pub async fn may_view(data: &Data, email: &str, path: &str) -> bool {
     }
 }
 
-/// Whether `email` holds any grant at all. The login callback refuses to
-/// mint a viewer cookie for accounts with no access, so strangers who find
-/// `/login` end up holding nothing.
-pub async fn known_viewer(data: &Data, email: &str) -> bool {
-    if is_admin(email) {
-        return true;
-    }
-    match granted_paths(data, email).await {
-        Ok(paths) => !paths.is_empty(),
-        Err(error) => {
-            log_failure("known_viewer", &error);
-            false
-        }
-    }
-}
-
 /// The hidden pages `email` may view, in registry order. This is the whole
 /// "only shows up if I allowlist you" surface: anonymous visitors never reach
 /// this call, everyone else sees exactly their grants.

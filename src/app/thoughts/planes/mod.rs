@@ -33,9 +33,7 @@ use topcoat::{
     view::view,
 };
 
-use crate::components::{
-    back_link, doc_head, ext_link, full_bleed, inline_popover, margin_notes, shell,
-};
+use crate::components::{doc_head, ext_link, full_bleed, inline_popover, margin_notes, shell};
 
 use self::{
     airports::{Airport, find_airport},
@@ -360,7 +358,6 @@ async fn planes(cx: &Cx) -> Result {
                     )
                 </div>
             )
-            back_link(href: "/thoughts", label: "all thoughts")
         </article>
     ) }
 }
