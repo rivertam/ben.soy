@@ -164,7 +164,7 @@ origin doing its job, not a bug to fix.
   claim was never posted, `tick` finds the workout gone and skips it rather
   than announcing a lift that no longer exists.
 - **Only `source = 'manual'` workouts are announced.** CSV history does not
-  join the `/log` timeline or `/feed.xml` either, and a resync would
+  join the `/` timeline or `/feed.xml` either, and a resync would
   otherwise replay years of workouts into the channel.
 - **Podrick never writes a fitness table.** It reads `workouts` to decide what
   is eligible and owns the `podrick_*` tables; everything a message *says*

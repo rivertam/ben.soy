@@ -1,14 +1,19 @@
-//! `~`: the front door, styled after netrw. One flat listing of everything
-//! the site holds — the log, the résumé, every interest — because a
-//! directory listing is the honest shape of a personal site. Granted hidden
-//! pages join as dotfiles for their viewers only (the response layer keeps
-//! those renders out of the CDN), and old `/interests` bookmarks land here.
+//! `~`: the front door is the logbook itself. Desktop renders the timeline
+//! straight — the tmux windows are the site map — while phones get the pane
+//! deck: log ⇄ felix ⇄ lifting ⇄ résumé as side-by-side panes (real swipe
+//! via CSS scroll-snap; `browser/panes.js` keeps the tab bar and the hash
+//! honest), plus a netrw-style `more` pane listing everything else. Granted
+//! hidden pages join that listing as dotfiles for their viewers only (the
+//! response layer keeps those renders out of the CDN). Desktop reaches the
+//! listing too: the hero's "multitudes" targets `#more`, which unfolds
+//! below the timeline. Old `/interests` bookmarks land here.
 
 use benjisponge::data::Data;
 use topcoat::{
     Result,
+    asset::{Asset, asset},
     context::{Cx, app_context},
-    router::{error::redirect_permanent, page, route, uri},
+    router::{HeaderValue, error::redirect_permanent, header, page, route},
     view::view,
 };
 
@@ -18,17 +23,16 @@ use crate::{
     content::{access, interests::INTERESTS},
 };
 
-/// True when a query string carries a key the old `/` timeline used
-/// (`?kind=`, `?tag=`, `?q=`, `?page=`) and should land on `/log` instead.
-fn legacy_timeline_query(query: &str) -> bool {
-    query
-        .split('&')
-        .any(|pair| matches!(pair.split('=').next(), Some("kind" | "tag" | "q" | "page")))
-}
+const PANES_JS: Asset = asset!("../components/browser/panes.js");
 
-/// One listing row: the name as netrw would print it (directories keep
-/// their trailing slash, hidden pages wear a leading dot), where it goes,
-/// and the registry teaser as the long-listing annotation.
+/// Interests promoted to their own deck pane (and pane-bar tab); the `more`
+/// listing carries the rest. Tests below hold this in line with the interest
+/// registry and the shell's `PANE_TABS`.
+const PANE_INTERESTS: [&str; 2] = ["felix", "lifting"];
+
+/// One `more` listing row: the name as netrw would print it (directories
+/// keep their trailing slash, hidden pages wear a leading dot), where it
+/// goes, and the registry teaser as the long-listing annotation.
 struct Listing {
     name: String,
     href: String,
@@ -38,44 +42,24 @@ struct Listing {
 
 #[page("/")]
 async fn home(cx: &Cx) -> Result {
-    // The timeline lived at `/` until 2026-08 and its filter and pager URLs
-    // travel; forward them to /log with the query intact rather than
-    // quietly rendering a directory. (The query string is never decoded, so
-    // it is safe inside a Location header.)
-    if let Some(query) = uri(cx).query()
-        && legacy_timeline_query(query)
-    {
-        return Err(redirect_permanent(&format!("/log?{query}")).into());
-    }
-
-    // Allowlisted hidden pages join the listing for their viewers only, the
-    // way netrw shows dotfiles to people who ask.
+    // Allowlisted hidden pages join the `more` listing for their viewers
+    // only, the way netrw shows dotfiles to people who ask.
     let current = viewer(cx);
     let granted: Vec<&access::HiddenPage> = match current.as_ref() {
         Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
         None => Vec::new(),
     };
 
-    let mut rows: Vec<Listing> = vec![
-        Listing {
-            name: "log/".to_string(),
-            href: "/log".to_string(),
-            blurb: "the logbook: essays, notes, spire wins, lifts",
+    let mut rows: Vec<Listing> = INTERESTS
+        .iter()
+        .filter(|interest| !PANE_INTERESTS.contains(&interest.slug))
+        .map(|interest| Listing {
+            name: format!("{}/", interest.slug),
+            href: format!("/{}", interest.slug),
+            blurb: interest.teaser,
             hidden: false,
-        },
-        Listing {
-            name: "resume/".to_string(),
-            href: "/resume".to_string(),
-            blurb: "what I do professionally",
-            hidden: false,
-        },
-    ];
-    rows.extend(INTERESTS.iter().map(|interest| Listing {
-        name: format!("{}/", interest.slug),
-        href: format!("/{}", interest.slug),
-        blurb: interest.teaser,
-        hidden: false,
-    }));
+        })
+        .collect();
     rows.extend(granted.iter().map(|page| Listing {
         name: format!(".{}/", page.stamp),
         href: page.path.to_string(),
@@ -90,75 +74,97 @@ async fn home(cx: &Cx) -> Result {
     });
 
     view! {
+        // Fresh runs and lifts appear within a minute; CDN honors s-maxage
+        // (see docs/railway-deploy.md). The embedded lifting pane rides the
+        // same TTL — only the standalone /lifting page stays no-store.
+        ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
         shell(title: "", active: "~",
-        <section class="netrw mt-12 font-meta text-[13px] sm:text-sm">
-            <h1 class="sr-only">"Ben Berman"</h1>
-            // The banner: vim comment lines, muted like the plugin they
-            // imitate. Truncation over wrapping — a clipped rule is still a
-            // rule, a wrapped one is debris.
-            <header class="text-muted" aria-hidden="true">
-                <p class="overflow-hidden text-ellipsis whitespace-pre">"\" ============================================================"</p>
-                <p class="overflow-hidden text-ellipsis whitespace-pre">"\" Welcome to my site!"</p>
-                <p class="overflow-hidden text-ellipsis whitespace-pre">"\"   Owned by       Ben Berman (software developer, New York)"</p>
-                <p class="overflow-hidden text-ellipsis whitespace-pre">"\"   Quick Help:    "<span class="netrw-keys">"j/k:move  <cr>:open  f:follow  "</span>"clicking also works"</p>
-                <p class="overflow-hidden text-ellipsis whitespace-pre">"\" ============================================================"</p>
-            </header>
-            <div class="mt-1 overflow-hidden text-ellipsis whitespace-pre text-muted">
-                "\"   Session:       "
-                if current.is_some() {
-                    <a
-                        class="netrw-login"
-                        href="/login?next=%2F"
-                        data-modal-open="account-dialog"
-                        aria-label="signed-in account"
-                    >"signed in"</a>
-                    " · "
-                    <a
-                        class="netrw-logout cursor-pointer"
-                        href="/login?next=%2F"
-                        data-modal-open="account-dialog"
-                    >"logout"</a>
-                } else {
-                    <a
-                        class="netrw-login"
-                        href="/login?next=%2F"
-                        data-modal-open="account-dialog"
-                        aria-label="log in"
-                    >"login"</a>
-                }
-            </div>
-            <ul class="mt-1 space-y-1">
-                <li class="text-muted" title="there is no up from here">"../"</li>
-                for row in rows.iter() {
-                    <li
-                        class="netrw-row relative"
-                        data-rail-item=""
-                        data-rail-href=(row.href.as_str())
-                    >
-                        <a
-                            class=(if row.hidden {
-                                "group flex items-baseline gap-x-5 no-underline opacity-75"
+        <div class="pane-deck" data-pane-deck="">
+            <section class="pane pane-log" id="log" data-pane="" aria-label="the log">
+                crate::app::log::timeline()
+            </section>
+            <section class="pane pane-felix" id="felix" data-pane="" aria-label="felix">
+                crate::app::interests::felix::felix_content(initial_photo: "", standalone: false)
+            </section>
+            <section class="pane" id="lifting" data-pane="" aria-label="lifting">
+                crate::app::interests::lifting::home::lifting_home_content()
+            </section>
+            <section class="pane" id="resume" data-pane="" aria-label="résumé">
+                crate::app::resume::resume_content()
+            </section>
+            // The `more` pane: a netrw-flavored flat listing of everything
+            // without a pane of its own, closed by the session line and the
+            // social row (the shell footer is hidden while the deck owns the
+            // phone viewport).
+            <section class="pane pane-more" id="more" data-pane="" aria-label="everything else">
+                <section class="netrw mt-6 font-meta text-[13px] sm:mt-16 sm:text-sm">
+                    <h2 class="sr-only">"Everything else"</h2>
+                    <p class="text-muted">"~/ everything else"</p>
+                    <ul class="mt-5 space-y-4 sm:mt-2 sm:space-y-1">
+                        for row in rows.iter() {
+                            <li
+                                class="netrw-row relative"
+                                data-rail-item=""
+                                data-rail-href=(row.href.as_str())
+                            >
+                                <a
+                                    class=(if row.hidden {
+                                        "group flex flex-col gap-y-0.5 no-underline opacity-75 sm:flex-row sm:items-baseline sm:gap-x-5"
+                                    } else {
+                                        "group flex flex-col gap-y-0.5 no-underline sm:flex-row sm:items-baseline sm:gap-x-5"
+                                    })
+                                    href=(row.href.as_str())
+                                >
+                                    <span class=(if row.name.ends_with('/') {
+                                        "text-oxide group-hover:underline sm:w-36 sm:shrink-0"
+                                    } else {
+                                        "text-ink group-hover:underline sm:w-36 sm:shrink-0"
+                                    })>(row.name.as_str())</span>
+                                    <span class="min-w-0 text-muted sm:truncate">(row.blurb)</span>
+                                </a>
+                            </li>
+                        }
+                    </ul>
+                    <div class="mt-10 border-t border-hairline pt-4 text-muted">
+                        <p>
+                            "\" Session:  "
+                            if current.is_some() {
+                                <a
+                                    class="netrw-login"
+                                    href="/login?next=%2F"
+                                    data-modal-open="account-dialog"
+                                    aria-label="signed-in account"
+                                >"signed in"</a>
+                                " · "
+                                <a
+                                    class="netrw-logout cursor-pointer"
+                                    href="/login?next=%2F"
+                                    data-modal-open="account-dialog"
+                                >"logout"</a>
                             } else {
-                                "group flex items-baseline gap-x-5 no-underline"
-                            })
-                            href=(row.href.as_str())
-                        >
-                            <span class=(if row.name.ends_with('/') {
-                                "w-36 shrink-0 text-oxide group-hover:underline"
-                            } else {
-                                "w-36 shrink-0 text-ink group-hover:underline"
-                            })>(row.name.as_str())</span>
-                            <span class="min-w-0 truncate text-muted">(row.blurb)</span>
-                        </a>
-                    </li>
-                }
-            </ul>
-        </section>
+                                <a
+                                    class="netrw-login"
+                                    href="/login?next=%2F"
+                                    data-modal-open="account-dialog"
+                                    aria-label="log in"
+                                >"login"</a>
+                            }
+                        </p>
+                        <p class="mt-3 flex flex-wrap gap-x-5 gap-y-1">
+                            <a href="https://www.linkedin.com/in/benmberman" class="quiet-link">"LinkedIn"</a>
+                            <a href="https://github.com/rivertam" class="quiet-link">"GitHub"</a>
+                            <a href="https://www.reddit.com/user/BenjiSponge" class="quiet-link">"Reddit"</a>
+                        </p>
+                    </div>
+                </section>
+            </section>
+            <script type="module" src=(PANES_JS)></script>
+        </div>
         )
     }
 }
 
-/// The old interests index, folded into the listing above: bookmarks land
+/// The old interests index, folded into the `more` listing: bookmarks land
 /// on `~`. (The per-page `/interests/{slug}` redirects live with their
 /// pages.)
 #[route(GET "/interests")]
@@ -168,16 +174,43 @@ async fn legacy_interests() -> Result {
 
 #[cfg(test)]
 mod tests {
-    use super::legacy_timeline_query;
+    use super::PANE_INTERESTS;
+    use crate::components::chrome::PANE_TABS;
+    use crate::content::interests::INTERESTS;
 
+    const HOME_SRC: &str = include_str!("home.rs");
+
+    /// The shell's pane-bar tabs and the deck's panes are two hand-written
+    /// lists; every tab must address a pane id rendered here, and nothing
+    /// but the five panes may carry the deck marker.
     #[test]
-    fn legacy_timeline_queries_are_recognized() {
-        assert!(legacy_timeline_query("kind=note"));
-        assert!(legacy_timeline_query("page=2"));
-        assert!(legacy_timeline_query("tag=spire&q=how%20bad"));
-        assert!(legacy_timeline_query("utm_source=x&page=3"));
-        assert!(!legacy_timeline_query("utm_source=x"));
-        assert!(!legacy_timeline_query("unkind=true"));
-        assert!(!legacy_timeline_query(""));
+    fn every_pane_tab_has_a_deck_pane() {
+        for tab in PANE_TABS {
+            assert!(
+                HOME_SRC.contains(&format!("id=\"{tab}\"")),
+                "pane tab `{tab}` has no deck pane"
+            );
+        }
+        assert_eq!(
+            HOME_SRC.matches("data-pane=\"\"").count(),
+            PANE_TABS.len(),
+            "deck panes and pane tabs diverged"
+        );
+    }
+
+    /// Promoted interests must exist in the registry and on the tab bar;
+    /// everything else lands in the `more` listing.
+    #[test]
+    fn promoted_interests_are_registered_and_tabbed() {
+        for slug in PANE_INTERESTS {
+            assert!(
+                INTERESTS.iter().any(|interest| interest.slug == slug),
+                "promoted pane `{slug}` is not a registered interest"
+            );
+            assert!(
+                PANE_TABS.contains(&slug),
+                "promoted interest `{slug}` is missing from the pane tabs"
+            );
+        }
     }
 }

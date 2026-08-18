@@ -64,6 +64,7 @@ const makeBall = (x, y, size) => {
     source: element,
     element,
     originalStyle: null,
+    round: true,
     x,
     y,
     width: size,
@@ -172,6 +173,7 @@ const makeProp = (source) => {
     source,
     element,
     originalStyle: source.getAttribute("style"),
+    round: false,
     x: box.left,
     y: box.top,
     width: box.width,
@@ -236,8 +238,23 @@ const juggleFrame = (now) => {
     prop.y += prop.vy * dt;
     prop.angle += prop.spin * dt;
 
+    // The physics box is the unrotated element, but the element is PAINTED
+    // rotated about its center — a spun rectangle's corners reach below
+    // y + height (nearly half the width for the page-wide links a phone
+    // deals in). Clamp by the rotated extent so no corner pierces the
+    // floor; a circle's silhouette ignores rotation, so balls skip it.
+    const rad = (prop.angle * Math.PI) / 180;
+    const overhang = prop.round
+      ? 0
+      : Math.max(
+          0,
+          (Math.abs(prop.width * Math.sin(rad)) +
+            Math.abs(prop.height * Math.cos(rad)) -
+            prop.height) /
+            2
+        );
     const right = Math.max(0, innerWidth - prop.width);
-    const floor = Math.max(0, innerHeight - prop.height);
+    const floor = Math.max(0, innerHeight - prop.height - overhang);
     if (prop.x < 0) {
       prop.x = 0;
       prop.vx = Math.abs(prop.vx) * 0.55;
@@ -252,7 +269,17 @@ const juggleFrame = (now) => {
       prop.vy = -Math.abs(prop.vy) * 0.38;
       prop.vx *= 0.82;
       prop.spin *= 0.72;
-      if (Math.abs(prop.vy) < 70 && Math.abs(prop.vx) < 28) {
+      // A rectangle doesn't balance on a corner: while it sits on the
+      // floor, ease it toward the nearest flat half-turn so it comes to
+      // rest flush with the bottom edge.
+      let flatEnough = true;
+      if (!prop.round) {
+        const flat = Math.round(prop.angle / 180) * 180;
+        prop.angle += (flat - prop.angle) * 0.25;
+        flatEnough = Math.abs(prop.angle - flat) < 0.8;
+        if (flatEnough) prop.angle = flat;
+      }
+      if (Math.abs(prop.vy) < 70 && Math.abs(prop.vx) < 28 && flatEnough) {
         prop.vx = 0;
         prop.vy = 0;
         prop.spin = 0;
@@ -263,6 +290,19 @@ const juggleFrame = (now) => {
   }
   if (awake) juggleRaf = requestAnimationFrame(juggleFrame);
 };
+
+// A sleeping prop trusts the floor it fell asleep on, but viewports move
+// under the pile — the phone URL bar retracts and re-expands, a rotation
+// swaps the axes, a window resizes — and a stale floor leaves props
+// stranded below the visible bottom. Any size change wakes everything; the
+// next physics pass clamps the pile back onto the floor that exists now.
+const wakeSleepers = () => {
+  if (!props.size) return;
+  for (const prop of props) prop.sleeping = false;
+  ensureJuggleFrame();
+};
+addEventListener("resize", wakeSleepers);
+visualViewport?.addEventListener("resize", wakeSleepers);
 
 const stopJuggling = () => {
   if (juggleRaf) cancelAnimationFrame(juggleRaf);

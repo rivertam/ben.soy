@@ -8,7 +8,6 @@ use crate::content::{interests::INTERESTS, posts::POSTS};
 pub fn site_routes() -> Vec<String> {
     let mut routes = vec![
         "/".to_string(),
-        "/log".to_string(),
         "/thoughts".to_string(),
         "/resume".to_string(),
         "/llms".to_string(),

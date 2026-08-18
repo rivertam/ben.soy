@@ -95,7 +95,7 @@ file under "API contract".
   evidence, bounds and strictly decodes the form, parses the text in
   `archive/manual.rs`, and uses the create-only write in `archive/db.rs`.
   A successful workout has `source='manual'`, appears immediately throughout
-  `/lifting`, and joins the `/log` timeline and `/feed.xml`; CSV history
+  `/lifting`, and joins the `/` timeline and `/feed.xml`; CSV history
   never joins either feed. The
   progressive clipboard action reads the copied Lyfta share, publishes it
   through that same POST, then replaces the clipboard with the canonical text

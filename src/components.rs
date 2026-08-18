@@ -9,7 +9,7 @@
 //! `crate::components::{shell, rail_section, …}`.
 
 mod cards;
-mod chrome;
+pub(crate) mod chrome;
 mod links;
 mod modals;
 mod popover;

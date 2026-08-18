@@ -815,8 +815,9 @@ body:has([data-page-band]) .theme-music {
 
 /* On viewports where the pill would sit over the footer's right-aligned
    last line (the login/sign-out control), give the footer clearance so
-   nothing interactive hides under it. */
-@media (max-width: 68rem) {
+   nothing interactive hides under it. (Below 40rem the rack itself is gone —
+   phone chrome in styles/panes.css — so no clearance is owed.) */
+@media (40rem <= width <= 68rem) {
   footer {
     padding-bottom: 4.6rem;
   }

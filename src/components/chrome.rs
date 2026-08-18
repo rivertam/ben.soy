@@ -56,16 +56,14 @@ struct SessionWindow {
     current: bool,
 }
 
-/// The default session's windows: the site's full flat map, mirroring the `~`
-/// listing (~, the log, the résumé, each interest, any granted hidden
-/// pages) — a superset of the header's three fixed links — numbered in
-/// render order.
+/// The default session's windows: the site's full flat map (~ — the logbook
+/// home — the résumé, each interest, any granted hidden pages) — a superset
+/// of the header's fixed links — numbered in render order.
 /// The current window is the longest matching path prefix — `/lifting/log`
 /// lights `lifting` while `/thoughts/anything` stays home at `~`.
 fn session_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec<SessionWindow> {
     let mut windows: Vec<(String, String)> = vec![
         ("~".to_string(), "/".to_string()),
-        ("log".to_string(), "/log".to_string()),
         ("resume".to_string(), "/resume".to_string()),
     ];
     windows.extend(
@@ -98,6 +96,43 @@ fn session_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> 
         .collect()
 }
 
+/// The phone tab bar's five panes, in deck order. Home renders one deck pane
+/// per entry (`app/home.rs` — its tests hold the two lists together); the
+/// bar renders on every page so phone visitors always have the map.
+pub(crate) const PANE_TABS: [&str; 5] = ["log", "felix", "lifting", "resume", "more"];
+
+/// The pane tab a path lives under: the log owns home and its posts, the two
+/// promoted interests and the résumé own themselves, and "more" covers every
+/// other interest plus any granted hidden page. Pages outside the map
+/// (/diary, /admin, /login…) light nothing.
+fn pane_tab(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Option<&'static str> {
+    let within = |root: &str| path == root || path.starts_with(&format!("{root}/"));
+    if path == "/" || within("/thoughts") {
+        return Some("log");
+    }
+    for tab in ["felix", "lifting", "resume"] {
+        if within(&format!("/{tab}")) {
+            return Some(tab);
+        }
+    }
+    let more = INTERESTS
+        .iter()
+        .any(|interest| within(&format!("/{}", interest.slug)))
+        || hidden_pages.iter().any(|page| within(page.path));
+    more.then_some("more")
+}
+
+/// A pane tab's destination. On `/` the tabs address the deck's panes by
+/// bare fragment (no reload, and active filters in the query survive);
+/// everywhere else they carry the visitor home first.
+fn pane_href(at_home: bool, tab: &str) -> String {
+    match (at_home, tab) {
+        (true, _) => format!("#{tab}"),
+        (false, "log") => "/".to_string(),
+        (false, _) => format!("/#{tab}"),
+    }
+}
+
 /// The full document: every page renders through this, so every page owns its
 /// title. Pages invoke it as markup with the page content as trailing children:
 /// `view! { shell(title: "…", active: "…", <p>"…"</p>) }`.
@@ -122,9 +157,9 @@ fn session_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> 
 /// It defaults off so the extra face does not ride along on every page.
 ///
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
-/// join the session windows (and the `~` listing renders them as dotfiles),
-/// and a barely-there "signed in" line replaces
-/// the footer's login link. The home listing and default session bar also
+/// join the session windows (and home's `more` listing renders them as
+/// dotfiles), and a barely-there "signed in" line replaces
+/// the footer's login link. The `more` listing and default session bar also
 /// expose the door as a small terminal action. These personalize the HTML,
 /// which is why
 /// `response_layer.rs` forces `private, no-store` whenever the viewer cookie
@@ -169,6 +204,8 @@ pub async fn shell(
     let return_to = auth_return_target(cx);
     let login_href = format!("/login?next={}", urlencode(&return_to));
     let windows = session_windows(request_uri.path(), &hidden_pages);
+    let active_pane = pane_tab(request_uri.path(), &hidden_pages);
+    let at_home = request_uri.path() == "/";
     let pane_title = windows
         .iter()
         .find(|win| win.current)
@@ -273,14 +310,30 @@ pub async fn shell(
                             href="/"
                             class="font-display text-lg font-semibold text-ink no-underline hover:text-oxide"
                         >"Ben Berman"</a>
-                        // The whole flat map of the site lives at `~`; the
-                        // header keeps only the three fixed rooms.
+                        // Home is the logbook now; the header keeps only the
+                        // two fixed rooms (the tmux windows are the full map).
                         <nav class="flex gap-6 font-meta text-sm">
                             <a href="/" class=(nav("~"))>"~"</a>
-                            <a href="/log" class=(nav("log"))>"log"</a>
                             <a href="/resume" class=(nav("resume"))>"résumé"</a>
                         </nav>
                     </header>
+                    // The phone shell: one minimal bar of pane tabs with the
+                    // theme switcher at its right edge. styles/panes.css shows
+                    // it below 40rem and stands the desktop chrome down; on
+                    // `/` the tabs address the swipe deck's panes by fragment.
+                    <nav class="pane-bar" aria-label="site panes">
+                        <div class="pane-bar-tabs">
+                            for tab in PANE_TABS.iter() {
+                                <a
+                                    class="pane-tab"
+                                    data-pane-tab=(*tab)
+                                    aria-current=((active_pane == Some(*tab)).then_some("page"))
+                                    href=(pane_href(at_home, tab).as_str())
+                                >(*tab)</a>
+                            }
+                        </div>
+                        theme_switcher()
+                    </nav>
                 }
                 // Rust knows the active pane before the browser runs.
                 <main
@@ -509,7 +562,9 @@ async fn theme_switcher() -> Result {
         <details class="theme-dd">
             <summary aria-label="change the site theme">
                 <span class="theme-dot" aria-hidden="true"></span>
-                "theme"
+                // Wrapped so the pane bar's compact copy can shed the word
+                // and keep only the paint-chip dot.
+                <span class="theme-dd-label">"theme"</span>
             </summary>
             <div class="theme-dd-menu" role="group" aria-label="site themes">
                 for theme in themes::THEMES.iter() {

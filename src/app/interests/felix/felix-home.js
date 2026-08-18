@@ -36,6 +36,12 @@ if (home && hero) {
   observer.observe(hero);
 }
 
+// The lightbox is plain dialog UI. It used to mirror the open photo into the
+// address bar (pushState per photo, a synthesized /felix entry under deep
+// links so Back closed into the gallery); that machinery is gone — the same
+// gallery now also renders inside the home pane deck, where rewriting the
+// URL to /felix would be a lie. Deep links (/felix/{slug}) still open on the
+// right photo via data-felix-gallery-initial.
 const gallery = document.querySelector("[data-felix-gallery]");
 
 if (gallery) {
@@ -52,14 +58,6 @@ if (gallery) {
   let returnFocus = null;
 
   const indexForSlug = (slug) => triggers.findIndex((trigger) => trigger.dataset.felixGallerySlug === slug);
-  const photoUrl = (slug) => `/felix/${encodeURIComponent(slug)}`;
-  const historyDepth = (state) => (Number.isInteger(state?.felixGalleryDepth) ? state.felixGalleryDepth : 0);
-  const stateFor = (slug, depth) => ({
-    ...(history.state ?? {}),
-    felixGalleryPhoto: slug,
-    felixGalleryDepth: depth,
-  });
-  const slugFromState = (state) => state?.felixGalleryPhoto;
 
   const setPhoto = (index) => {
     currentIndex = Math.max(0, Math.min(index, triggers.length - 1));
@@ -75,14 +73,9 @@ if (gallery) {
     next.disabled = currentIndex === triggers.length - 1;
   };
 
-  const openPhoto = (index, { returnTo, updateHistory = false } = {}) => {
-    const previousIndex = currentIndex;
+  const openPhoto = (index, { returnTo } = {}) => {
     if (returnTo !== undefined) returnFocus = returnTo;
     setPhoto(index);
-    if (updateHistory && (!dialog.open || currentIndex !== previousIndex)) {
-      const slug = triggers[currentIndex].dataset.felixGallerySlug;
-      history.pushState(stateFor(slug, historyDepth(history.state) + 1), "", photoUrl(slug));
-    }
     if (!dialog.open) {
       dialog.showModal();
       close.focus();
@@ -91,47 +84,33 @@ if (gallery) {
     document.body.classList.add("felix-lightbox-open");
   };
 
-  const closeFromUser = () => {
-    const depth = historyDepth(history.state);
-    if (slugFromState(history.state) && depth > 0) {
-      history.go(-depth);
-    } else {
-      dialog.close();
-    }
-  };
-
   triggers.forEach((trigger, index) => {
     trigger.addEventListener("click", () => {
-      openPhoto(index, { returnTo: trigger, updateHistory: true });
+      openPhoto(index, { returnTo: trigger });
     });
   });
 
-  previous.addEventListener("click", () => openPhoto(currentIndex - 1, { updateHistory: true }));
-  next.addEventListener("click", () => openPhoto(currentIndex + 1, { updateHistory: true }));
-  close.addEventListener("click", closeFromUser);
+  previous.addEventListener("click", () => openPhoto(currentIndex - 1));
+  next.addEventListener("click", () => openPhoto(currentIndex + 1));
+  close.addEventListener("click", () => dialog.close());
 
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) closeFromUser();
-  });
-
-  dialog.addEventListener("cancel", (event) => {
-    event.preventDefault();
-    closeFromUser();
+    if (event.target === dialog) dialog.close();
   });
 
   dialog.addEventListener("keydown", (event) => {
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      openPhoto(currentIndex - 1, { updateHistory: true });
+      openPhoto(currentIndex - 1);
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
-      openPhoto(currentIndex + 1, { updateHistory: true });
+      openPhoto(currentIndex + 1);
     } else if (event.key === "Home") {
       event.preventDefault();
-      openPhoto(0, { updateHistory: true });
+      openPhoto(0);
     } else if (event.key === "End") {
       event.preventDefault();
-      openPhoto(triggers.length - 1, { updateHistory: true });
+      openPhoto(triggers.length - 1);
     }
   });
 
@@ -144,20 +123,6 @@ if (gallery) {
     returnFocus = null;
   });
 
-  window.addEventListener("popstate", (event) => {
-    const index = indexForSlug(slugFromState(event.state));
-    if (index >= 0) {
-      openPhoto(index);
-    } else if (dialog.open) {
-      dialog.close();
-    }
-  });
-
   const initialIndex = indexForSlug(initialSlug);
-  if (initialIndex >= 0) {
-    history.replaceState(stateFor(null, 0), "", "/felix");
-    openPhoto(initialIndex, { updateHistory: true });
-  } else {
-    history.replaceState(stateFor(null, 0), "", "/felix");
-  }
+  if (initialIndex >= 0) openPhoto(initialIndex);
 }

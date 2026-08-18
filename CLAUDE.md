@@ -19,14 +19,15 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 
 ## Adding a page
 
-- Post: `src/app/thoughts/<slug>.rs` with `register_post!(...)` metadata + `mod <slug>;` in `thoughts.rs`; `/thoughts`, `/log`, `/feed.xml`, routes, and footer count derive from the distributed post registry
+- Post: `src/app/thoughts/<slug>.rs` with `register_post!(...)` metadata + `mod <slug>;` in `thoughts.rs`; `/thoughts`, the `/` log, `/feed.xml`, routes, and footer count derive from the distributed post registry
 - Interest: `src/app/interests/<name>.rs` (copy one; it pulls its copy via `interest("<name>")`) + `mod <name>;` in `interests.rs` + entry in `src/content/interests.rs`
 - Other fixed page: also add its route to `src/content/routes.rs::site_routes()`
 - Nav, indexes, and 404 all derive from these registries — touch nothing else
-- Login-gated hidden page: copy `src/app/motorcycles.rs` + display entry in `access.rs::HIDDEN_PAGES` (its only listing — the shell's tmux windows, the `~` listing at `/`, and `/admin/permissions` all derive from it); allowlist = `hidden_page_grants` DB rows managed at `/admin/permissions`, never committed (public repo); keep it OUT of the registries above; read `docs/auth.md` first
+- Login-gated hidden page: copy `src/app/motorcycles.rs` + display entry in `access.rs::HIDDEN_PAGES` (its only listing — the shell's tmux windows, home's `more` listing, and `/admin/permissions` all derive from it); allowlist = `hidden_page_grants` DB rows managed at `/admin/permissions`, never committed (public repo); keep it OUT of the registries above; read `docs/auth.md` first
 
 ## Gotchas
 
+- `/` is the log page plus, below 40rem, the phone pane deck — log ⇄ felix ⇄ lifting ⇄ resume ⇄ more as scroll-snap panes (`/log` 308s home with its query; felix/lifting/resume render through shared content components, so page-body changes reach both URLs). Deck panes (`home.rs`) and tab bar (`chrome.rs::PANE_TABS`) are test-aligned; phone chrome lives in `styles/panes.css`
 - Thought comments are live DB state automatically appended by `shell()` to every exact registered post path; ownership is hashed Google `sub`, deletes are body/name-clearing tombstones, and missing settings mean open. Read `docs/comments.md` before changing auth, post slugs, comment routes, schema, or caching
 - A `#[page]` module not declared in its parent `mod` silently doesn't route
 - Tailwind classes are scanned from `.rs` files at build time; a class rendering unstyled means a stale scan: `touch styles/input.css && cargo build`
@@ -37,7 +38,7 @@ SurrealDB models, queries, or schema (Rust SDK and server pinned to 3.2.3).
 - Layover `via` params are hand-parsed from the raw query (`parse_vias`), never declared in `PlanesQuery` — serde errors on repeated declared keys and the error redirect would wipe the query
 - `emissions.rs` deliberately models only the myclimate fuel curve; the missing aircraft-production and infrastructure terms are not an omission to complete
 - Units: kg CO₂e and km everywhere; number formatting mirrors Intl.NumberFormat half-away-from-zero — don't "fix" the rounding
-- Spire runs are data, not content: `/log`, `/spire`, `/feed.xml` render them live from `/api/spire/runs` — publish runs with `just sync-spire`, never by editing the repo
+- Spire runs are data, not content: the `/` log, `/spire`, `/feed.xml` render them live from `/api/spire/runs` — publish runs with `just sync-spire`, never by editing the repo
 - Fitness sets are database data, not content: never hardcode the CSV; changes spanning `/lifting`, import, API, schema, tags, or local startup must preserve `docs/fitness.md` invariants
 - Records (`/lifting` badges) are derived from set history at snapshot build (`src/app/interests/lifting/archive/records.rs`), never stored or imported — there is deliberately no records table
 - Fitness writes are create-only except `DELETE /api/fitness/workouts/by-path/{path}` (sync token OR admin cookie + same-origin), the admin weight editor `POST /lifting/exercise/{name}`, and interruption CRUD (`POST /lifting/interruptions`, `POST /lifting/interruptions/{id}`, `POST /lifting/interruptions/{id}/delete` — admin cookie + same-origin; annotate-only, no scoring impact). Deletes remove the workout and its sets only — `exercises`/`exercise_tags`/`exercise_muscles` orphans are left deliberately (invisible to every count, and they preserve corrected taxonomy/weights across a delete-and-repaste)

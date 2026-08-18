@@ -19,6 +19,19 @@
 .log-hero {
   min-height: 1em;
   white-space: nowrap;
+  /* Exactly-fits the longest rotation: the timeline sets --log-hero-fit to
+     the widest "I like {word}." line in ems (log.rs derives it from the
+     interest registry at Fira Mono's 0.6em advance), and 100cqi is the hero
+     section's own width (it is an @container). Narrow viewports get the
+     largest size that cannot overflow — the nowrap line was scrolling
+     phones sideways — and roomy ones rest at the caps. */
+  font-size: min(2.75rem, calc(100cqi / var(--log-hero-fit, 13.2)));
+}
+
+@media (min-width: 40rem) {
+  .log-hero {
+    font-size: min(4rem, calc(100cqi / var(--log-hero-fit, 13.2)));
+  }
 }
 
 .log-hero-words {

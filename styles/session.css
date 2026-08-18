@@ -41,6 +41,29 @@
   color: var(--color-muted);
 }
 
+/* Phones run the minimal pane bar instead (styles/panes.css): the status
+   bar, the pane frame, and its clearances all stand down below 40rem. */
+@media (width < 40rem) {
+  :root:not([data-theme]) body {
+    padding-bottom: 0;
+  }
+
+  :root:not([data-theme]) .tmux-bar {
+    display: none !important;
+  }
+
+  :root:not([data-theme]) body:not([data-nav-hidden="true"]) main {
+    width: 100%;
+    border: 0;
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  :root:not([data-theme]) body:not([data-nav-hidden="true"]) main::before {
+    content: none;
+  }
+}
+
 /* Alternate finishes leave the status bar in the DOM but hidden. */
 .tmux-bar {
   display: none;

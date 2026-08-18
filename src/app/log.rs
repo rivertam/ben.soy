@@ -1,6 +1,8 @@
-//! `/log`: the running timeline that used to live at `/` — curated logbook
-//! entries, synced Slay the Spire wins, and published lifts, filterable and
-//! searchable. The front door is the `~` listing (`home.rs`) now.
+//! The running timeline — curated logbook entries, synced Slay the Spire
+//! wins, and published lifts, filterable and searchable. It renders as the
+//! log pane of `/` (`home.rs` owns the page and its cache header); `/log`,
+//! its address for a while in 2026, permanently redirects home with any
+//! filter query intact.
 
 use benjisponge::data::Data;
 
@@ -12,18 +14,46 @@ use super::interests::spire::runs::{self as spire_runs, Run};
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{HeaderValue, header, page, query_params},
-    view::view,
+    router::{error::redirect_permanent, query_params, route, uri},
+    view::{component, view},
 };
 
 use crate::{
-    components::{ext_link, inline_popover, link_label, shell},
+    components::{ext_link, inline_popover, link_label},
     content::{
-        interests::INTERESTS,
+        interests::{INTERESTS, Interest},
         logbook::{Entry, FILTER_TAGS, Kind, LOG, serial},
     },
     util::urlencode,
 };
+
+/// The interests the hero cycles through — the registry minus the two that
+/// read better as projects than likes.
+fn hero_words() -> Vec<&'static Interest> {
+    INTERESTS
+        .iter()
+        .filter(|i| !matches!(i.slug, "simulation" | "puzzles"))
+        .collect()
+}
+
+/// The hero's longest rendered line, in ems: "I like {title}." at Fira
+/// Mono's fixed 0.6em glyph advance. The hero never wraps, so logbook.css
+/// divides this out of the column width to cap the font at exactly-fits
+/// (`--log-hero-fit`); phones would otherwise scroll sideways whenever the
+/// rotation lands on a long title. Proportional theme faces (Comic Sans,
+/// Zilla Slab) average narrower than mono, so this bound holds everywhere.
+fn hero_line_ems(words: &[&'static Interest]) -> f64 {
+    words
+        .iter()
+        .map(|i| {
+            format!("I like {}.", i.title.to_lowercase())
+                .chars()
+                .count()
+        })
+        .max()
+        .unwrap_or(0) as f64
+        * 0.6
+}
 
 #[query_params(error = redirect("?"))]
 struct LogQuery {
@@ -215,7 +245,8 @@ impl<'a> Row<'a> {
     }
 }
 
-/// The log page's URL for a filter state, dropping absent params and page one.
+/// The timeline's URL for a filter state, dropping absent params and page
+/// one. The timeline is the home page, so everything hangs off `/`.
 fn log_url(kind: Option<&str>, tag: Option<&str>, query: Option<&str>, page: usize) -> String {
     let mut params = Vec::new();
     if let Some(kind) = kind {
@@ -231,9 +262,9 @@ fn log_url(kind: Option<&str>, tag: Option<&str>, query: Option<&str>, page: usi
         params.push(format!("page={page}"));
     }
     if params.is_empty() {
-        "/log".to_string()
+        "/".to_string()
     } else {
-        format!("/log?{}", params.join("&"))
+        format!("/?{}", params.join("&"))
     }
 }
 
@@ -328,8 +359,24 @@ fn make_fold(folded: &[Item], all_runs: &[Run]) -> Fold {
     }
 }
 
-#[page("/log")]
-async fn log(cx: &Cx) -> Result {
+/// `/log` carried the timeline for a stretch of 2026; its filter and pager
+/// URLs travel, so forward them home with the query intact. (The query
+/// string is never percent-decoded, so it is safe inside a Location header.)
+#[route(GET "/log")]
+async fn legacy_log(cx: &Cx) -> Result {
+    let target = match uri(cx).query() {
+        Some(query) => format!("/?{query}"),
+        None => "/".to_string(),
+    };
+    Err(redirect_permanent(&target).into())
+}
+
+/// The timeline itself: hero, filter row, entries, pager. Rendered by
+/// `home.rs` as the log pane — first of the phone deck's five, the whole
+/// page on desktop. It reads its filter state from the request query, so the
+/// chips work wherever it renders.
+#[component]
+pub(crate) async fn timeline(cx: &Cx) -> Result {
     let q = query_params::<LogQuery>(cx)?;
     // An unknown kind silently falls back to the full log; a tag filters
     // whatever it names (arbitrary tags just match fewer entries).
@@ -455,22 +502,21 @@ async fn log(cx: &Cx) -> Result {
         rows.push(Row { year_mark, item });
     }
 
+    let words = hero_words();
+    let hero_fit = format!("--log-hero-fit: {:.1}", hero_line_ems(&words));
+
     view! {
-        // Fresh runs and lifts appear within a minute; CDN honors s-maxage
-        // (see docs/railway-deploy.md).
-        ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
-        shell(title: "Log", active: "log",
         // Hero: "I like {interest}", cycling the interest registry. Pure CSS
-        // — see .log-hero-* in logbook.css. Each word links to its page; only
-        // the currently visible one is hoverable (visibility + pause-on-hover).
-        <section class="mt-16">
-            <h1 class="log-hero font-display text-[2.75rem] leading-none font-bold tracking-tight sm:text-[4rem]">
+        // — see .log-hero-* in logbook.css, including the font-size, which
+        // divides --log-hero-fit (set here from the registry) out of the
+        // section's container width so the longest rotation always fits.
+        // Each word links to its page; only the currently visible one is
+        // hoverable (visibility + pause-on-hover).
+        <section class="@container mt-16" style=(hero_fit.as_str())>
+            <h1 class="log-hero font-display leading-none font-bold tracking-tight">
                 "I like "
                 <span class="log-hero-words">
-                    for interest in INTERESTS
-                        .iter()
-                        .filter(|i| !matches!(i.slug, "simulation" | "puzzles"))
-                    {
+                    for interest in words.iter() {
                         <a
                             class="log-hero-word text-oxide"
                             href=(format!("/{}", interest.slug))
@@ -480,8 +526,10 @@ async fn log(cx: &Cx) -> Result {
             </h1>
             <p class="mt-4 max-w-prose text-[17px] leading-relaxed text-ink2">
                 "Software developer in New York"
+                // The phone deck's one hint; desktop has the tmux windows.
+                <span class="text-muted sm:hidden">" · swipe for more →"</span>
             </p>
-            <p class="mt-5 font-meta text-[13px] text-muted">
+            <p class="mt-5 hidden font-meta text-[13px] text-muted sm:block">
                 "now — building "
                 inline_popover(
                     id: "digichem-cite",
@@ -496,7 +544,7 @@ async fn log(cx: &Cx) -> Result {
                         label: "digichem.com →"
                     )
                 )"
-                · I contain " <a class="underline" href="/">"multitudes"</a>
+                · I contain " <a class="underline" href="#more">"multitudes"</a>
                 <span class="log-caret text-oxide">"▍"</span>
             </p>
         </section>
@@ -504,8 +552,9 @@ async fn log(cx: &Cx) -> Result {
         // Filter row: kind chips, tag chips, search, and the feed. Server-side
         // — every chip is a link that rewrites the query string, and the
         // search box is a plain GET form that does the same (hidden inputs
-        // carry the active filters along).
-        <div class="mt-11 flex flex-wrap items-baseline gap-4 border-t border-hairline pt-4 font-meta text-[13px]">
+        // carry the active filters along). Phones drop the row for the
+        // minimal pane look; the timeline itself is the mobile page.
+        <div class="mt-11 hidden flex-wrap items-baseline gap-4 border-t border-hairline pt-4 font-meta text-[13px] sm:flex">
             for chip in kind_chips.iter() {
                 <a
                     class=(if chip.active { "log-chip log-chip-active" } else { "log-chip" })
@@ -519,7 +568,7 @@ async fn log(cx: &Cx) -> Result {
                     href=(chip.href.as_str())
                 >(chip.label.as_str())</a>
             }
-            <form class="ml-auto" action="/log" method="get">
+            <form class="ml-auto" action="/" method="get">
                 if let Some(kind_value) = kind_param {
                     <input type="hidden" name="kind" value=(kind_value)>
                 }
@@ -756,7 +805,7 @@ async fn log(cx: &Cx) -> Result {
                 }
             </nav>
         }
-    ) }
+    }
 }
 
 #[cfg(test)]
@@ -866,14 +915,28 @@ mod tests {
             .expect("a fold row")
     }
 
+    /// The hero's fit variable is set here and consumed in logbook.css;
+    /// renaming either side alone would quietly restore the sideways
+    /// scrolling on phones.
+    #[test]
+    fn the_hero_fit_variable_reaches_its_stylesheet() {
+        const LOGBOOK_CSS: &str = include_str!("../../styles/logbook.css");
+        assert!(LOGBOOK_CSS.contains("var(--log-hero-fit"));
+        let words = hero_words();
+        assert!(!words.is_empty());
+        // "I like slay the spire." is today's widest line; the derivation
+        // must track the registry, not a constant.
+        assert_eq!(format!("{:.1}", hero_line_ems(&words)), "13.2");
+    }
+
     #[test]
     fn log_urls_drop_absent_params_and_page_one() {
-        assert_eq!(log_url(None, None, None, 1), "/log");
-        assert_eq!(log_url(Some("note"), None, None, 1), "/log?kind=note");
-        assert_eq!(log_url(None, None, None, 2), "/log?page=2");
+        assert_eq!(log_url(None, None, None, 1), "/");
+        assert_eq!(log_url(Some("note"), None, None, 1), "/?kind=note");
+        assert_eq!(log_url(None, None, None, 2), "/?page=2");
         assert_eq!(
             log_url(Some("essay"), Some("rust"), Some("how bad"), 3),
-            "/log?kind=essay&tag=rust&q=how%20bad&page=3"
+            "/?kind=essay&tag=rust&q=how%20bad&page=3"
         );
     }
 

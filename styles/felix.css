@@ -30,8 +30,10 @@ body[data-nav-hidden="true"] .felix-hero {
 
 /* Felix is a fixed editorial spread rather than a surface that borrows the
    site's active palette. The theme runtime still runs underneath it, so
-   theme audio and interactions remain available. */
-body:has(.felix-hero) {
+   theme audio and interactions remain available. The whole-document takeover
+   is gated on the immersive (nav-hidden) standalone page: the same hero also
+   renders inside the home pane deck, where only the pane wears the spread. */
+body[data-nav-hidden="true"]:has(.felix-hero) {
   --color-page: #12100f;
   --color-card: #211d1a;
   --color-ink: #f3ede4;
@@ -47,29 +49,65 @@ body:has(.felix-hero) {
   background: #12100f;
 }
 
-body:has(.felix-hero) main {
+body[data-nav-hidden="true"]:has(.felix-hero) main {
   max-width: 76rem;
   padding-right: clamp(1rem, 4vw, 4rem);
   padding-left: clamp(1rem, 4vw, 4rem);
 }
 
-body:has(.felix-hero) footer {
+body[data-nav-hidden="true"]:has(.felix-hero) footer {
   max-width: 76rem;
   color: #8d8177;
   border-color: #493f38;
 }
 
-body:has(.felix-hero) .felix-home {
+body[data-nav-hidden="true"]:has(.felix-hero) .felix-home {
   color: #c7bbb0;
   background: rgb(18 16 15 / 88%);
   border-color: #493f38;
   backdrop-filter: blur(0.5rem);
 }
 
-body:has(.felix-hero) .felix-home:hover,
-body:has(.felix-hero) .felix-home:focus-visible {
+body[data-nav-hidden="true"]:has(.felix-hero) .felix-home:hover,
+body[data-nav-hidden="true"]:has(.felix-hero) .felix-home:focus-visible {
   color: #f0aa7d;
   border-color: #d58a62;
+}
+
+/* The felix pane of the home deck wears the same spread, scoped to itself.
+   Token values mirror the standalone block above — change them together. */
+.pane-felix {
+  --color-page: #12100f;
+  --color-card: #211d1a;
+  --color-ink: #f3ede4;
+  --color-ink2: #c7bbb0;
+  --color-muted: #8d8177;
+  --color-hairline: #493f38;
+  --color-oxide: #d58a62;
+  --color-oxide-hot: #f0aa7d;
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-meta: "Courier New", Courier, monospace;
+  color: #f3ede4;
+  background: #12100f;
+  font-family: var(--font-body);
+}
+
+@media (width < 40rem) {
+  /* The pane owns its gutters: the hero bleeds edge to edge, the sections
+     below reclaim the deck's usual padding. */
+  .pane-felix {
+    padding-inline: 0;
+  }
+
+  .pane-felix .felix-photo-spread {
+    padding-inline: 1.25rem;
+  }
+
+  .pane-felix .felix-hero {
+    min-height: calc(100dvh - var(--pane-bar-h) - env(safe-area-inset-top, 0px));
+    margin-top: 0;
+  }
 }
 
 .felix-hero::after {

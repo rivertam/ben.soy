@@ -160,6 +160,20 @@ async fn felix_page(initial_photo: &str) -> Result {
             title: meta.title,
             active: "",
             hide_nav: true,
+            felix_content(initial_photo: initial_photo, standalone: true)
+        )
+    }
+}
+
+/// The felix spread itself: hero, gallery, and lightbox. The standalone page
+/// wraps it in the immersive shell; the home deck renders it as the phone's
+/// felix pane (`standalone: false`), which drops the floating "← Ben" chip
+/// and the closing rail link, and lets the hero portrait lazy-load so the
+/// desktop home (where the pane is display: none) never fetches it.
+#[component]
+pub(crate) async fn felix_content(initial_photo: &str, standalone: bool) -> Result {
+    let meta = interest("felix");
+    view! {
             <header class="felix-hero" aria-labelledby="felix-title">
                 <img
                     class="felix-hero-media"
@@ -168,7 +182,8 @@ async fn felix_page(initial_photo: &str) -> Result {
                     width="1000"
                     height="667"
                     decoding="async"
-                    fetchpriority="high"
+                    loading=(if standalone { "eager" } else { "lazy" })
+                    fetchpriority=(standalone.then_some("high"))
                 >
                 <div class="felix-hero-copy">
                     <p class="felix-hero-stamp">"felix / oct 2023"</p>
@@ -256,12 +271,14 @@ async fn felix_page(initial_photo: &str) -> Result {
                     </a>
                 </div>
             </header>
-            <a class="felix-home" href="/" data-felix-home="true">
-                <span class="link-arrow link-arrow-before" aria-hidden="true">
-                    "<-"
-                </span>
-                " Ben"
-            </a>
+            if standalone {
+                <a class="felix-home" href="/" data-felix-home="true">
+                    <span class="link-arrow link-arrow-before" aria-hidden="true">
+                        "<-"
+                    </span>
+                    " Ben"
+                </a>
+            }
             <script type="module" src=(FELIX_HOME_JS)></script>
             rail_section(
                 class: "felix-photo-spread mt-8",
@@ -361,8 +378,9 @@ async fn felix_page(initial_photo: &str) -> Result {
                     </p>
                 </div>
             </dialog>
-            back_link(href: "/", label: "~")
-        )
+            if standalone {
+                back_link(href: "/", label: "~")
+            }
     }
 }
 

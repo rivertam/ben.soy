@@ -1,0 +1,174 @@
+/*
+ * Phone chrome: below 40rem the desktop shells (tmux session bar, ordinary
+ * header, corner rack) stand down in favor of one minimal sticky tab bar,
+ * and the home page's five panes become a real side-by-side swipe deck
+ * (CSS scroll-snap; browser/panes.js only syncs the tabs and the hash).
+ * At 40rem and up the bar disappears and the deck renders as the log alone —
+ * desktop keeps its existing chrome untouched.
+ */
+
+:root {
+  --pane-bar-h: 3.1rem;
+}
+
+.pane-bar {
+  display: none;
+}
+
+@media (width < 40rem) {
+  /* Every desktop shell stands down, whatever the theme. */
+  body > header,
+  .corner-rack {
+    display: none;
+  }
+
+  /* Phones never scroll the document sideways: swiping is the deck's job,
+     and any stray too-wide element gets clipped instead of breaking it. */
+  body {
+    overflow-x: clip;
+  }
+
+  .pane-bar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    height: calc(var(--pane-bar-h) + env(safe-area-inset-top, 0px));
+    padding: env(safe-area-inset-top, 0px) 0.55rem 0 1.1rem;
+    background: var(--color-page);
+    border-bottom: 1px solid var(--color-hairline);
+    font-family: var(--font-meta);
+    font-size: 0.82rem;
+  }
+
+  /* Immersive pages (felix, the dispatch) keep their own navigation. */
+  body[data-nav-hidden="true"] .pane-bar {
+    display: none;
+  }
+
+  .pane-bar-tabs {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    gap: 1.15rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .pane-bar-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pane-tab {
+    padding-block: 0.3rem;
+    color: var(--color-muted);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .pane-tab[aria-current] {
+    color: var(--color-ink);
+    font-weight: 700;
+    text-decoration-line: underline;
+    text-decoration-color: var(--color-oxide);
+    text-decoration-thickness: 0.14em;
+    text-underline-offset: 0.45em;
+  }
+
+  /* The bar's theme switcher: the paint-chip dot alone, menu dropping down. */
+  .pane-bar .theme-dd > summary {
+    padding: 0.4rem;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .pane-bar .theme-dd > summary .theme-dot {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+
+  .pane-bar .theme-dd-label {
+    display: none;
+  }
+
+  .pane-bar .theme-dd-menu {
+    top: calc(100% + 0.5rem);
+    right: 0;
+    bottom: auto;
+  }
+
+  /* The deck fills everything under the bar; each pane scrolls on its own,
+     so the document itself never scrolls on the home page. min-h-screen is
+     100vh — taller than bar + deck (100dvh) while the URL bar shows, which
+     would leave a toolbar's worth of dead scroll under the deck. */
+  body:has(.pane-deck) {
+    min-height: 100dvh;
+  }
+
+  body:has(.pane-deck) main {
+    padding: 0;
+  }
+
+  body:has(.pane-deck) footer {
+    display: none;
+  }
+
+  .pane-deck {
+    display: flex;
+    height: calc(100dvh - var(--pane-bar-h) - env(safe-area-inset-top, 0px));
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+  }
+
+  .pane-deck::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pane {
+    /* Each pane is a containing block: an absolutely positioned descendant
+       with no nearer anchor (an sr-only heading, say) must resolve inside
+       its pane, not against the page — from an off-screen pane its static
+       position lands ~4 screens right and quietly makes the ROOT scroll
+       sideways. */
+    position: relative;
+    flex: 0 0 100%;
+    min-width: 0;
+    /* Panes scroll vertically only. overflow-y: auto alone would compute
+       overflow-x to auto too, so any too-wide content would add a nested
+       horizontal scroll that hijacks the deck swipe — clip it instead
+       (inner scrollers like the lifting heatmap still manage their own). */
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 0 1.25rem 3.5rem;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+}
+
+/* Desktop: the deck dissolves and the log pane is the page. The `more`
+   listing stays reachable — "I contain multitudes" targets it — but only
+   unfolds when asked for. */
+@media (width >= 40rem) {
+  .pane-deck {
+    display: contents;
+  }
+
+  .pane {
+    display: none;
+  }
+
+  .pane-log {
+    display: block;
+  }
+
+  .pane-more:target {
+    display: block;
+  }
+}

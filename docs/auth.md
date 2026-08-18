@@ -136,8 +136,8 @@ automatically). Hidden pages deliberately stay OUT of
 `INTERESTS`/`POSTS`/`site_routes()` — that's what keeps the nav, indexes,
 feed, and 404 silent about them. The
 `HIDDEN_PAGES` entry is the page's only listing: the shell's tmux
-windows and the `~` listing at `/` render it for allowlisted viewers,
-nobody else.
+windows and home's `more` listing (the phone deck's fifth pane, `#more`
+on desktop) render it for allowlisted viewers, nobody else.
 Invariants:
 
 - `no-store` before `shell()` on every variant, including the not-found
@@ -161,7 +161,7 @@ Invariants:
 ## Signed-in rendering and the CDN
 
 The shell personalizes for viewers: allowlisted hidden pages join the
-tmux windows and the `~` listing, and the home listing plus the default tmux
+tmux windows and home's `more` listing, and that listing plus the default tmux
 bar expose a small login/signed-in action. Every shell account action opens
 one server-rendered native `<dialog>` over the current page: the generic modal
 driver (`src/components/browser/modals.js`) shows it with `showModal()`, so the

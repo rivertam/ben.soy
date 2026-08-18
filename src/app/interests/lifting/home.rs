@@ -11,6 +11,26 @@ async fn lifting(cx: &Cx) -> Result {
     }
 
     let meta = interest("lifting");
+    view! {
+        ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
+        shell(
+            title: meta.title,
+            active: "",
+            runtime: true,
+            lifting_home_content()
+            back_link(href: "/", label: "~")
+        )
+    }
+}
+
+/// The landing page's body: heatmap, open interruptions, training focus, and
+/// the most recent lift. The standalone `/lifting` page wraps it in the
+/// shell above; the home deck renders it as the phone's lifting pane. Home
+/// keeps its own 60-second edge TTL, so the pane can trail the archive by up
+/// to a minute where this page itself stays no-store.
+#[component]
+pub(crate) async fn lifting_home_content(cx: &Cx) -> Result {
+    let meta = interest("lifting");
     let can_upload = viewer(cx).is_some_and(|current| is_admin(&current.email));
     let (calendar, latest, focus, interruptions) =
         fitness::load_home(app_context::<FitnessStore>(cx)).await;
@@ -46,11 +66,6 @@ async fn lifting(cx: &Cx) -> Result {
         .map(workout_url);
 
     view! {
-        ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
-        shell(
-            title: meta.title,
-            active: "",
-            runtime: true,
             <header class="rail-row mt-16">
                 <p class="rail-stamp rail-stamp-label">(meta.slug)</p>
                 <div class="flex min-w-0 items-start justify-between gap-4">
@@ -187,7 +202,5 @@ async fn lifting(cx: &Cx) -> Result {
                     }
                 </section>
             </div>
-            back_link(href: "/", label: "~")
-        )
     }
 }

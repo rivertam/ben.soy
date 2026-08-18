@@ -2,7 +2,7 @@ use topcoat::{
     Result,
     context::Cx,
     router::{page, query_params},
-    view::view,
+    view::{component, view},
 };
 
 use crate::{
@@ -79,6 +79,28 @@ struct ResumeQuery {
 #[page("/resume")]
 async fn resume(cx: &Cx) -> Result {
     let q = query_params::<ResumeQuery>(cx)?;
+    let filter = q.tech.as_deref().and_then(|name| find_tech(name.trim()));
+    let title = match filter {
+        Some(active) => format!("Résumé · {}", active.name),
+        None => "Résumé".to_string(),
+    };
+
+    view! {
+        shell(
+            title: title.as_str(),
+            active: "resume",
+            resume_content()
+        )
+    }
+}
+
+/// The résumé body: the role timeline, education, skills, and patches. The
+/// standalone page wraps it in the shell; the home deck renders it as the
+/// phone's résumé pane. It reads `?tech=` from the request itself, so the
+/// chip filter works on `/resume` and is simply absent on `/`.
+#[component]
+pub(crate) async fn resume_content(cx: &Cx) -> Result {
+    let q = query_params::<ResumeQuery>(cx)?;
     // An unrecognized tech silently falls back to the full timeline.
     let filter = q.tech.as_deref().and_then(|name| find_tech(name.trim()));
 
@@ -95,15 +117,7 @@ async fn resume(cx: &Cx) -> Result {
         )
     });
 
-    let title = match filter {
-        Some(active) => format!("Résumé · {}", active.name),
-        None => "Résumé".to_string(),
-    };
-
     view! {
-        shell(
-            title: title.as_str(),
-            active: "resume",
             page_head(stamp: "timeline", title: "Résumé", lede: "")
             if let Some(line) = filter_line {
                 <div class="rail-row mt-8">
@@ -226,6 +240,5 @@ async fn resume(cx: &Cx) -> Result {
                     </div>
                 }
             </section>
-        )
     }
 }

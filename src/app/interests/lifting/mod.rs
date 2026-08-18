@@ -9,7 +9,7 @@ mod filter_ui;
 mod filters;
 mod format;
 mod heatmap;
-mod home;
+pub(crate) mod home;
 mod interruptions;
 mod log;
 mod muscle_seed;
