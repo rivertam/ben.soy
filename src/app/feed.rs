@@ -23,9 +23,9 @@ use crate::app::interests::{
 use crate::content::logbook::{Entry, LOG};
 
 /// Where absolute links point. `SITE_ORIGIN` overrides the default at
-/// runtime; the default is a placeholder until the real domain is wired up.
+/// runtime; the default is the site's canonical public origin.
 fn origin() -> String {
-    std::env::var("SITE_ORIGIN").unwrap_or_else(|_| "https://benjisponge.com".to_string())
+    std::env::var("SITE_ORIGIN").unwrap_or_else(|_| "https://ben.soy".to_string())
 }
 
 #[route(GET "/feed.xml")]

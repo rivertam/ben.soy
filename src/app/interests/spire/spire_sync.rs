@@ -1,4 +1,4 @@
-//! spire_sync — upload Slay the Spire 1 and 2 run history to benjisponge.com.
+//! spire_sync — upload Slay the Spire 1 and 2 run history to ben.soy.
 //!
 //! Reads every `<epoch>.run` file either game (or Steam Cloud) has on this
 //! machine, asks the site which run ids it already has, and POSTs only the
@@ -14,12 +14,12 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-const DEFAULT_API: &str = "https://benjisponge.com";
+const DEFAULT_API: &str = "https://ben.soy";
 const STS2_STEAM_APP_ID: &str = "2868840";
 const CHUNK: usize = 20;
 
 const USAGE: &str = "\
-spire_sync — sync Slay the Spire 1 and 2 runs to benjisponge.com
+spire_sync — sync Slay the Spire 1 and 2 runs to ben.soy
 
 USAGE
   just sync-spire [FLAGS]            (or: cargo run --bin spire_sync -- [FLAGS])
@@ -27,7 +27,7 @@ USAGE
 FLAGS
   --dry-run             scan and diff, but upload nothing
   --json                machine-readable summary on stdout (for agents)
-  --api <origin>        API origin (default: https://benjisponge.com)
+  --api <origin>        API origin (default: https://ben.soy)
   --history-dir <path>  extra run-history root; repeatable. Its files are
                         identified as StS 1 or 2 from their JSON shape.
                         Defaults cover both games' standard Linux paths.
@@ -697,7 +697,7 @@ async fn main() -> ExitCode {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("spire-sync (+https://benjisponge.com/spire)")
+        .user_agent("spire-sync (+https://ben.soy/spire)")
         .build()
         .expect("reqwest client");
 

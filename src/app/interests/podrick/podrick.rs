@@ -1,6 +1,6 @@
 //! podrick — the Discord bot for a server I'm in.
 //!
-//! Job 1 announces a lift when one is published on benjisponge.com. Job 2
+//! Job 1 announces a lift when one is published on ben.soy. Job 2
 //! syncs and responds to Pants Off messages, seeded silently from the source
 //! channel's complete history.
 //!
@@ -33,7 +33,7 @@ use discord::Discord;
 use pants::{PantsTickReport, PantsWorker};
 use seed_install::SeedReport;
 
-const DEFAULT_API: &str = "https://benjisponge.com";
+const DEFAULT_API: &str = "https://ben.soy";
 const DEFAULT_INTERVAL_SECONDS: u64 = 60;
 const TOKEN_VAR: &str = "DISCORD_BOT_TOKEN";
 const LIFT_CHANNEL_VAR: &str = "PODRICK_LIFT_CHANNEL_ID";
@@ -41,7 +41,7 @@ const PANTS_CHANNEL_VAR: &str = "PODRICK_PANTS_CHANNEL_ID";
 const INFARCTIONS_CHANNEL_VAR: &str = "PODRICK_INFARCTIONS_CHANNEL_ID";
 
 const USAGE: &str = "\
-podrick — Discord bot for benjisponge.com
+podrick — Discord bot for ben.soy
 
 USAGE
   podrick <COMMAND> [FLAGS]        (or: cargo run --bin podrick -- <COMMAND>)
@@ -54,7 +54,7 @@ FLAGS
   --dry-run             read-only: preview work, post/react/write nothing.
                         Pants history reads still need a token.
   --interval <seconds>  poll interval for `run` (default: 60, minimum: 5)
-  --api <origin>        site API origin (default: https://benjisponge.com)
+  --api <origin>        site API origin (default: https://ben.soy)
   --token <token>       bot token; otherwise $DISCORD_BOT_TOKEN, otherwise
                         ~/.config/benjisponge/podrick.token
   -h, --help            this text
@@ -389,7 +389,7 @@ async fn main() -> ExitCode {
         discord: discord.clone(),
         client: reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
-            .user_agent("podrick (+https://benjisponge.com/podrick)")
+            .user_agent("podrick (+https://ben.soy/podrick)")
             .build()
             .expect("reqwest client"),
         api_origin: args.api.clone(),

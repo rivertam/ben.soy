@@ -1,4 +1,4 @@
-//! fitness_sync — import a Strong workout CSV export into benjisponge.com.
+//! fitness_sync — import a Strong workout CSV export into ben.soy.
 //!
 //! The importer keeps source spelling for provenance, produces normalized
 //! display names for filtering, and assigns stable ids from the workout's
@@ -20,14 +20,14 @@ mod taxonomy;
 use taxonomy::SQUAT_TYPE_EXERCISES;
 use taxonomy::{ExerciseTag, exercise_tags};
 
-const DEFAULT_API: &str = "https://benjisponge.com";
+const DEFAULT_API: &str = "https://ben.soy";
 const MAX_WORKOUTS_PER_CHUNK: usize = 20;
 // The Worker caps imports at 50 sets to stay below D1's statement budget.
 // Whole workouts are never split (the audited export's largest has 39 sets).
 const MAX_SETS_PER_CHUNK: usize = 50;
 
 const USAGE: &str = "\
-fitness_sync — sync a Strong workout CSV export to benjisponge.com
+fitness_sync — sync a Strong workout CSV export to ben.soy
 
 USAGE
   just sync-fitness <csv> [FLAGS]
@@ -36,7 +36,7 @@ USAGE
 FLAGS
   --dry-run       parse and diff, but upload nothing
   --json          print a machine-readable summary on stdout
-  --api <origin>  API origin (default: https://benjisponge.com)
+  --api <origin>  API origin (default: https://ben.soy)
   --token <token> write token; otherwise $FITNESS_SYNC_TOKEN, otherwise
                   ~/.config/benjisponge/fitness.token
   -h, --help      this text
@@ -794,7 +794,7 @@ async fn main() -> ExitCode {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("fitness-sync (+https://benjisponge.com/fitness)")
+        .user_agent("fitness-sync (+https://ben.soy/fitness)")
         .build()
         .expect("reqwest client");
     let existing = match fetch_existing_ids(&client, &args.api).await {

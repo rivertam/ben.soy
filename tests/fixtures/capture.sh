@@ -6,14 +6,14 @@
 # ARE the contract for the Rust port: there is no Worker test suite.
 #
 # Usage: bash tests/fixtures/capture.sh [origin]
-#   origin defaults to https://benjisponge.com
+#   origin defaults to https://ben.soy
 #
 # Historical only: it overwrites the fixtures and depends on the retired
 # Worker/D1 data path. Do not run it against the current production service.
 
 set -euo pipefail
 
-origin="${1:-https://benjisponge.com}"
+origin="${1:-https://ben.soy}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 api_dir="$here/api"
 d1_dir="$here/d1"

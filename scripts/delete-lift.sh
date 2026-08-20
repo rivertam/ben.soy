@@ -14,8 +14,8 @@ usage() {
 usage: just delete-lift <path> [--api <origin>] [--token <token>] [--yes]
 
   <path>    the permanent path segment, e.g. 2026-07-27T13-42-00-04-00
-            (the last component of https://benjisponge.com/lifting/...)
-  --api     API origin (default: https://benjisponge.com)
+            (the last component of https://ben.soy/lifting/...)
+  --api     API origin (default: https://ben.soy)
   --token   FITNESS_SYNC_TOKEN; default $FITNESS_SYNC_TOKEN, then
             ~/.config/benjisponge/fitness.token
   --yes     skip the confirmation prompt
@@ -24,7 +24,7 @@ USAGE
 }
 
 workout_path=""
-api="https://benjisponge.com"
+api="https://ben.soy"
 token="${FITNESS_SYNC_TOKEN:-}"
 assume_yes=no
 

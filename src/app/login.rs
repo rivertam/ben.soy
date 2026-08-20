@@ -420,7 +420,7 @@ fn google_env() -> Option<(String, String)> {
 /// Mirrors `feed::origin`: prod sets `SITE_ORIGIN`, dev gets it from
 /// `scripts/dev.sh`, and the fallback keeps release builds sane.
 fn origin() -> String {
-    std::env::var("SITE_ORIGIN").unwrap_or_else(|_| "https://benjisponge.com".to_string())
+    std::env::var("SITE_ORIGIN").unwrap_or_else(|_| "https://ben.soy".to_string())
 }
 
 fn redirect_uri() -> String {

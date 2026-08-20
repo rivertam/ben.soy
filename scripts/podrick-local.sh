@@ -104,7 +104,7 @@ fi
 # channel is unset or is the real source channel — test Pants channels still
 # walk Discord.
 production_pants_channel='883473115085164544'
-default_podrick_seed_url='https://benjisponge.com/api/podrick/seed'
+default_podrick_seed_url='https://ben.soy/api/podrick/seed'
 if [[ -n "${PODRICK_SYNC_TOKEN:-}" ]]; then
     if [[ -z "${PODRICK_PANTS_CHANNEL_ID:-}" || "${PODRICK_PANTS_CHANNEL_ID}" == "${production_pants_channel}" ]]; then
         export PODRICK_SEED_URL="${PODRICK_SEED_URL:-${PODRICK_PANTS_SEED_URL:-${default_podrick_seed_url}}}"

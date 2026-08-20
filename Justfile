@@ -45,7 +45,7 @@ deploy:
       --environment 07803718-f8a6-4bc9-945a-a08f6a75584e \
       --service 9b0ab183-4157-4654-bc62-e13cdc59ce68
     railway up --ci -m "deploy $(git rev-parse --short HEAD)"
-    ZONE_ID="$(curl -sS "https://api.cloudflare.com/client/v4/zones?name=benjisponge.com" \
+    ZONE_ID="$(curl -sS "https://api.cloudflare.com/client/v4/zones?name=ben.soy" \
       -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"][0]["id"])')"
     curl -sS -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache" \

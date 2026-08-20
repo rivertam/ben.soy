@@ -38,13 +38,17 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BenjispongeContainer"] }],
 
   "vars": {
-    "SITE_ORIGIN": "https://benjisponge.com",
+    "SITE_ORIGIN": "https://ben.soy",
     // Overridden per-deploy: wrangler deploy --var RELEASE_ID:<git sha>
     "RELEASE_ID": "dev"
   },
 
   "routes": [
+    { "pattern": "ben.soy", "custom_domain": true },
+    { "pattern": "www.ben.soy", "custom_domain": true },
     { "pattern": "benjisponge.com", "custom_domain": true },
-    { "pattern": "www.benjisponge.com", "custom_domain": true }
+    { "pattern": "www.benjisponge.com", "custom_domain": true },
+    { "pattern": "benmberman.com", "custom_domain": true },
+    { "pattern": "www.benmberman.com", "custom_domain": true }
   ]
 }

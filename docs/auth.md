@@ -241,7 +241,7 @@ after the eligible-for-cache rule (later cache rules win).
    non-sensitive, so publishing needs no Google verification review.
 2. Credentials → Create credentials → OAuth client ID → Web application,
    with authorized redirect URIs
-   `https://benjisponge.com/auth/google/callback` and
+   `https://ben.soy/auth/google/callback` and
    `http://localhost:3000/auth/google/callback` (dev).
 3. Set the id/secret on the Railway web service; for local testing copy
    `.env.dev.example` → `.env.dev`, fill both in, then `just dev`

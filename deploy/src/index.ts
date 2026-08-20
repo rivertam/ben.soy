@@ -25,7 +25,7 @@ export class BenjispongeContainer extends Container<ShellEnv> {
     // Unset secrets become empty strings, which the Rust side treats as
     // "closed" (auth) or "unconfigured" (database).
     this.envVars = {
-      SITE_ORIGIN: "https://benjisponge.com",
+      SITE_ORIGIN: "https://ben.soy",
       SURREALDB_ENDPOINT: env.SURREALDB_ENDPOINT ?? "",
       SURREALDB_NAMESPACE: env.SURREALDB_NAMESPACE ?? "",
       SURREALDB_DATABASE: env.SURREALDB_DATABASE ?? "",
@@ -41,10 +41,19 @@ export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
 
-    // Collapse www so the planes page's Host-derived QR URL has one origin.
-    if (url.hostname === "www.benjisponge.com") {
+    // Keep every public alias on the canonical origin so the planes page's
+    // Host-derived QR URL has one origin.
+    if (
+      [
+        "www.ben.soy",
+        "benjisponge.com",
+        "www.benjisponge.com",
+        "benmberman.com",
+        "www.benmberman.com",
+      ].includes(url.hostname)
+    ) {
       return Response.redirect(
-        `https://benjisponge.com${url.pathname}${url.search}`,
+        `https://ben.soy${url.pathname}${url.search}`,
         301,
       );
     }

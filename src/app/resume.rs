@@ -110,7 +110,7 @@ async fn resume(cx: &Cx) -> Result {
                                 </a>
                             </li>
                             <li>
-                                <a href="https://benjisponge.com">"benjisponge.com"</a>
+                                <a href="https://ben.soy">"ben.soy"</a>
                             </li>
                             <li>
                                 <a href="https://github.com/rivertam">

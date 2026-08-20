@@ -751,11 +751,7 @@ mod tests {
     /// The whole point of the format: it reads like the site's share sheet.
     #[test]
     fn a_message_is_a_plain_set_list_ending_in_the_permalink() {
-        let message = render(
-            &workout(),
-            "2026-07-21T10-39-04-04-00",
-            "https://benjisponge.com",
-        );
+        let message = render(&workout(), "2026-07-21T10-39-04-04-00", "https://ben.soy");
         assert_eq!(
             message,
             "\
@@ -769,7 +765,7 @@ W. 45 lbs × 10
 II. Cable Crossover
 1. 25 lbs × 9 · failure
 
-https://benjisponge.com/lifting/2026-07-21T10-39-04-04-00"
+https://ben.soy/lifting/2026-07-21T10-39-04-04-00"
         );
     }
 

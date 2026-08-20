@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn share_text_lists_sets_and_ends_with_the_permalink() {
-        let text = share_text(&workout(), Some("https://benjisponge.com"));
+        let text = share_text(&workout(), Some("https://ben.soy"));
         let expected = "\
 I missed 9am gym
 Jul 21, 2026 · 10:39 AM–11:14 AM · 35m 10s · 3 sets · 9 volume points
@@ -260,7 +260,7 @@ Incline Bench Press
 Cable Crossover
 1. 25 lbs × 9 · failure
 
-https://benjisponge.com/lifting/2026-07-21T10-39-04-04-00";
+https://ben.soy/lifting/2026-07-21T10-39-04-04-00";
         assert_eq!(text, expected);
     }
 

@@ -8,7 +8,7 @@ hostname while `DIARY_SYNC_*` is set (see below and cloudflare-deploy.md).
 
 ## Services
 
-- **benjisponge.com** — build from
+- **ben.soy** — build from
   [deploy/Dockerfile](../deploy/Dockerfile), not Railpack. Railpack skips
   `topcoat asset bundle`, and the binary panics without
   `assets/manifest.toml`. Keep the service private with `PORT=8080`.
@@ -65,7 +65,7 @@ duplicating the secret.
 
 Also set on the web service: `SPIRE_SYNC_TOKEN`, `FITNESS_SYNC_TOKEN`,
 `PODRICK_SYNC_TOKEN` (Bearer for `GET /api/podrick/seed`, used by local
-Podrick reset — [podrick.md](podrick.md)), `SITE_ORIGIN=https://benjisponge.com`,
+Podrick reset — [podrick.md](podrick.md)), `SITE_ORIGIN=https://ben.soy`,
 and, for sign-in ([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
 and `GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows
 managed at `/admin/permissions`, not environment variables.
@@ -136,9 +136,11 @@ those totals cannot recreate individual entries; when an installation has no
 
 ## Cloudflare edge
 
-Proxied CNAMEs for the apex, `www`, and `railway` point to
-`<tunnel-id>.cfargotunnel.com`. A Redirect Rule sends `www` to the apex with
-301 because planes QR codes bake the host.
+Proxied CNAMEs for `ben.soy`, `www.ben.soy`, and `railway.benjisponge.com`
+point to `<tunnel-id>.cfargotunnel.com`; the apex/`www` records in the two
+legacy zones are proxied as well. Redirect Rules send `www.ben.soy` and both
+legacy public domains (including `www`) to `https://ben.soy` with 301,
+preserving path/query because planes QR codes bake the host.
 
 Use a Cache Rule with edge TTL `respect_origin` / `bypass_by_default` so
 origin `Cache-Control` wins. A later rule matching
@@ -159,11 +161,12 @@ zone when a change must appear immediately.
 3. Deploy the web app, exercise a data-backed route to bootstrap the schema,
    then sync Spire and fitness into the clean database.
 4. Confirm the Railway `cloudflared` connector is healthy.
-5. Confirm proxied CNAMEs for `railway`, apex, and `www` target
+5. Confirm proxied CNAMEs for `railway.benjisponge.com`, `ben.soy`,
+   `www.ben.soy`, and each legacy-zone apex/`www` target
    `ef6f5558-8eff-4d99-a113-03df63444810.cfargotunnel.com`.
 6. Confirm the origin-respecting Cache Rule, then the later
-   `__Host-viewer` bypass rule, and the `www` → apex Redirect Rule.
-7. Verify `https://railway.benjisponge.com`, then the apex. Remove any public
+   `__Host-viewer` bypass rule, and the public-alias Redirect Rules.
+7. Verify `https://railway.benjisponge.com`, then `https://ben.soy`. Remove any public
    Railway web domain so the origin stays private-only.
 
 ## Deploy

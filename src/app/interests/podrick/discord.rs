@@ -21,7 +21,7 @@ use url::Url;
 /// Pinned so a future default-version change cannot silently alter payloads.
 const API_BASE: &str = "https://discord.com/api/v10";
 const USER_AGENT: &str = concat!(
-    "DiscordBot (https://benjisponge.com/podrick, ",
+    "DiscordBot (https://ben.soy/podrick, ",
     env!("CARGO_PKG_VERSION"),
     ")"
 );

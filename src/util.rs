@@ -74,7 +74,7 @@ mod tests {
 
     fn headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, HeaderValue::from_static("benjisponge.com"));
+        headers.insert(header::HOST, HeaderValue::from_static("ben.soy"));
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
         headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
         headers
@@ -96,7 +96,7 @@ mod tests {
         assert!(!is_same_origin(&wrong_origin));
 
         let mut no_evidence = HeaderMap::new();
-        no_evidence.insert(header::HOST, HeaderValue::from_static("benjisponge.com"));
+        no_evidence.insert(header::HOST, HeaderValue::from_static("ben.soy"));
         assert!(!is_same_origin(&no_evidence));
     }
 }
