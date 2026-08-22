@@ -49,6 +49,16 @@ pub struct PublishedWorkout {
     pub start_time: i64,
 }
 
+/// One lift admitted by the full-log filters before page-level composition.
+/// This is deliberately not a public API envelope: the exact UTC instant is
+/// only needed to interleave lifts with sibling fitness activity types.
+#[derive(Clone, Debug)]
+pub(in crate::app::interests::lifting) struct FilteredWorkout {
+    pub workout: api::Workout,
+    pub date: String,
+    pub start_time: i64,
+}
+
 /// The exercise page's history summary, derived from the joined set history
 /// like every other public count.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +76,9 @@ pub struct ExerciseProfile {
 pub struct HeatmapWorkoutSummary {
     pub title: String,
     pub path: String,
+    /// Absolute UTC start, so page-only composite previews can interleave
+    /// lifts with independently stored running activities across DST folds.
+    pub start_time: i64,
     pub duration_seconds: u64,
     pub set_count: usize,
     pub volume_points: u32,
@@ -286,29 +299,6 @@ fn to_u64(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }
 
-/// Page assignment for a closed interruption among newest-first workout dates.
-/// The interruption sits after every workout whose Eastern date is `>= to_date`
-/// (same-day workouts stay above it), so it lands on that last workout's page;
-/// when it is newer than every matching workout it stays on page 1.
-fn closed_interruption_on_page(
-    to_date: &str,
-    matching_dates_newest_first: &[&str],
-    page: usize,
-    per_page: usize,
-) -> bool {
-    if matching_dates_newest_first.is_empty() {
-        return page == 1;
-    }
-    let assigned = match matching_dates_newest_first
-        .iter()
-        .rposition(|date| *date >= to_date)
-    {
-        None => 1,
-        Some(index) => index / per_page + 1,
-    };
-    assigned == page
-}
-
 fn to_u32(value: i64) -> u32 {
     u32::try_from(value).unwrap_or(0)
 }
@@ -491,44 +481,6 @@ impl Snapshot {
         &self.interruptions
     }
 
-    /// Closed interruptions assigned to this filtered set-log page. Pagination
-    /// stays workout-only; these rows are injected into the rendered list.
-    pub fn closed_interruptions_for_log_page(&self, filters: &Filters) -> Vec<Interruption> {
-        let needle = filters.q.as_ref().map(|q| q.to_ascii_lowercase());
-        let mut matching_dates = Vec::new();
-        for workout in &self.workouts {
-            let hit = workout
-                .sets
-                .iter()
-                .any(|set| self.matches(filters, needle.as_deref(), workout, set));
-            if hit {
-                matching_dates.push(workout.local_date.as_str());
-            }
-        }
-        let per_page = filters.per_page.max(1);
-        let page = filters.page.max(1);
-        self.interruptions
-            .iter()
-            .filter(|row| {
-                let Some(to_date) = row.to_date.as_deref() else {
-                    return false;
-                };
-                if let Some(from) = &filters.from
-                    && to_date < from.as_str()
-                {
-                    return false;
-                }
-                if let Some(to) = &filters.to
-                    && to_date > to.as_str()
-                {
-                    return false;
-                }
-                closed_interruption_on_page(to_date, &matching_dates, page, per_page)
-            })
-            .cloned()
-            .collect()
-    }
-
     /// Page-only rolling muscle load and next-focus guidance. It is derived
     /// at request time because "the last seven days" advances even when no
     /// import rebuilds this immutable snapshot.
@@ -661,6 +613,7 @@ impl Snapshot {
                 HeatmapWorkoutSummary {
                     title: snap.wire.title.clone(),
                     path: snap.wire.path.clone(),
+                    start_time: snap.start_time,
                     duration_seconds: snap.wire.duration_seconds,
                     set_count: snap.sets.len(),
                     volume_points,
@@ -674,22 +627,34 @@ impl Snapshot {
         self.ids.clone()
     }
 
-    pub fn sets_page(&self, filters: &Filters) -> api::SetPage {
-        let needle = filters.q.as_ref().map(|q| q.to_ascii_lowercase());
-        let mut total_sets = 0u64;
-        let mut matching: Vec<(usize, Vec<usize>)> = Vec::new();
-        for (workout_index, workout) in self.workouts.iter().enumerate() {
-            let mut set_indexes = Vec::new();
-            for (set_index, set) in workout.sets.iter().enumerate() {
-                if self.matches(filters, needle.as_deref(), workout, set) {
-                    set_indexes.push(set_index);
+    /// Every workout admitted by `filters`, newest-first, with only its
+    /// matching sets. Pagination belongs to the page-only composite fitness
+    /// log; public lifting endpoints continue to use [`sets_page`].
+    pub(in crate::app::interests::lifting) fn filtered_workouts(
+        &self,
+        filters: &Filters,
+    ) -> Vec<FilteredWorkout> {
+        let (_, matching) = self.matching_set_indexes(filters);
+        matching
+            .into_iter()
+            .map(|(workout_index, set_indexes)| {
+                let snap = &self.workouts[workout_index];
+                let mut workout = snap.wire.clone();
+                workout.sets = set_indexes
+                    .into_iter()
+                    .map(|index| snap.sets[index].wire.clone())
+                    .collect();
+                FilteredWorkout {
+                    workout,
+                    date: snap.local_date.clone(),
+                    start_time: snap.start_time,
                 }
-            }
-            if !set_indexes.is_empty() {
-                total_sets += set_indexes.len() as u64;
-                matching.push((workout_index, set_indexes));
-            }
-        }
+            })
+            .collect()
+    }
+
+    pub fn sets_page(&self, filters: &Filters) -> api::SetPage {
+        let (total_sets, matching) = self.matching_set_indexes(filters);
         let total_workouts = matching.len() as u64;
         let workouts = matching
             .iter()
@@ -713,6 +678,25 @@ impl Snapshot {
             total_workouts,
             workouts,
         }
+    }
+
+    fn matching_set_indexes(&self, filters: &Filters) -> (u64, Vec<(usize, Vec<usize>)>) {
+        let needle = filters.q.as_ref().map(|q| q.to_ascii_lowercase());
+        let mut total_sets = 0u64;
+        let mut matching: Vec<(usize, Vec<usize>)> = Vec::new();
+        for (workout_index, workout) in self.workouts.iter().enumerate() {
+            let mut set_indexes = Vec::new();
+            for (set_index, set) in workout.sets.iter().enumerate() {
+                if self.matches(filters, needle.as_deref(), workout, set) {
+                    set_indexes.push(set_index);
+                }
+            }
+            if !set_indexes.is_empty() {
+                total_sets += set_indexes.len() as u64;
+                matching.push((workout_index, set_indexes));
+            }
+        }
+        (total_sets, matching)
     }
 
     pub fn latest(&self) -> api::WorkoutDetail {
@@ -1059,36 +1043,6 @@ mod tests {
     }
 
     #[test]
-    fn closed_interruptions_land_on_the_workout_page_after_same_or_newer_days() {
-        assert!(closed_interruption_on_page(
-            "2026-08-10",
-            &["2026-08-20", "2026-08-15", "2026-08-01", "2026-07-20"],
-            1,
-            2
-        ));
-        assert!(!closed_interruption_on_page(
-            "2026-08-10",
-            &["2026-08-20", "2026-08-15", "2026-08-01", "2026-07-20"],
-            2,
-            2
-        ));
-        assert!(closed_interruption_on_page(
-            "2026-07-15",
-            &["2026-08-20", "2026-08-15", "2026-08-01", "2026-07-20"],
-            2,
-            2
-        ));
-        assert!(closed_interruption_on_page(
-            "2026-08-25",
-            &["2026-08-20", "2026-08-15"],
-            1,
-            2
-        ));
-        assert!(closed_interruption_on_page("2026-08-09", &[], 1, 10));
-        assert!(!closed_interruption_on_page("2026-08-09", &[], 2, 10));
-    }
-
-    #[test]
     fn newest_first_with_derived_paths_and_frozen_records() {
         let snap = snapshot();
         let page = snap.sets_page(&parse_filters(&[]).unwrap());
@@ -1121,6 +1075,16 @@ mod tests {
             page.workouts[0].sets.len(),
             1,
             "workout keeps only its matching sets"
+        );
+        let unpaginated = snap.filtered_workouts(&filters);
+        assert_eq!(unpaginated.len(), 2);
+        assert_eq!(unpaginated[0].workout.sets.len(), 1);
+        assert_eq!(unpaginated[0].date, "2026-07-21");
+        assert_eq!(
+            unpaginated[0].start_time,
+            eastern::utc_timestamp("2026-07-21 14:39:04")
+                .unwrap()
+                .as_second()
         );
 
         let q = parse_filters(&[("q".into(), "BENCH".into())]).unwrap();
@@ -1278,6 +1242,12 @@ mod tests {
         );
         assert_eq!(day[0].set_count, 2);
         assert!(day[0].volume_points > 0);
+        assert_eq!(
+            day[0].start_time,
+            eastern::utc_timestamp("2026-07-21 14:39:04")
+                .unwrap()
+                .as_second()
+        );
         assert!(snap.workouts_on_date("1999-01-01").is_empty());
     }
 

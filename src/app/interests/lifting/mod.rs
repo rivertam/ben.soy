@@ -26,15 +26,15 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     router::{
-        HeaderValue, error::not_found, error::redirect, header, page, parse_query_params,
-        path_param, uri,
+        HeaderValue, error::not_found, error::redirect, error::redirect_permanent, header, page,
+        parse_query_params, path_param, route, uri,
     },
     view::{class, component, view},
 };
 
 use crate::{
     app::login::viewer,
-    components::{back_link, page_head, rail_group, rail_section, shell},
+    components::{back_link, modal, page_head, rail_group, rail_section, shell},
     content::{access::is_admin, interests::interest},
 };
 
@@ -48,6 +48,7 @@ use self::{
 
 pub(super) const AUTO_FILTER_JS: Asset = asset!("./auto-filter.js");
 const WORKOUT_UPLOAD_JS: Asset = asset!("./workout-upload.js");
+pub(super) const FITNESS_PATH: &str = "/fitness";
 
 /// The single crate-visible seam used by the authenticated browser importer.
 /// Keeping formatting here guarantees its clipboard response is byte-for-byte
@@ -91,154 +92,116 @@ const WORKOUT_NOTE: &str = "mt-[0.7rem] px-[0.7rem] py-[0.6rem] text-ink2 bg-bra
 #[component]
 async fn workout_upload_dialog() -> Result {
     view! {
-        <details
-            data-workout-upload-disclosure=""
-            class="relative mt-1 flex-none open:before:fixed open:before:inset-0 \
-                   open:before:z-40 open:before:bg-ink/50 open:before:content-['']"
-        >
-            <summary
-                data-workout-upload-trigger=""
-                class="list-none cursor-pointer rounded-sm border border-oxide px-3 py-2 \
-                       font-meta text-xs text-oxide hover:bg-oxide hover:text-card \
-                       focus-visible:outline-solid focus-visible:outline-2 \
-                       focus-visible:outline-oxide focus-visible:outline-offset-2 \
-                       [&::-webkit-details-marker]:hidden"
+        modal(
+            id: "fitness-lift-dialog",
+            label: "Lift",
+            labelledby: "workout-upload-title",
+            <p class=(META_LABEL)>"Lyfta import"</p>
+            <h2
+                id="workout-upload-title"
+                class="mt-1 pr-10 font-display text-2xl font-semibold"
             >
-                "upload lift"
-            </summary>
-            <div
-                data-workout-upload-fallback=""
-                class="fixed inset-x-4 top-4 z-50 mx-auto max-h-[calc(100dvh-2rem)] \
-                       max-w-2xl overflow-y-auto"
+                "Log a lift"
+            </h2>
+            <p
+                id="workout-upload-description"
+                class="mt-3 max-w-prose text-sm leading-relaxed text-ink2"
             >
-                <section
-                    data-workout-upload-content=""
-                    class="rounded-sm border border-hairline bg-card p-5 text-ink shadow-2xl sm:p-7"
-                >
-                    <header class="flex items-start justify-between gap-5">
-                        <div>
-                            <p class=(META_LABEL)>"Lyfta import"</p>
-                            <h2
-                                id="workout-upload-title"
-                                class="mt-1 font-display text-2xl font-semibold"
-                            >
-                                "Publish a lift"
-                            </h2>
-                        </div>
-                        <a
-                            href="/lifting"
-                            data-workout-upload-close=""
-                            aria-label="Close upload form"
-                            class="p-1 font-meta text-2xl leading-none text-muted hover:text-oxide \
-                                   focus-visible:outline-solid focus-visible:outline-2 \
-                                   focus-visible:outline-oxide focus-visible:outline-offset-2"
-                        >
-                            <span aria-hidden="true">"×"</span>
-                        </a>
-                    </header>
-                    <p
-                        id="workout-upload-description"
-                        class="mt-3 max-w-prose text-sm leading-relaxed text-ink2"
-                    >
-                        "Paste the workout text copied from Lyfta. Publishing adds it to the \
-                         lifting archive and RSS feed. “Upload from clipboard” also replaces \
-                         the clipboard with this site's ready-to-share workout text."
-                    </p>
-                    <form
-                        method="post"
-                        action="/lifting/upload"
-                        class="mt-5 space-y-5"
-                        data-workout-upload=""
-                    >
-                        <label for="workout-upload-text" class="block space-y-2">
-                            <span
-                                class="font-meta text-sm text-ink2"
-                                data-workout-upload-label=""
-                            >
-                                "Lyfta workout text"
-                            </span>
-                            <textarea
-                                id="workout-upload-text"
-                                name="workout"
-                                rows="14"
-                                required=""
-                                spellcheck="false"
-                                autocomplete="off"
-                                class="block w-full resize-y rounded-sm border border-hairline \
-                                       bg-page p-4 font-mono text-sm leading-relaxed text-ink \
-                                       focus-visible:outline-solid focus-visible:outline-2 \
-                                       focus-visible:outline-oxide focus-visible:outline-offset-2"
-                            ></textarea>
-                        </label>
-                        <div class="flex flex-wrap items-center gap-4">
-                            <button
-                                type="button"
-                                hidden=""
-                                data-workout-upload-clipboard=""
-                                class="cursor-pointer rounded-sm border border-oxide bg-oxide px-4 \
-                                       py-2 font-meta text-sm text-card hover:bg-oxide-hot \
-                                       disabled:cursor-wait disabled:opacity-60"
-                            >
-                                "Upload from clipboard"
-                            </button>
-                            <button
-                                type="submit"
-                                data-workout-upload-submit=""
-                                class="cursor-pointer font-meta text-sm text-oxide underline \
-                                       decoration-oxide/40 underline-offset-4 \
-                                       hover:decoration-oxide disabled:cursor-wait \
-                                       disabled:opacity-60"
-                            >
-                                "Publish pasted text →"
-                            </button>
-                            <button
-                                type="button"
-                                hidden=""
-                                data-workout-upload-copy=""
-                                class="cursor-pointer rounded-sm border border-oxide bg-oxide px-4 \
-                                       py-2 font-meta text-sm text-card hover:bg-oxide-hot"
-                            >
-                                "Copy share text and open workout"
-                            </button>
-                            <a
-                                hidden=""
-                                data-workout-upload-result-open=""
-                                class="font-meta text-sm text-oxide underline \
-                                       decoration-oxide/40 underline-offset-4 \
-                                       hover:decoration-oxide"
-                            >
-                                "Open published workout →"
-                            </a>
-                        </div>
-                        <p
-                            class="font-meta text-xs leading-relaxed text-muted"
-                            data-workout-upload-status=""
-                            aria-live="polite"
-                        >
-                            "Or paste normally, review the text, and publish it."
-                        </p>
-                    </form>
-                </section>
-            </div>
-        </details>
-        <dialog
-            id="workout-upload-dialog"
-            data-workout-upload-dialog=""
-            aria-labelledby="workout-upload-title"
-            aria-describedby="workout-upload-description"
-            class="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl \
-                   overflow-y-auto border-0 bg-transparent p-0 text-ink backdrop:bg-ink/50"
-        >
-            <div data-workout-upload-dialog-slot=""></div>
-        </dialog>
+                "Paste the workout text copied from Lyfta. Publishing adds it to the \
+                 lifting archive and RSS feed. “Upload from clipboard” also replaces \
+                 the clipboard with this site's ready-to-share workout text."
+            </p>
+            workout_upload_form(textarea_id: "workout-upload-text")
+        )
         <script type="module" src=(WORKOUT_UPLOAD_JS)></script>
+    }
+}
+
+#[component]
+async fn workout_upload_form(textarea_id: &str) -> Result {
+    view! {
+        <form
+            method="post"
+            action="/fitness/lift/import"
+            class="mt-5 space-y-5"
+            data-workout-upload=""
+        >
+            <label for=(textarea_id) class="block space-y-2">
+                <span
+                    class="font-meta text-sm text-ink2"
+                    data-workout-upload-label=""
+                >
+                    "Lyfta workout text"
+                </span>
+                <textarea
+                    id=(textarea_id)
+                    name="workout"
+                    rows="14"
+                    autofocus=""
+                    required=""
+                    spellcheck="false"
+                    autocomplete="off"
+                    class="block w-full resize-y rounded-sm border border-hairline \
+                           bg-page p-4 font-mono text-sm leading-relaxed text-ink \
+                           focus-visible:outline-solid focus-visible:outline-2 \
+                           focus-visible:outline-oxide focus-visible:outline-offset-2"
+                ></textarea>
+            </label>
+            <div class="flex flex-wrap items-center gap-4">
+                <button
+                    type="button"
+                    hidden=""
+                    data-workout-upload-clipboard=""
+                    class="cursor-pointer rounded-sm border border-oxide bg-oxide px-4 \
+                           py-2 font-meta text-sm text-card hover:bg-oxide-hot \
+                           disabled:cursor-wait disabled:opacity-60"
+                >
+                    "Upload from clipboard"
+                </button>
+                <button
+                    type="submit"
+                    data-workout-upload-submit=""
+                    class="cursor-pointer font-meta text-sm text-oxide underline \
+                           decoration-oxide/40 underline-offset-4 \
+                           hover:decoration-oxide disabled:cursor-wait \
+                           disabled:opacity-60"
+                >
+                    "Publish pasted text →"
+                </button>
+                <button
+                    type="button"
+                    hidden=""
+                    data-workout-upload-copy=""
+                    class="cursor-pointer rounded-sm border border-oxide bg-oxide px-4 \
+                           py-2 font-meta text-sm text-card hover:bg-oxide-hot"
+                >
+                    "Copy share text and open workout"
+                </button>
+                <a
+                    hidden=""
+                    data-workout-upload-result-open=""
+                    class="font-meta text-sm text-oxide underline \
+                           decoration-oxide/40 underline-offset-4 \
+                           hover:decoration-oxide"
+                >
+                    "Open published workout →"
+                </a>
+            </div>
+            <p
+                class="font-meta text-xs leading-relaxed text-muted"
+                data-workout-upload-status=""
+                aria-live="polite"
+            >
+                "Or paste normally, review the text, and publish it."
+            </p>
+        </form>
     }
 }
 
 #[path_param]
 struct WorkoutPath(str);
 
-#[page("/lifting/{workout_path}")]
+#[page("/fitness/lift/{workout_path}")]
 async fn lift_detail(cx: &Cx) -> Result {
     let workout_path = path_param::<WorkoutPath>(cx);
     if uri(cx).query().is_some() {
@@ -253,7 +216,7 @@ async fn lift_detail(cx: &Cx) -> Result {
         eprintln!("fitness workout fetch failed: {error}");
     }
 
-    let meta = interest("lifting");
+    let meta = interest("fitness");
     let detail = loaded.as_ref().ok().map(|(detail, _)| detail);
     let workout = detail.and_then(|detail| detail.workout.as_ref());
     let involvement = loaded.as_ref().ok().and_then(|(detail, weights)| {
@@ -288,6 +251,7 @@ async fn lift_detail(cx: &Cx) -> Result {
             title: page_title.as_str(),
             active: "",
             runtime: false,
+            fitness_pwa: true,
             if let Some(workout) = workout {
                 lift_detail_head(workout: workout, share_text: share_text.as_deref().unwrap_or(""))
             } else {
@@ -312,7 +276,7 @@ async fn lift_detail(cx: &Cx) -> Result {
                             <p class=(EMPTY_COPY)>
                                 "Try the latest workout or the full archive again in a moment."
                             </p>
-                            <a class=(EMPTY_RESET) href="/lifting">
+                            <a class=(EMPTY_RESET) href="/fitness">
                                 "latest lift"
                             </a>
                         </div>
@@ -355,7 +319,7 @@ async fn lift_detail(cx: &Cx) -> Result {
                         }
                         <a
                             class=(class!(LIFT_LINK, "justify-self-center"))
-                            href="/lifting"
+                            href="/fitness"
                         >
                             "latest lift"
                         </a>
@@ -384,9 +348,24 @@ async fn lift_detail(cx: &Cx) -> Result {
                     <script type="module" src=(share::SHARE_JS)></script>
                 }
             </div>
-            back_link(href: "/lifting", label: "latest lift")
+            back_link(href: "/fitness", label: "fitness")
         )
     }
+}
+
+/// Public workout permalinks predate the unified fitness surface. Re-encode
+/// the decoded path through `workout_url` before putting it in `Location`.
+#[route(GET "/lifting/{workout_path}")]
+async fn legacy_lift_detail(cx: &Cx) -> Result {
+    let workout_path = path_param::<WorkoutPath>(cx);
+    let target = with_raw_query(cx, &workout_url(workout_path));
+    Err(redirect_permanent(&target).into())
+}
+
+pub(super) fn with_raw_query(cx: &Cx, target: &str) -> String {
+    uri(cx)
+        .query()
+        .map_or_else(|| target.to_string(), |query| format!("{target}?{query}"))
 }
 
 #[component]

@@ -59,8 +59,8 @@ struct SessionWindow {
 /// The default session's windows: the site's full flat map (~ — the logbook
 /// home — the résumé, each interest, any granted hidden pages) — a superset
 /// of the header's fixed links — numbered in render order.
-/// The current window is the longest matching path prefix — `/lifting/log`
-/// lights `lifting` while `/thoughts/anything` stays home at `~`.
+/// The current window is the longest matching path prefix — `/fitness/log`
+/// lights `fitness` while `/thoughts/anything` stays home at `~`.
 fn session_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Vec<SessionWindow> {
     let mut windows: Vec<(String, String)> = vec![
         ("~".to_string(), "/".to_string()),
@@ -99,7 +99,7 @@ fn session_windows(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> 
 /// The phone tab bar's five panes, in deck order. Home renders one deck pane
 /// per entry (`app/home.rs` — its tests hold the two lists together); the
 /// bar renders on every page so phone visitors always have the map.
-pub(crate) const PANE_TABS: [&str; 5] = ["log", "felix", "lifting", "resume", "more"];
+pub(crate) const PANE_TABS: [&str; 5] = ["log", "felix", "fitness", "resume", "more"];
 
 /// The pane tab a path lives under: the log owns home and its posts, the two
 /// promoted interests and the résumé own themselves, and "more" covers every
@@ -110,7 +110,7 @@ fn pane_tab(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Option<
     if path == "/" || within("/thoughts") {
         return Some("log");
     }
-    for tab in ["felix", "lifting", "resume"] {
+    for tab in ["felix", "fitness", "resume"] {
         if within(&format!("/{tab}")) {
             return Some(tab);
         }
@@ -148,10 +148,10 @@ fn pane_href(at_home: bool, tab: &str) -> String {
 /// `runtime` controls Topcoat's browser runtime. It defaults on for existing
 /// pages; fully server-rendered pages can opt out and ship no production JS.
 ///
-/// `pwa` links the /diary app manifest and its status-bar color so the page
-/// is installable (app/pwa.rs serves the pieces). Only the admin-only diary
-/// pages set it; the flag renders no viewer data, but keeping it off
-/// everywhere else keeps the public site from advertising an install.
+/// `pwa` links the /diary app manifest; `fitness_pwa` links the separate
+/// /fitness-scoped app whose Android share target accepts fitness links.
+/// Keeping these explicit prevents the diary service worker from ever
+/// broadening onto public pages.
 ///
 /// `marker_font` loads Kalam for the handwritten caption on the dog-age post.
 /// It defaults off so the extra face does not ride along on every page.
@@ -172,6 +172,7 @@ pub async fn shell(
     #[default(false)] hide_nav: bool,
     #[default(true)] runtime: bool,
     #[default(false)] pwa: bool,
+    #[default(false)] fitness_pwa: bool,
     #[default(false)] marker_font: bool,
     child: View,
 ) -> Result {
@@ -291,6 +292,10 @@ pub async fn shell(
                     // The /diary app surface (app/pwa.rs); the color matches
                     // --color-page so the standalone status bar blends in.
                     <link rel="manifest" href="/diary.webmanifest">
+                    <meta name="theme-color" content="#2e3626">
+                }
+                if fitness_pwa {
+                    <link rel="manifest" href="/fitness.webmanifest">
                     <meta name="theme-color" content="#2e3626">
                 }
                 <link

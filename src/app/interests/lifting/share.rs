@@ -260,14 +260,14 @@ Incline Bench Press
 Cable Crossover
 1. 25 lbs × 9 · failure
 
-https://ben.soy/lifting/2026-07-21T10-39-04-04-00";
+https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00";
         assert_eq!(text, expected);
     }
 
     #[test]
     fn share_text_without_an_origin_keeps_the_bare_path() {
         let text = share_text(&workout(), None);
-        assert!(text.ends_with("\n/lifting/2026-07-21T10-39-04-04-00"));
+        assert!(text.ends_with("\n/fitness/lift/2026-07-21T10-39-04-04-00"));
     }
 
     #[test]

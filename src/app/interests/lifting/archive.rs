@@ -1,4 +1,4 @@
-//! The fitness archive engine — everything behind `/lifting` and
+//! The lifting archive engine — everything behind `/fitness` and
 //! `/api/fitness/*` that isn't a view: the Eastern projection, the
 //! derived-records spec, import validation and its write path, the filter
 //! grammar, and the in-memory snapshot that serves every read.

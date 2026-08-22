@@ -111,10 +111,10 @@ announce failures.
 run seeds it at the newest workout that already exists, so anything pasted
 after Podrick starts is announced and anything already there never is —
 including, exactly, the workout it seeded from, since eligibility is *strictly*
-newer. The seeding log reports UTC and `/lifting` shows Eastern, so the lift
+newer. The seeding log reports UTC and `/fitness` shows Eastern, so the lift
 sitting on the boundary does not look like the watermark unless you convert. To
 re-announce a lift you already have locally: delete it (the delete control on
-`/lifting`, or `just delete-lift`), then `just dev --podrick-reset`, then
+`/fitness`, or `just delete-lift`), then `just dev --podrick-reset`, then
 paste it again. `--podrick-reset` clears every local `podrick_*` row, including
 the local Pants history and action outbox; it exists only on the dev scripts
 and deliberately not on the binary, because production must not grow a reset

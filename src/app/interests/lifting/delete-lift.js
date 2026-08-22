@@ -71,9 +71,9 @@ if (panel && start && confirm && commit && cancel && status && path) {
         return;
       }
       // The archive is gone from under this page, so do not re-render it —
-      // /lifting shows whatever is newest now.
+      // /fitness shows whatever is newest now.
       announce("Deleted. Opening the latest lift…");
-      window.location.assign("/lifting");
+      window.location.assign("/fitness");
     } catch {
       // A transport failure means the request may or may not have landed.
       announce("The delete could not be sent. Reload the page to see where it stands.");

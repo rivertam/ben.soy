@@ -24,9 +24,9 @@ pub static INTERESTS: [Interest; 8] = [
         teaser: "I am an intermediate swing dancer",
     },
     Interest {
-        slug: "lifting",
-        title: "Lifting",
-        teaser: "I lift weights pretty often",
+        slug: "fitness",
+        title: "Fitness",
+        teaser: "Lifting and running, logged together",
     },
     Interest {
         slug: "keyboards",

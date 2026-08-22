@@ -29,8 +29,8 @@ does not depend on the grant store. The admin rule is a constant comparison
 and survives outages.
 
 A grant opens only the named hidden page. It never grants admin
-capabilities. For example, `/lifting` renders its "upload lift" dialog only
-when the signed-in email matches `ADMIN_EMAIL`, and `POST /lifting/upload`
+capabilities. For example, `/fitness` renders its import controls only when
+the signed-in email matches `ADMIN_EMAIL`, and `POST /fitness/lift/import`
 independently repeats that exact check before reading the request body.
 
 ## Admin pages (`/admin`, `/admin/permissions`)
@@ -126,6 +126,55 @@ Invariants:
 - `/sw.js` and the manifest keep stable un-hashed URLs (a worker's URL is
   its identity; a hashed URL would register a new worker every deploy).
   Served `no-cache` / day-long cache respectively via `pwa.rs`.
+
+## Fitness logging and Android share target
+
+`/fitness` is a second, deliberately separate installable app. Its
+`/fitness.webmanifest` has identity/start/scope `/fitness` and declares the
+POST form Web Share Target `/fitness/share`. Garmin shares retain only the
+validated numeric activity id and 303-redirect to the GET review URL, so raw
+native share text does not enter browser history or ingress access logs.
+Complete Lyfta workout text stays in the POST body and renders only as an
+escaped review form; native-share ingress never writes. A deliberate second
+same-origin POST publishes it through the ordinary strict lift importer.
+Link-only or ambiguous shares fail closed. `src/app/interests/running/pwa.js`
+registers the stable `/fitness/sw.js` worker with that same scope. The worker
+has install/activate only—no fetch interception, cache, private state, or diary
+code. `Service-Worker-Allowed: /fitness` lets the script below the path control
+the exact `/fitness` start URL.
+
+The signed-in `ADMIN_EMAIL` sees the same “log” launcher in the `/fitness` and
+main log headers, with Lift, Run, and Interruption choices opening separate
+native dialogs. On `/`, both header controls target one dialog set rendered
+outside the phone pane deck, so desktop-hidden panes never hide the modal and
+focus returns to the launcher that opened it. The real fragment links and
+server-rendered forms remain usable without JavaScript. The
+Run dialog keeps manual entry primary and contains the Garmin URL importer as a
+secondary disclosure; there is no separate import control under the Fitness
+header. The manual form sends distance in miles plus elapsed total minutes and seconds
+to `POST /fitness/run/manual`; the server stamps the first write's start time
+and stores `source='manual'`. A fresh random submission token in each rendered
+form gives that logical write a create-only identity, so an exact replay returns
+the first stored run rather than creating another, while changed metrics under
+the same token conflict. The token is an idempotency key, not authorization.
+
+The Fitness manifest/worker are ungated for the same browser-install reason as
+the diary bytes. This does not grant logging or import capability: every write
+independently requires the exact `ADMIN_EMAIL`; non-admins get 404, and every
+review/write response is `no-store`. Garmin confirmation, Lyfta lift import,
+manual-run, and interruption POSTs require positive same-origin evidence and
+bounded forms. Manual-run responses also carry `no-referrer`; no raw entry is
+staged elsewhere. A signed-out Garmin share keeps only the validated numeric
+activity id in OAuth `next`; signed-out Lyfta text is not staged at all and must
+be shared again after login. Incoming Web Share Target support is
+platform-dependent: the installed Android/Chrome PWA is the target workflow,
+while iOS Home Screen apps do not currently expose Web Share Target. The manual
+fields and Garmin URL importer inside the Run dialog, plus the Lyfta text form
+inside the Lift dialog, are the fallbacks.
+
+Do not merge these manifests or broaden the diary worker. A manifest has one
+share target, its action must remain inside its scope, and the diary's accepted
+security invariant is still that its worker controls no public page.
 
 ## Adding a hidden page
 

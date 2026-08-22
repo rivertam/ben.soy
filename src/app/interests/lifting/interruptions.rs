@@ -2,8 +2,8 @@
 //! explain empty heatmap days without changing volume or training-focus math.
 //!
 //! Admin create / edit / delete lives here as form POSTs (same identity gate
-//! as `/lifting/upload`). Open rows (no end date) surface on `/lifting`;
-//! closed rows inject into the `/lifting/log` timeline. Heatmap chrome covers
+//! as `/fitness/lift/import`). Open rows (no end date) surface on `/fitness`;
+//! closed rows inject into the `/fitness/log` timeline. Heatmap chrome covers
 //! open rows through today and closed rows through their end date.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,7 +20,9 @@ use topcoat::{
     view::{class, component, view},
 };
 
-use crate::{app::login::viewer, content::access::is_admin, util::is_same_origin};
+use crate::{
+    app::login::viewer, components::modal, content::access::is_admin, util::is_same_origin,
+};
 
 use super::{
     META_LABEL,
@@ -32,9 +34,9 @@ use super::{
     data as fitness,
 };
 
-const OPEN_REDIRECT: &str = "/lifting#interruptions";
-const CLOSED_REDIRECT: &str = "/lifting/log#set-log";
-const LOGIN_REDIRECT: &str = "/login?next=%2Flifting%23interruptions";
+const OPEN_REDIRECT: &str = "/fitness#interruptions";
+const CLOSED_REDIRECT: &str = "/fitness/log#set-log";
+const LOGIN_REDIRECT: &str = "/login?next=%2Ffitness%23interruptions";
 const BODY_LIMIT_BYTES: usize = 4 * 1024;
 const NO_STORE: &str = "no-store";
 const NOTE_MAX: usize = 200;
@@ -69,8 +71,17 @@ const QUIET: &str = "quiet-link cursor-pointer font-meta text-xs";
 #[path_param]
 struct InterruptionId(str);
 
-#[route(POST "/lifting/interruptions")]
+#[route(POST "/fitness/interruptions")]
 async fn create_interruption(cx: &Cx, body: Body) -> Result<Response> {
+    create_interruption_inner(cx, body).await
+}
+
+#[route(POST "/lifting/interruptions")]
+async fn legacy_create_interruption(cx: &Cx, body: Body) -> Result<Response> {
+    create_interruption_inner(cx, body).await
+}
+
+async fn create_interruption_inner(cx: &Cx, body: Body) -> Result<Response> {
     let bytes = match gate(cx, body).await {
         Ok(bytes) => bytes,
         Err(response) => return Ok(response),
@@ -104,8 +115,17 @@ async fn create_interruption(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
-#[route(POST "/lifting/interruptions/{interruption_id}")]
+#[route(POST "/fitness/interruptions/{interruption_id}")]
 async fn update_interruption(cx: &Cx, body: Body) -> Result<Response> {
+    update_interruption_inner(cx, body).await
+}
+
+#[route(POST "/lifting/interruptions/{interruption_id}")]
+async fn legacy_update_interruption(cx: &Cx, body: Body) -> Result<Response> {
+    update_interruption_inner(cx, body).await
+}
+
+async fn update_interruption_inner(cx: &Cx, body: Body) -> Result<Response> {
     let id = path_param::<InterruptionId>(cx);
     if !is_interruption_id(id) {
         return Ok(plain(StatusCode::NOT_FOUND, "not found"));
@@ -144,8 +164,17 @@ async fn update_interruption(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
-#[route(POST "/lifting/interruptions/{interruption_id}/delete")]
+#[route(POST "/fitness/interruptions/{interruption_id}/delete")]
 async fn delete_interruption(cx: &Cx, body: Body) -> Result<Response> {
+    delete_interruption_inner(cx, body).await
+}
+
+#[route(POST "/lifting/interruptions/{interruption_id}/delete")]
+async fn legacy_delete_interruption(cx: &Cx, body: Body) -> Result<Response> {
+    delete_interruption_inner(cx, body).await
+}
+
+async fn delete_interruption_inner(cx: &Cx, body: Body) -> Result<Response> {
     let id = path_param::<InterruptionId>(cx);
     if !is_interruption_id(id) {
         return Ok(plain(StatusCode::NOT_FOUND, "not found"));
@@ -214,7 +243,7 @@ enum WriteAuth {
     Forbidden,
 }
 
-/// Viewer → admin → same-origin, matching `/lifting/upload`.
+/// Viewer → admin → same-origin, matching `/fitness/lift/import`.
 fn authorize_write(viewer_email: Option<&str>, same_origin: bool) -> WriteAuth {
     match viewer_email {
         None => WriteAuth::Login,
@@ -275,65 +304,37 @@ pub(super) async fn open_panel(rows: &[&Interruption], can_edit: bool) -> Result
     }
 }
 
-/// Admin create control next to “upload lift” on `/lifting`.
+/// Admin create dialog opened by the unified log launcher on `/fitness`.
 #[component]
 pub(super) async fn create_dialog() -> Result {
     view! {
-        <details
-            class="relative mt-1 flex-none open:before:fixed open:before:inset-0 \
-                   open:before:z-40 open:before:bg-ink/50 open:before:content-['']"
-        >
-            <summary
-                class="list-none cursor-pointer rounded-sm border border-oxide px-3 py-2 \
-                       font-meta text-xs text-oxide hover:bg-oxide hover:text-card \
-                       focus-visible:outline-solid focus-visible:outline-2 \
-                       focus-visible:outline-oxide focus-visible:outline-offset-2 \
-                       [&::-webkit-details-marker]:hidden"
+        modal(
+            id: "fitness-interruption-dialog",
+            label: "Interruption",
+            labelledby: "interruption-create-title",
+            <p class=(META_LABEL)>"archive notes"</p>
+            <h2
+                id="interruption-create-title"
+                class="mt-1 pr-10 font-display text-2xl font-semibold"
             >
-                "log interruption"
-            </summary>
-            <div
-                class="fixed inset-x-4 top-4 z-50 mx-auto max-h-[calc(100dvh-2rem)] \
-                       max-w-lg overflow-y-auto"
-            >
-                <section class="rounded-sm border border-hairline bg-card p-5 text-ink shadow-2xl sm:p-7">
-                    <header class="flex items-start justify-between gap-5">
-                        <div>
-                            <p class=(META_LABEL)>"archive notes"</p>
-                            <h2
-                                id="interruption-create-title"
-                                class="mt-1 font-display text-2xl font-semibold"
-                            >
-                                "Log an interruption"
-                            </h2>
-                        </div>
-                        <a
-                            href="/lifting"
-                            aria-label="Close interruption form"
-                            class="p-1 font-meta text-2xl leading-none text-muted hover:text-oxide \
-                                   focus-visible:outline-solid focus-visible:outline-2 \
-                                   focus-visible:outline-oxide focus-visible:outline-offset-2"
-                        >
-                            <span aria-hidden="true">"×"</span>
-                        </a>
-                    </header>
-                    <p class=(class!(META, "mt-2"))>
-                        "Leave the end date blank while it is ongoing. Closed ranges appear in the \
-                         lifting log."
-                    </p>
-                    <div class="mt-4">
-                        interruption_form(
-                            action: "/lifting/interruptions",
-                            from_date: "",
-                            to_date: "",
-                            note: "",
-                            emoji: DEFAULT_EMOJI,
-                            submit: "save interruption"
-                        )
-                    </div>
-                </section>
+                "Log an interruption"
+            </h2>
+            <p class=(class!(META, "mt-2"))>
+                "Leave the end date blank while it is ongoing. Closed ranges appear in the \
+                 activity log."
+            </p>
+            <div class="mt-4">
+                interruption_form(
+                    action: "/fitness/interruptions",
+                    from_date: "",
+                    to_date: "",
+                    note: "",
+                    emoji: DEFAULT_EMOJI,
+                    submit: "save interruption",
+                    autofocus: true
+                )
             </div>
-        </details>
+        )
     }
 }
 
@@ -366,39 +367,41 @@ pub(super) async fn log_entry(row: &Interruption, can_edit: bool) -> Result {
     }
 }
 
-/// Merged set-log rows: workouts newest-first with closed interruptions after
-/// same-day lifts (`to_date` sort key).
+/// Merged fitness-log rows: primary activities retain their exact UTC order,
+/// while closed interruptions sit after every same-date primary.
 pub(super) enum LogItem<'a> {
-    Workout(&'a fitness::Workout),
+    Activity(&'a fitness::LogActivity),
     Interruption(&'a Interruption),
 }
 
 pub(super) fn merge_log_items<'a>(
-    workouts: &'a [fitness::Workout],
+    activities: &'a [fitness::LogActivity],
     interruptions: &'a [Interruption],
 ) -> Vec<LogItem<'a>> {
-    let mut items: Vec<LogItem<'a>> = workouts.iter().map(LogItem::Workout).collect();
+    let mut items: Vec<LogItem<'a>> = activities.iter().map(LogItem::Activity).collect();
     items.extend(interruptions.iter().map(LogItem::Interruption));
     items.sort_by(|a, b| {
-        let (a_date, a_kind, a_id) = log_sort_key(a);
-        let (b_date, b_kind, b_id) = log_sort_key(b);
-        // Newest date first; same day: workouts (0) before interruptions (1).
+        let (a_date, a_kind) = log_sort_key(a);
+        let (b_date, b_kind) = log_sort_key(b);
+        // `sort_by` is stable: equal-date activities retain the composite
+        // model's exact UTC order. Interruptions are deterministic by id.
         b_date
             .cmp(a_date)
             .then_with(|| a_kind.cmp(&b_kind))
-            .then_with(|| a_id.cmp(b_id))
+            .then_with(|| match (a, b) {
+                (LogItem::Interruption(left), LogItem::Interruption(right)) => {
+                    left.id.cmp(&right.id)
+                }
+                _ => std::cmp::Ordering::Equal,
+            })
     });
     items
 }
 
-fn log_sort_key<'a>(item: &'a LogItem<'_>) -> (&'a str, u8, &'a str) {
+fn log_sort_key<'a>(item: &'a LogItem<'_>) -> (&'a str, u8) {
     match item {
-        LogItem::Workout(workout) => (
-            workout.started_at_local.get(..10).unwrap_or(""),
-            0,
-            workout.id.as_str(),
-        ),
-        LogItem::Interruption(row) => (row.to_date.as_deref().unwrap_or(""), 1, row.id.as_str()),
+        LogItem::Activity(activity) => (activity.date(), 0),
+        LogItem::Interruption(row) => (row.to_date.as_deref().unwrap_or(""), 1),
     }
 }
 
@@ -424,8 +427,8 @@ async fn interruption_row(row: &Interruption, can_edit: bool) -> Result {
 
 #[component]
 async fn interruption_admin_controls(row: &Interruption) -> Result {
-    let action = format!("/lifting/interruptions/{}", row.id);
-    let delete_action = format!("/lifting/interruptions/{}/delete", row.id);
+    let action = format!("/fitness/interruptions/{}", row.id);
+    let delete_action = format!("/fitness/interruptions/{}/delete", row.id);
     let to_value = row.to_date.as_deref().unwrap_or("");
     view! {
         <div class="mt-2 flex flex-wrap items-start gap-4">
@@ -440,7 +443,8 @@ async fn interruption_admin_controls(row: &Interruption) -> Result {
                         to_date: to_value,
                         note: row.note.as_str(),
                         emoji: row.emoji.as_str(),
-                        submit: "save changes"
+                        submit: "save changes",
+                        autofocus: false
                     )
                 </div>
             </details>
@@ -469,6 +473,7 @@ async fn interruption_form(
     note: &str,
     emoji: &str,
     submit: &str,
+    autofocus: bool,
 ) -> Result {
     let selected = if EMOJI_CHOICES.contains(&emoji) {
         emoji
@@ -484,6 +489,7 @@ async fn interruption_form(
                         class=(FIELD)
                         type="date"
                         name="from"
+                        autofocus=(autofocus)
                         required=""
                         value=(from_date)
                     />
@@ -893,38 +899,33 @@ mod tests {
     }
 
     #[test]
-    fn merge_puts_same_day_interruptions_after_workouts() {
-        let workouts = [
-            fitness::Workout {
-                id: "w1".into(),
-                path: "2026-08-09T10-00-00-04-00".into(),
-                title: "A".into(),
-                raw_title: "A".into(),
-                started_at_local: "2026-08-09 10:00:00".into(),
-                ended_at_local: "2026-08-09 11:00:00".into(),
-                eastern_offset_minutes: -240,
-                end_eastern_offset_minutes: -240,
-                duration_seconds: 3600,
-                duration_suspicious: false,
-                notes: None,
-                description: None,
-                sets: Vec::new(),
-            },
-            fitness::Workout {
-                id: "w0".into(),
-                path: "2026-08-11T10-00-00-04-00".into(),
-                title: "B".into(),
-                raw_title: "B".into(),
-                started_at_local: "2026-08-11 10:00:00".into(),
-                ended_at_local: "2026-08-11 11:00:00".into(),
-                eastern_offset_minutes: -240,
-                end_eastern_offset_minutes: -240,
-                duration_seconds: 3600,
-                duration_suspicious: false,
-                notes: None,
-                description: None,
-                sets: Vec::new(),
-            },
+    fn merge_puts_same_day_interruptions_after_primary_activities() {
+        let lift = |id: &str, local: &str, start_time: i64| {
+            fitness::LogActivity::Lift(
+                crate::app::interests::lifting::archive::snapshot::FilteredWorkout {
+                    workout: fitness::Workout {
+                        id: id.into(),
+                        path: local.into(),
+                        title: "Lift".into(),
+                        raw_title: "Lift".into(),
+                        started_at_local: local.into(),
+                        ended_at_local: local.into(),
+                        eastern_offset_minutes: -240,
+                        end_eastern_offset_minutes: -240,
+                        duration_seconds: 3600,
+                        duration_suspicious: false,
+                        notes: None,
+                        description: None,
+                        sets: Vec::new(),
+                    },
+                    date: local[..10].into(),
+                    start_time,
+                },
+            )
+        };
+        let activities = [
+            lift("w1", "2026-08-09 10:00:00", 1),
+            lift("w0", "2026-08-11 10:00:00", 2),
         ];
         let rows = [Interruption {
             id: "i".into(),
@@ -934,10 +935,62 @@ mod tests {
             emoji: "🤒".into(),
             updated_at: 0,
         }];
-        let merged = merge_log_items(&workouts, &rows);
-        assert!(matches!(merged[0], LogItem::Workout(w) if w.id == "w0"));
-        assert!(matches!(merged[1], LogItem::Workout(w) if w.id == "w1"));
+        let merged = merge_log_items(&activities, &rows);
+        assert!(matches!(
+            merged[0],
+            LogItem::Activity(fitness::LogActivity::Lift(w)) if w.workout.id == "w0"
+        ));
+        assert!(matches!(
+            merged[1],
+            LogItem::Activity(fitness::LogActivity::Lift(w)) if w.workout.id == "w1"
+        ));
         assert!(matches!(merged[2], LogItem::Interruption(r) if r.id == "i"));
+    }
+
+    #[test]
+    fn merge_preserves_exact_order_for_same_date_activities() {
+        let workout = |id: &str| {
+            fitness::LogActivity::Lift(
+                crate::app::interests::lifting::archive::snapshot::FilteredWorkout {
+                    workout: fitness::Workout {
+                        id: id.into(),
+                        path: id.into(),
+                        title: "Lift".into(),
+                        raw_title: "Lift".into(),
+                        started_at_local: "2026-08-09 10:00:00".into(),
+                        ended_at_local: "2026-08-09 11:00:00".into(),
+                        eastern_offset_minutes: -240,
+                        end_eastern_offset_minutes: -240,
+                        duration_seconds: 3600,
+                        duration_suspicious: false,
+                        notes: None,
+                        description: None,
+                        sets: Vec::new(),
+                    },
+                    date: "2026-08-09".into(),
+                    start_time: 0,
+                },
+            )
+        };
+        let activities = [workout("newer"), workout("older")];
+        let rows = [Interruption {
+            id: "i".into(),
+            from_date: "2026-08-01".into(),
+            to_date: Some("2026-08-09".into()),
+            note: "cold".into(),
+            emoji: "🤒".into(),
+            updated_at: 0,
+        }];
+        let merged = merge_log_items(&activities, &rows);
+        assert!(matches!(
+            merged[0],
+            LogItem::Activity(fitness::LogActivity::Lift(w)) if w.workout.id == "newer"
+        ));
+        assert!(matches!(
+            merged[1],
+            LogItem::Activity(fitness::LogActivity::Lift(w)) if w.workout.id == "older"
+        ));
+        assert!(matches!(merged[2], LogItem::Interruption(_)));
     }
 
     #[test]

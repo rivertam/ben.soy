@@ -11,6 +11,21 @@ if (deck && tabs.length) {
   const panes = [...deck.querySelectorAll("[data-pane]")];
   let frame = 0;
 
+  // Fragments never reach the server, so the route redirects cannot migrate
+  // old phone-deck bookmarks. Normalize the former lifting pane in place and
+  // move the scroller before the first aria/hash synchronization runs.
+  if (location.hash === "#lifting") {
+    const index = panes.findIndex((pane) => pane.id === "fitness");
+    history.replaceState(
+      history.state,
+      "",
+      location.pathname + location.search + "#fitness",
+    );
+    if (index >= 0 && deck.clientWidth) {
+      deck.scrollLeft = index * deck.clientWidth;
+    }
+  }
+
   const sync = () => {
     frame = 0;
     if (!deck.clientWidth) return;

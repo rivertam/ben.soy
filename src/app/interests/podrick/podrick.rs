@@ -21,7 +21,7 @@ mod discord;
 mod pants;
 mod seed_install;
 
-// The permanent-path format is a public URL contract shared with /lifting and
+// The permanent-path format is a public URL contract shared with /fitness and
 // the diary. Podrick reuses the implementation rather than restating it; it
 // needs only `public_path` and `utc_timestamp`. The module lives in
 // diary-core now (the diary's wasm worker compiles it too), which also ends
@@ -250,7 +250,7 @@ fn log_report(report: &PassReport, dry_run: bool) {
             "watermark-seeded",
             serde_json::json!({
                 // Named for its timezone because the watermark lands exactly ON
-                // the newest workout, and /lifting shows that workout in
+                // the newest workout, and /fitness shows that workout in
                 // Eastern — so a reader comparing the two does not recognize
                 // the lift sitting at the boundary as the one being excluded.
                 "watermark_utc": watermark,

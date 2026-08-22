@@ -1,14 +1,15 @@
 //! The running timeline — curated logbook entries, synced Slay the Spire
-//! wins, and published lifts, filterable and searchable. It renders as the
-//! log pane of `/` (`home.rs` owns the page and its cache header); `/log`,
-//! its address for a while in 2026, permanently redirects home with any
-//! filter query intact.
+//! wins, published lifts, and fitness runs, filterable and searchable. It
+//! renders as the log pane of `/` (`home.rs` owns the page and its cache
+//! header); `/log`, its address for a while in 2026, permanently redirects
+//! home with any filter query intact.
 
-use benjisponge::data::Data;
+use benjisponge::data::{Data, running_models::RunningActivity};
 
 use super::feed::workout_volume_points;
 use super::interests::lifting::archive::snapshot::PublishedWorkout;
 use super::interests::lifting::archive::store::FitnessStore;
+use super::interests::running;
 use super::interests::spire::run_page_url;
 use super::interests::spire::runs::{self as spire_runs, Run};
 use topcoat::{
@@ -19,8 +20,10 @@ use topcoat::{
 };
 
 use crate::{
+    app::login::viewer,
     components::{ext_link, inline_popover, link_label},
     content::{
+        access::is_admin,
         interests::{INTERESTS, Interest},
         logbook::{Entry, FILTER_TAGS, Kind, LOG, serial},
     },
@@ -73,7 +76,8 @@ struct Chip {
 }
 
 /// One timeline item: a curated logbook entry, a Slay the Spire victory
-/// (wins only — deaths stay on `/spire`), or a manually published lift.
+/// (wins only — deaths stay on `/spire`), a manually published lift, or a
+/// A running activity, imported from Garmin or entered manually.
 enum Item<'a> {
     Log {
         serial: String,
@@ -81,6 +85,7 @@ enum Item<'a> {
     },
     Win(&'a Run),
     Lift(&'a PublishedWorkout),
+    FitnessRun(&'a RunningActivity),
 }
 
 impl<'a> Item<'a> {
@@ -89,6 +94,7 @@ impl<'a> Item<'a> {
             Item::Log { entry, .. } => entry.date(),
             Item::Win(run) => &run.date,
             Item::Lift(published) => &published.date,
+            Item::FitnessRun(activity) => running::activity_date(activity),
         }
     }
 
@@ -96,7 +102,7 @@ impl<'a> Item<'a> {
     fn rank(&self) -> u8 {
         match self {
             Item::Log { .. } => 0,
-            Item::Win(_) | Item::Lift(_) => 1,
+            Item::Win(_) | Item::Lift(_) | Item::FitnessRun(_) => 1,
         }
     }
 
@@ -106,6 +112,7 @@ impl<'a> Item<'a> {
             Item::Log { .. } => 0,
             Item::Win(run) => run.start_time,
             Item::Lift(published) => published.start_time,
+            Item::FitnessRun(activity) => running::start_time_seconds(activity),
         }
     }
 
@@ -116,6 +123,7 @@ impl<'a> Item<'a> {
             Item::Log { .. } => None,
             Item::Win(_) => Some(DynKind::Win),
             Item::Lift(_) => Some(DynKind::Lift),
+            Item::FitnessRun(_) => Some(DynKind::FitnessRun),
         }
     }
 
@@ -160,6 +168,14 @@ impl<'a> Item<'a> {
                 }
                 copy
             }
+            Item::FitnessRun(activity) => format!(
+                "[fitness] run {} {} {} {} {}",
+                activity.title,
+                activity.activity_type,
+                running::distance_label(activity),
+                running::duration_label(activity),
+                running::pace_label(activity)
+            ),
         };
         format!("{} {copy}", self.date()).to_lowercase()
     }
@@ -179,6 +195,7 @@ impl<'a> Item<'a> {
 enum DynKind {
     Win,
     Lift,
+    FitnessRun,
 }
 
 /// A collapsed streak tail: `[stamp] label body link →`, dated by its newest
@@ -233,6 +250,13 @@ impl<'a> Row<'a> {
     fn lift(&self) -> Option<&'a PublishedWorkout> {
         match self.item {
             RowItem::One(Item::Lift(published)) => Some(published),
+            _ => None,
+        }
+    }
+
+    fn fitness_run(&self) -> Option<&'a RunningActivity> {
+        match self.item {
+            RowItem::One(Item::FitnessRun(activity)) => Some(activity),
             _ => None,
         }
     }
@@ -351,9 +375,20 @@ fn make_fold(folded: &[Item], all_runs: &[Run]) -> Fold {
             label: format!("{count} more lifts ·"),
             // Date-range filters, unlike page numbers, keep pointing at
             // these workouts as newer ones arrive.
-            href: format!("/lifting/log?from={oldest}&to={}", published.date),
+            href: format!("/fitness/log?from={oldest}&to={}", published.date),
             body: format!("back to {oldest}"),
             link_label: "workouts →",
+        },
+        Item::FitnessRun(activity) => Fold {
+            date: running::activity_date(activity).to_string(),
+            stamp: "[fitness]",
+            label: format!("{count} more runs ·"),
+            body: format!("back to {oldest}"),
+            href: format!(
+                "/fitness/log?from={oldest}&to={}",
+                running::activity_date(activity)
+            ),
+            link_label: "activity log →",
         },
         Item::Log { .. } => unreachable!("curated entries never fold"),
     }
@@ -377,6 +412,7 @@ async fn legacy_log(cx: &Cx) -> Result {
 /// chips work wherever it renders.
 #[component]
 pub(crate) async fn timeline(cx: &Cx) -> Result {
+    let can_log = viewer(cx).is_some_and(|current| is_admin(&current.email));
     let q = query_params::<LogQuery>(cx)?;
     // An unknown kind silently falls back to the full log; a tag filters
     // whatever it names (arbitrary tags just match fewer entries).
@@ -442,11 +478,12 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
         });
     }
 
-    // Curated entries, synced Spire wins, and published lifts interleave
-    // into one timeline. Wins behave like updates tagged "spire" or "games";
-    // lifts behave like updates tagged "fitness" (CSV history stays
-    // archive-only, matching `/feed.xml`).
+    // Curated entries, synced Spire wins, published lifts, and fitness runs
+    // interleave into one timeline. Wins behave like updates tagged "spire"
+    // or "games"; both fitness kinds behave like updates tagged "fitness"
+    // (unpublished CSV history stays archive-only, matching `/feed.xml`).
     let spire = spire_runs::load(app_context::<Data>(cx)).await;
+    let run_log = running::load(app_context::<Data>(cx)).await;
     let workouts = match app_context::<FitnessStore>(cx).snapshot().await {
         Ok(snapshot) => snapshot.published_workouts(),
         Err(error) => {
@@ -473,6 +510,7 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
     }
     if !kind.is_some_and(|k| k != Kind::Update) && !tag.is_some_and(|t| t != "fitness") {
         items.extend(workouts.iter().map(Item::Lift));
+        items.extend(run_log.activities.iter().map(Item::FitnessRun));
     }
     items.retain(|item| item.matches(&terms));
     items.sort_by(|a, b| {
@@ -509,45 +547,53 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
         // Hero: "I like {interest}", cycling the interest registry. Pure CSS
         // — see .log-hero-* in logbook.css, including the font-size, which
         // divides --log-hero-fit (set here from the registry) out of the
-        // section's container width so the longest rotation always fits.
+        // text column's container width so the longest rotation always fits.
         // Each word links to its page; only the currently visible one is
         // hoverable (visibility + pause-on-hover).
-        <section class="@container mt-16" style=(hero_fit.as_str())>
-            <h1 class="log-hero font-display leading-none font-bold tracking-tight">
-                "I like "
-                <span class="log-hero-words">
-                    for interest in words.iter() {
-                        <a
-                            class="log-hero-word text-oxide"
-                            href=(format!("/{}", interest.slug))
-                        >(format!("{}.", interest.title.to_lowercase()))</a>
-                    }
-                </span>
-            </h1>
-            <p class="mt-4 max-w-prose text-[17px] leading-relaxed text-ink2">
-                "Software developer in New York"
-                // The phone deck's one hint; desktop has the tmux windows.
-                <span class="text-muted sm:hidden">" · swipe for more →"</span>
-            </p>
-            <p class="mt-5 hidden font-meta text-[13px] text-muted sm:block">
-                "now — building "
-                inline_popover(
-                    id: "digichem-cite",
-                    label: "DigiChem",
-                    <span class="inline-popover-preview">
-                        "A startup that was trying to do digital manufacturing of specialty \
-                         chemicals and is currently sourcing ideas."
-                    </span>
-                    ext_link(
-                        class: "quiet-link",
-                        href: "https://digichem.com",
-                        label: "digichem.com →"
-                    )
-                )"
-                · I contain " <a class="underline" href="#more">"multitudes"</a>
-                <span class="log-caret text-oxide">"▍"</span>
-            </p>
-        </section>
+        <header class="rail-row mt-16">
+            <p class="rail-stamp rail-stamp-label">"log"</p>
+            <div class="flex min-w-0 items-start justify-between gap-4">
+                <div class="@container min-w-0 flex-1" style=(hero_fit.as_str())>
+                    <h1 class="log-hero font-display leading-none font-bold tracking-tight">
+                        "I like "
+                        <span class="log-hero-words">
+                            for interest in words.iter() {
+                                <a
+                                    class="log-hero-word text-oxide"
+                                    href=(format!("/{}", interest.slug))
+                                >(format!("{}.", interest.title.to_lowercase()))</a>
+                            }
+                        </span>
+                    </h1>
+                    <p class="mt-4 max-w-prose text-[17px] leading-relaxed text-ink2">
+                        "Software developer in New York"
+                        // The phone deck's one hint; desktop has the tmux windows.
+                        <span class="text-muted sm:hidden">" · swipe for more →"</span>
+                    </p>
+                    <p class="mt-5 hidden font-meta text-[13px] text-muted sm:block">
+                        "now — building "
+                        inline_popover(
+                            id: "digichem-cite",
+                            label: "DigiChem",
+                            <span class="inline-popover-preview">
+                                "A startup that was trying to do digital manufacturing of specialty \
+                                 chemicals and is currently sourcing ideas."
+                            </span>
+                            ext_link(
+                                class: "quiet-link",
+                                href: "https://digichem.com",
+                                label: "digichem.com →"
+                            )
+                        )"
+                        · I contain " <a class="underline" href="#more">"multitudes"</a>
+                        <span class="log-caret text-oxide">"▍"</span>
+                    </p>
+                </div>
+                if can_log {
+                    crate::app::interests::lifting::home::log_launcher()
+                }
+            </div>
+        </header>
 
         // Filter row: kind chips, tag chips, search, and the feed. Server-side
         // — every chip is a link that rewrites the query string, and the
@@ -603,8 +649,8 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
         }
 
         // The timeline: one vertical hairline, a marker per entry, a year
-        // badge wherever the visible entries change year. Streaks of wins or
-        // lifts arrive pre-collapsed into fold rows (see `fold_items`).
+        // badge wherever the visible entries change year. Streaks of wins,
+        // lifts, or runs arrive pre-collapsed into fold rows (see `fold_items`).
         <section class="log-timeline">
             if rows.is_empty() {
                 <p class="font-meta text-[13px] text-muted">
@@ -749,10 +795,37 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
                             " "
                             <a
                                 class="log-update-link"
-                                href=(format!("/lifting/{}", published.workout.path))
+                                href=(format!("/fitness/lift/{}", published.workout.path))
                                 data-rail-enter=""
                             >
                                 link_label(label: "workout →")
+                            </a>
+                        </p>
+                    </article>
+                }
+                if let Some(activity) = row.fitness_run() {
+                    <article class="log-row items-baseline" data-rail-item="">
+                        <span class="log-mark log-mark-update"></span>
+                        <p class="log-date">(running::activity_date(activity))</p>
+                        <p class="log-update min-w-0">
+                            <span class="log-update-stamp">"[fitness]"</span>
+                            " "
+                            <span class="text-patina">"run ·"</span>
+                            " "
+                            (format!(
+                                "{}, {} in {} at {}",
+                                activity.title,
+                                running::distance_label(activity),
+                                running::duration_label(activity),
+                                running::pace_label(activity)
+                            ))
+                            " "
+                            <a
+                                class="log-update-link"
+                                href=(running::public_url(activity))
+                                data-rail-enter=""
+                            >
+                                link_label(label: "run →")
                             </a>
                         </p>
                     </article>
@@ -892,7 +965,27 @@ mod tests {
         }
     }
 
-    /// One char per display row: curated Log, win, lift, Fold.
+    fn fitness_run(id: &str, date: &str, title: &str) -> RunningActivity {
+        RunningActivity {
+            id: id.to_string(),
+            source: "garmin-connect".to_string(),
+            source_activity_id: id.to_string(),
+            source_url: None,
+            title: title.to_string(),
+            activity_type: "running".to_string(),
+            started_at_utc: format!("{date} 14:00:00"),
+            started_at_local: format!("{date} 10:00:00"),
+            eastern_offset_minutes: -240,
+            duration_milliseconds: 2_600_000,
+            moving_duration_milliseconds: Some(2_550_000),
+            distance_millimeters: 6_437_376,
+            ascent_millimeters: Some(91_440),
+            imported_at: 1,
+        }
+    }
+
+    /// One char per display row: curated Log, Spire win, lift, fitness run,
+    /// or Fold.
     fn kinds(display: &[RowItem]) -> String {
         display
             .iter()
@@ -900,6 +993,7 @@ mod tests {
                 RowItem::One(Item::Log { .. }) => 'L',
                 RowItem::One(Item::Win(_)) => 'w',
                 RowItem::One(Item::Lift(_)) => 'l',
+                RowItem::One(Item::FitnessRun(_)) => 'r',
                 RowItem::Fold(_) => 'F',
             })
             .collect()
@@ -927,6 +1021,17 @@ mod tests {
         // "I like slay the spire." is today's widest line; the derivation
         // must track the registry, not a constant.
         assert_eq!(format!("{:.1}", hero_line_ems(&words)), "13.2");
+    }
+
+    #[test]
+    fn the_hero_rotation_has_one_css_slot_per_interest() {
+        const LOGBOOK_CSS: &str = include_str!("../../styles/logbook.css");
+        let word_count = hero_words().len();
+        let cycle_seconds = word_count as f64 * 2.6;
+        assert!(LOGBOOK_CSS.contains(&format!(
+            "animation: log-word {cycle_seconds:.1}s ease infinite"
+        )));
+        assert!(LOGBOOK_CSS.contains(&format!(".log-hero-word:nth-child({word_count})")));
     }
 
     #[test]
@@ -992,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn wins_and_lifts_match_their_stamp_vocabulary() {
+    fn dynamic_items_match_their_stamp_vocabulary() {
         let run = win("1784587453", "2026-07-20");
         let item = Item::Win(&run);
         assert!(item.matches(&terms("spire win")));
@@ -1011,6 +1116,13 @@ mod tests {
         assert!(item.matches(&terms("quickest arms")));
         assert!(item.matches(&terms("incline bench")));
         assert!(!item.matches(&terms("squat")));
+
+        let activity = fitness_run("24065766206", "2026-07-25", "Morning Run");
+        let item = Item::FitnessRun(&activity);
+        assert!(item.matches(&terms("fitness run")));
+        assert!(item.matches(&terms("morning running")));
+        assert!(item.matches(&terms("4.00 mi")));
+        assert!(!item.matches(&terms("lift")));
     }
 
     #[test]
@@ -1072,8 +1184,36 @@ mod tests {
         assert_eq!(fold.label, "2 more lifts ·");
         assert_eq!(fold.date, "2026-07-24");
         assert_eq!(fold.body, "back to 2026-07-23");
-        assert_eq!(fold.href, "/lifting/log?from=2026-07-23&to=2026-07-24");
+        assert_eq!(fold.href, "/fitness/log?from=2026-07-23&to=2026-07-24");
         assert_eq!(fold.link_label, "workouts →");
+    }
+
+    #[test]
+    fn fitness_runs_form_a_distinct_streak_and_fold_to_the_activity_log() {
+        let lifts: Vec<PublishedWorkout> = (0..2)
+            .map(|i| lift(&format!("2026-07-{:02}", 28 - i), "Push Day", "Bench Press"))
+            .collect();
+        let activities: Vec<RunningActivity> = (0..4)
+            .map(|i| {
+                fitness_run(
+                    &format!("run-{i}"),
+                    &format!("2026-07-{:02}", 26 - i),
+                    "Morning Run",
+                )
+            })
+            .collect();
+        let mut items: Vec<Item> = lifts.iter().map(Item::Lift).collect();
+        items.extend(activities.iter().map(Item::FitnessRun));
+
+        let display = fold_items(items, true, &[]);
+        assert_eq!(kinds(&display), "llrrF");
+        let fold = first_fold(&display);
+        assert_eq!(fold.stamp, "[fitness]");
+        assert_eq!(fold.label, "2 more runs ·");
+        assert_eq!(fold.date, "2026-07-24");
+        assert_eq!(fold.body, "back to 2026-07-23");
+        assert_eq!(fold.href, "/fitness/log?from=2026-07-23&to=2026-07-24");
+        assert_eq!(fold.link_label, "activity log →");
     }
 
     #[test]

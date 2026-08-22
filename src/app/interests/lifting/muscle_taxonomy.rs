@@ -117,7 +117,7 @@ pub(super) fn muscle_order(id: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// The coarse `muscle` tag value whose `/lifting/log` facet best covers a
+/// The coarse `muscle` tag value whose `/fitness/log` facet best covers a
 /// granular muscle. Tags deliberately stay at the original 13-value scale
 /// (`filters::MUSCLES`), so load rows and legends link through this mapping.
 pub(super) fn coarse_tag_for(muscle_id: &str) -> Option<&'static str> {

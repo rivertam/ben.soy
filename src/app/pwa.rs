@@ -1,15 +1,15 @@
-//! Stable-URL endpoints for the /diary PWA: the service worker, the web app
-//! manifest, and the launcher icons. Not pages: no shell, out of
-//! `site_routes()` (the 404 index is for pages) — `favicon.rs` is the
-//! pattern. The interactive halves live in `diary/sw.js` and
-//! `diary/diary.js`; the queue those two load is Rust served by
-//! `diary_sync.rs`; the write endpoint is `POST /api/diary/entries` in
-//! `diary.rs`.
+//! Stable-URL endpoints for the /diary PWA and the separate /fitness share
+//! target: service workers, web app manifests, and launcher icons. Not pages:
+//! no shell, out of `site_routes()` (the 404 index is for pages) —
+//! `favicon.rs` is the pattern. The diary's interactive halves live in
+//! `diary/sw.js` and `diary/diary.js`; the queue those two load is Rust served
+//! by `diary_sync.rs`; the write endpoint is `POST /api/diary/entries` in
+//! `diary.rs`. Fitness's worker is intentionally inert.
 //!
 //! Deliberately ungated: Chrome fetches manifests without credentials (a
 //! cookie gate would break install), and none of these bytes are private —
-//! they disclose that a diary app exists, which the public repo and the
-//! /diary login redirect already do. Every route declares an explicit
+//! they disclose only that the two app surfaces exist, which their public
+//! pages/repo already do. Every route declares an explicit
 //! Content-Type: the response layer treats untyped bodies as HTML and runs
 //! the em-dash rewriter through them.
 
@@ -20,6 +20,11 @@ use topcoat::{Result, router::route};
 /// Served `no-cache` so the edge always revalidates; browsers bypass the
 /// HTTP cache for service-worker update checks regardless.
 const SW_JS: &str = include_str!("diary/sw.js");
+
+/// The Fitness PWA needs a service-worker registration for installability,
+/// but deliberately owns no fetches or offline data. Its narrow scope keeps
+/// it completely separate from the diary's local mirror and outbox.
+const FITNESS_SW_JS: &str = include_str!("running/sw.js");
 
 /// App identity + install metadata. `scope`/`start_url` stay on `/diary` so
 /// the installed app never claims the public site; the colors match
@@ -38,6 +43,34 @@ const MANIFEST: &str = r##"{
     { "src": "/diary-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "/diary-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ]
+}"##;
+
+/// A second app identity for the public fitness log. Web Share Target actions
+/// must live inside their manifest scope, so the diary's `/diary` manifest
+/// cannot legally receive `/fitness/share` launches.
+const FITNESS_MANIFEST: &str = r##"{
+  "name": "Fitness",
+  "short_name": "Fitness",
+  "id": "/fitness",
+  "start_url": "/fitness",
+  "scope": "/fitness",
+  "display": "standalone",
+  "background_color": "#2e3626",
+  "theme_color": "#2e3626",
+  "icons": [
+    { "src": "/diary-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/diary-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "share_target": {
+    "action": "/fitness/share",
+    "method": "POST",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
 }"##;
 
 /// The favicon sponge, point-scaled full-bleed (32 → 192/512 are integer
@@ -61,6 +94,21 @@ async fn service_worker() -> Result<([(&'static str, &'static str); 2], &'static
     ))
 }
 
+#[route(GET "/fitness/sw.js")]
+async fn fitness_service_worker() -> Result<([(&'static str, &'static str); 3], &'static str)> {
+    Ok((
+        [
+            ("Content-Type", "text/javascript; charset=utf-8"),
+            ("Cache-Control", "no-cache"),
+            // The script lives one slash below the exact `/fitness` start
+            // URL. This explicit allowance lets the otherwise inert worker
+            // control that start URL as well as `/fitness/*`.
+            ("Service-Worker-Allowed", "/fitness"),
+        ],
+        FITNESS_SW_JS,
+    ))
+}
+
 #[route(GET "/diary.webmanifest")]
 async fn manifest() -> Result<([(&'static str, &'static str); 2], &'static str)> {
     Ok((
@@ -69,6 +117,17 @@ async fn manifest() -> Result<([(&'static str, &'static str); 2], &'static str)>
             ("Cache-Control", DAY_CACHE),
         ],
         MANIFEST,
+    ))
+}
+
+#[route(GET "/fitness.webmanifest")]
+async fn fitness_manifest() -> Result<([(&'static str, &'static str); 2], &'static str)> {
+    Ok((
+        [
+            ("Content-Type", "application/manifest+json"),
+            ("Cache-Control", DAY_CACHE),
+        ],
+        FITNESS_MANIFEST,
     ))
 }
 
@@ -111,6 +170,28 @@ mod tests {
         for icon in icons {
             assert_eq!(icon["purpose"], "any maskable");
         }
+    }
+
+    #[test]
+    fn fitness_manifest_declares_a_scoped_share_target() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(FITNESS_MANIFEST).expect("fitness manifest parses");
+        assert_eq!(parsed["name"], "Fitness");
+        assert_eq!(parsed["id"], "/fitness");
+        assert_eq!(parsed["start_url"], "/fitness");
+        assert_eq!(parsed["scope"], "/fitness");
+        assert_eq!(parsed["share_target"]["action"], "/fitness/share");
+        assert_eq!(parsed["share_target"]["method"], "POST");
+        assert_eq!(
+            parsed["share_target"]["enctype"],
+            "application/x-www-form-urlencoded"
+        );
+        assert_eq!(parsed["share_target"]["params"]["title"], "title");
+        assert_eq!(parsed["share_target"]["params"]["text"], "text");
+        assert_eq!(parsed["share_target"]["params"]["url"], "url");
+        assert!(FITNESS_SW_JS.contains("self.skipWaiting()"));
+        assert!(FITNESS_SW_JS.contains("self.clients.claim()"));
+        assert!(!FITNESS_SW_JS.contains("fetch"));
     }
 
     /// The worker owns flushing; these literals ARE the protocol. If one
@@ -248,6 +329,8 @@ mod tests {
         for path in [
             "/sw.js",
             "/diary.webmanifest",
+            "/fitness/sw.js",
+            "/fitness.webmanifest",
             "/diary-icon-192.png",
             "/diary-icon-512.png",
         ] {

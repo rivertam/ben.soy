@@ -84,6 +84,30 @@ pub struct Filters {
     pub per_page: usize,
 }
 
+impl Filters {
+    /// Running activities participate only in the four activity-agnostic
+    /// filters. Pagination is also harmless; every lifting-specific archive
+    /// predicate excludes runs instead of pretending they have sets.
+    pub(in crate::app::interests::lifting) fn admits_runs(&self) -> bool {
+        self.q.is_none()
+            && self.movement.is_empty()
+            && self.muscle.is_empty()
+            && self.equipment.is_empty()
+            && self.set_types.is_empty()
+            && self.exercise.is_none()
+            && self.min_load.is_none()
+            && self.max_load.is_none()
+            && self.min_reps.is_none()
+            && self.max_reps.is_none()
+            && self.max_effort.is_none()
+            && self.has_record.is_none()
+            && self.has_superset.is_none()
+            && self.has_notes.is_none()
+            && self.incomplete.is_none()
+            && self.duration_suspicious.is_none()
+    }
+}
+
 pub fn parse_filters(pairs: &[(String, String)]) -> Result<Filters, String> {
     for (key, _) in pairs {
         if !ALLOWED_FILTERS.contains(&key.as_str()) {
@@ -529,5 +553,32 @@ mod tests {
         assert!(TimeOfDay::Afternoon.contains_hour(12));
         assert!(TimeOfDay::Evening.contains_hour(20));
         assert!(!TimeOfDay::Evening.contains_hour(21));
+    }
+
+    #[test]
+    fn only_universal_activity_filters_admit_runs() {
+        let universal = parse_filters(&pairs(&[
+            ("from", "2026-08-01"),
+            ("to", "2026-08-31"),
+            ("time_of_day", "morning"),
+            ("weekday", "fri"),
+            ("page", "2"),
+            ("per_page", "10"),
+        ]))
+        .unwrap();
+        assert!(universal.admits_runs());
+
+        for pair in [
+            ("q", "run"),
+            ("movement", "cardio"),
+            ("exercise", "Squat"),
+            ("duration", "normal"),
+            ("has_notes", "false"),
+        ] {
+            assert!(
+                !parse_filters(&pairs(&[pair])).unwrap().admits_runs(),
+                "{pair:?} is lifting-specific"
+            );
+        }
     }
 }

@@ -11,7 +11,7 @@
 //!
 //! An entry's business fields live in `EntryContent`; placement pairs them
 //! with a timestamp and Eastern public-path record key
-//! (`eastern::public_path`, the `/lifting/{path}` permalink shape), so keys
+//! (`eastern::public_path`, the `/fitness/lift/{path}` permalink shape), so keys
 //! sort chronologically and the permalink IS the id. `/diary` fetches newest
 //! first but renders each `PAGE_SIZE` page oldest-to-newest in a bottom-pinned
 //! chat transcript; `/diary/{path}` is one entry's own page and the only place

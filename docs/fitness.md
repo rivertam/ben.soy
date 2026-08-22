@@ -1,41 +1,51 @@
 # Fitness archive
 
-Read this before changing `/lifting`, workout import, fitness API/schema, tags,
-or local fitness startup. The exact API/filter/import contracts are in this
-file under "API contract".
+Read this before changing `/fitness`, workout/run import, fitness API/schema,
+tags, or local fitness startup. The exact lifting
+API/filter/import contracts are in this file under "API contract".
 
 ## Data flow
 
-- Page, filter/query handling, API reader, and HTML rendering:
-  `src/app/interests/lifting/`; styles are Tailwind utilities inline in those
-  views (no section stylesheet). `/lifting` is the
-  landing view (daily volume heatmap plus the newest lift; the heatmap day
-  preview uses the Topcoat runtime + a shard),
-  `/lifting/log` is the filterable full archive, and
-  `/lifting/YYYY-MM-DDTHH-MM-SS-04-00` (or `-05-00`) is a complete permanent
-  workout page. Its timestamp is the `America/New_York` projection of the
+- Page, filter/query handling, API reader, and HTML rendering compose the
+  independently stored lifting and running models under one public surface.
+  `/fitness` is the landing view (combined training heatmap plus the newest
+  lift and run), `/fitness/log` is the filterable, UTC-interleaved activity
+  archive, `/fitness/lift/YYYY-MM-DDTHH-MM-SS-04-00` (or `-05-00`) is a
+  complete workout page, and `/fitness/run/{Eastern-start}/{sha256-id}` is a
+  run summary. Legacy `/lifting` and `/running` reads permanently redirect to
+  their canonical Fitness equivalents. A lift timestamp is the
+  `America/New_York` projection of the
   source instant; the explicit Eastern offset keeps same-date workouts and the
   repeated fall DST hour distinct without exposing importer IDs.
-  `/lifting/log` filter chrome is an always-visible search field, a compact tag
+  `/fitness/log` filter chrome is an always-visible search field, a compact tag
   bar (removable active filters), and a two-step “add filter” picker
   (category → value); on wide viewports it sits in the right gutter, otherwise
   inline above the archive. `auto-filter.js` only swaps the no-JS `<details>`
   fallback for the popover “+ filter” button — links and mini GET forms remain
-  the navigation path. Page size lives with the pager at the top of the set
-  log, not in the filter picker.
-- `/lifting/log` also renders the volume heatmap, restricted to the sets the
-  active filters admit. That calendar comes from
+  the navigation path. Page size lives with the pager at the top of the
+  activity log, not in the filter picker.
+- `/fitness` and `/fitness/log` render one layered training calendar. Oxide
+  fill intensity remains strictly lifting volume, a patina edge marker means
+  one or more runs occurred, and the existing emoji annotates an interruption;
+  all three can coexist. Run-only days are interactive but add zero volume
+  points. The filtered lifting calendar comes from
   `Snapshot::calendar_filtered` in-process (the same per-set predicate as the
-  set log); the public `/api/fitness/calendar` endpoint deliberately still
-  accepts no query parameters. Heatmap day cells carry the active filters
+  set log), while eligible runs are composed in the page layer; the public
+  `/api/fitness/calendar` endpoint deliberately remains lifting-only and still
+  accepts no query parameters. `from`, `to`, `weekday`, and `time_of_day`
+  apply to both activity types. Any set-specific predicate excludes runs,
+  because a run cannot satisfy an exercise/load/set condition. Heatmap day
+  cells carry the active filters
   (minus `from`/`to`/`page`) into their day-log links. A logged day opens a
   shared popover whose body is a Topcoat shard (`day_preview_shard`): the
-  calendar SSR stays volume-only, and the day's titles / exercise names /
-  compact muscle maps load on hover or click. Shard args are untrusted and
+  calendar SSR stays compact, and that day's lifts, runs, exercise names, and
+  compact muscle maps load on hover or click in exact UTC order. Shard args are untrusted and
   validated (`YYYY-MM-DD` plus a filter-shaped `link_query`). Hover/pin
   chrome is `heatmap-preview.js`; click-to-open still works via native
   `popovertarget`. Previews remain full-day even when filters only lit the
-  cell, and never widen the calendar JSON.
+  cell, and never widen the lifting calendar JSON. The activity log paginates
+  lifts and runs together; interruptions consume no slots and render after all
+  primary activities on their ending date.
 - Muscle involvement is driven by stored weighted connections, not tags:
   `exercise_muscles` rows carry `(exercise_name, granular muscle,
   ratio_hundredths 1..=100)`; absence of a row means no credit. The
@@ -47,15 +57,15 @@ file under "API contract".
   stored ratio secondary. No rank is stored — like records, the split is
   derived, and weights reach pages through `Snapshot::exercise_weight_map`,
   never JSON.
-- `/lifting/exercise/{urlencoded-name}` shows one exercise's ratios, tags,
+- `/fitness/exercise/{urlencoded-name}` shows one exercise's ratios, tags,
   and history; the signed-in `ADMIN_EMAIL` sees the same page with editable
-  0–100 inputs. `POST /lifting/exercise/{name}` repeats the admin check,
+  0–100 inputs. `POST /fitness/exercise/{name}` repeats the admin check,
   requires same-origin evidence, bounds and strictly decodes the form
   (exactly one field per canonical muscle), rejects all-zero saves (they
   would re-open the exercise to reseeding), replaces the exercise's rows
   with `source='admin'` in one transaction, bumps the fitness version, and
   rebuilds the snapshot — every page reflects an edit immediately.
-- `/lifting` derives its muscle-load and next-focus panel from those same
+- `/fitness` derives its lifting-only muscle-load and next-focus panel from those same
   weights; it is page-only, not a stored record or public API field. Credit
   accumulates in exact integer centi-points (`set volume points ×
   ratio_hundredths`, `scoring::muscle_credit_centi`); display divides by
@@ -78,43 +88,121 @@ file under "API contract".
   (SurrealDB). Records are derived in `archive/records.rs` at snapshot build —
   there is deliberately no records table and no records field in the import
   payload.
-- Schema: `src/schema.surql` — eight fitness tables: `workouts`,
+- Schema: `src/schema.surql` — nine fitness tables: `workouts`,
   `exercises`, `exercise_tags`, `sets`, `fitness_meta`, `muscles` (the
   granular vocabulary as data), `exercise_muscles` (weighted
   connections, deterministic record key = sha-256 of `exercise\nmuscle`),
   and `fitness_interruptions` (annotate-only Eastern date ranges with a
   free-text note and curated heatmap emoji — illness, travel, and the like;
   `to_date` is optional for an open/ongoing interruption; never feed volume
-  points, records, calendar JSON, or training-focus pace).
+  points, records, calendar JSON, or training-focus pace), and
+  `running_activities` (small, route-free summaries from Garmin or the manual
+  distance-and-time form; kept entirely outside lifting's set snapshot and
+  scoring).
 - CSV parsing, stable IDs, taxonomy, chunking:
   `src/app/interests/lifting/fitness_sync.rs`; taxonomy shared by that binary
   and browser uploads lives in `src/app/interests/lifting/taxonomy.rs`.
-- For the signed-in `ADMIN_EMAIL` only, `/lifting` shows an "upload lift"
-  dialog for pasting one Lyfta share. `POST /lifting/upload` independently
+- For the signed-in `ADMIN_EMAIL` only, the `/fitness` and main log headers
+  share the same “log” launcher with Lift, Run, and Interruption choices. Each
+  choice opens its own native dialog;
+  the launcher options remain fragment links and the forms render in flow
+  under `<noscript>`, so the ordinary form POSTs remain usable without the
+  dialog enhancement. The Lift dialog accepts one pasted Lyfta share.
+  `POST /fitness/lift/import` independently
   repeats that exact admin check, requires positive same-origin browser
   evidence, bounds and strictly decodes the form, parses the text in
   `archive/manual.rs`, and uses the create-only write in `archive/db.rs`.
   A successful workout has `source='manual'`, appears immediately throughout
-  `/lifting`, and joins the `/` timeline and `/feed.xml`; CSV history
+  `/fitness`, and joins the `/` timeline and `/feed.xml`; CSV history
   never joins either feed. The
   progressive clipboard action reads the copied Lyfta share, publishes it
   through that same POST, then replaces the clipboard with the canonical text
   generated by `lifting/share.rs` before opening the workout. The normal
   textarea and form remain the no-JavaScript, denied-permission, and
   unsupported-browser fallback.
-- Annotate-only interruptions: the signed-in `ADMIN_EMAIL` sees a “log
-  interruption” dialog next to “upload lift” on `/lifting`, plus edit /
-  delete on open rows there and on closed rows in the `/lifting/log`
-  timeline. Writes are `POST /lifting/interruptions`,
-  `POST /lifting/interruptions/{id}`, and
-  `POST /lifting/interruptions/{id}/delete` — each repeats the admin check
+- Running is a sibling fitness storage model, not a synthetic lifting set.
+  `src/app/interests/running/` owns both the Garmin adapter and manual run
+  entry, their route-free summaries, and the shared create-only write, while
+  the page layer composes runs with lifts and interruptions. The identity
+  suffix keeps simultaneous activities independently reachable. Runs never
+  enter `FitnessStore`, lifting volume points, records, muscle load, set
+  facets, or Podrick. They do join the combined heatmap/log, `/` timeline, and
+  `/feed.xml` as their own item kind.
+- The Run choice keeps the deliberately small manual path primary: distance in
+  miles plus elapsed time as total minutes and seconds. Garmin Connect import
+  is folded into the same dialog as a secondary disclosure rather than a
+  separate Fitness-header control. `POST /fitness/run/manual`
+  strictly parses and bounds those integer form values, converts them to the
+  same integer millimeters and milliseconds used by imported runs, and stamps
+  the activity's start from server time at the first successful write. It
+  stores `source='manual'`, title `Run`, activity type `running`, and no moving
+  duration or ascent. The server-rendered form carries a fresh random 64-hex
+  submission token; the record id is sha-256(`manual\n{token}`). Replaying the
+  same form with the same metrics is idempotent even after the clock advances:
+  the first stored timestamp wins and the replay redirects to that existing
+  run. Reusing the token with different metrics returns 409 and never
+  overwrites history. The POST independently requires exact `ADMIN_EMAIL`,
+  positive same-origin evidence, the bounded URL-encoded form, and returns
+  `no-store` / `no-referrer` responses on every path.
+- The Android PWA share path is review-before-write. Install `/fitness` once,
+  then Garmin Connect's generic URL share sends `title`, `text`, and `url` in
+  a bounded `POST /fitness/share` form; Android may place the URL in any of
+  those three fields, so the parser scans all of them. The write-free ingress
+  accepts only one exact HTTPS `connect.garmin.com` activity URL, extracts its
+  digits-only activity id, then 303-redirects to the canonical GET review URL.
+  Raw share text therefore never enters browser history or ingress access
+  logs. The adapter reconstructs the fixed
+  `/embed/activity/{id}` fetch itself. It never fetches a caller-selected
+  host. A signed-out launch carries only that numeric id through OAuth's
+  bounded `next`; a signed-in launch immediately canonicalizes the address to
+  that same id before fetching. A non-admin gets a real 404.
+- Garmin's public embed is an undocumented convenience boundary, so imports
+  require the activity privacy to be **Everyone** during review and commit.
+  The adapter uses no Garmin credentials, disables redirects, bounds time and
+  response bytes, and inertly decodes only the title/type/start/duration/
+  moving-duration/distance/ascent summary and a canonical
+  `https://connect.garmin.com/app/activity/{id}` source link. It deliberately
+  does not retain the raw response, map/polyline, coordinates, profile, device,
+  heart-rate/cadence samples, calories, or splits. The review page performs no
+  write; `POST /fitness/run/import` repeats exact-admin and same-origin checks,
+  re-fetches by numeric id, rejects any summary whose digest differs from the
+  reviewed normalization, then uses deterministic
+  sha-256(`garmin-connect\n{id}`) identity with `CREATE ONLY`. An exact replay
+  redirects to the existing run; conflicting content is never overwritten.
+  Transient SurrealDB unique-index conflicts get the documented bounded retry.
+  The activity can be made private in Garmin again after a successful import.
+  This scrape path remains separate from manual entry: it supplies Garmin's
+  absolute source instant and optional moving-time/ascent fields, while a
+  manual run needs neither a Garmin URL nor Garmin visibility.
+- The same share target also recognizes Lyfta when Android supplies the
+  complete plain-text workout (a link alone is insufficient). It reconstructs
+  title/text/URL field splits, passes candidates through the existing strict
+  Lyfta parser, and renders the full text in an escaped review textarea.
+  Nothing writes at native-share ingress. A deliberate second form POST to
+  `/fitness/lift/import` repeats admin, same-origin, bounds, parsing, and
+  create-only checks. Signed-out Lyfta text is never staged through OAuth; the
+  viewer is asked to sign in and share again. Unknown, link-only, mixed
+  Garmin+Lyfta, and multi-activity shares fail without writing.
+- `/fitness.webmanifest`, `/fitness/sw.js`, and the tiny registration module
+  form a separate PWA scoped to `/fitness`. Its worker has no fetch handler,
+  cache, or offline data. Never add the share target to the diary manifest:
+  Web Share Target actions must be inside their manifest scope, while the
+  diary intentionally owns only `/diary`. Platforms without incoming Web
+  Share Target support use the manual fields or nested Garmin URL form in the
+  Run dialog, or the Lyfta text form in the Lift dialog on `/fitness`.
+- Annotate-only interruptions: the Interruption choice in the owner-only log
+  launcher opens its create dialog; edit / delete controls remain on open rows
+  on `/fitness` and closed rows in the `/fitness/log`
+  timeline. Writes are `POST /fitness/interruptions`,
+  `POST /fitness/interruptions/{id}`, and
+  `POST /fitness/interruptions/{id}/delete` — each repeats the admin check
   and requires same-origin evidence. Inclusive Eastern `from` (`YYYY-MM-DD`),
   optional `to` (blank = open), a free-text `note` (1..=200), and a curated
   heatmap `emoji`. Opaque 32-hex ids keep identity across edits. Overlaps
   and multiple open rows are allowed. Open interruptions (no `to`) appear
-  only in the `/lifting` notes section — that section is omitted when none
-  are open. Closed interruptions inject into the `/lifting/log` set list by
-  `to_date` (after same-day workouts; omitted from pager counts). The heatmap
+  only in the `/fitness` notes section — that section is omitted when none
+  are open. Closed interruptions inject into the `/fitness/log` activity list by
+  `to_date` (after same-day lifts and runs; omitted from pager counts). The heatmap
   marks covered days with that emoji (open rows through today Eastern;
   closed through `to`; newest wins on overlap) and surfaces emoji + note in
   the day preview. Interruptions are page-only (not part of
@@ -128,10 +216,11 @@ file under "API contract".
   writes them; `just dev --no-podrick` skips it.
 - `just reset-fitness-local [csv]` runs while `just dev` is active. It
   truncates only the local fitness tables (including
-  `fitness_interruptions`), resets the fitness version, and
-  imports the CSV; local Spire tables in the shared database remain untouched.
-  This intentionally deletes locally pasted manual workouts and interruption
-  notes too.
+  `fitness_interruptions` and locally imported `running_activities`), resets
+  the fitness version, and imports the CSV; local Spire tables in the shared
+  database remain untouched.
+  This intentionally deletes locally pasted manual workouts, manual and
+  Garmin runs, and interruption notes too.
 
 ## Source invariants
 
@@ -172,8 +261,14 @@ file under "API contract".
 - Duration `0` or at least four hours is suspicious, not invalid. Preserve it.
 - Load/distance are stored in thousandths and effort in hundredths. Keep
   integer scaling and explicit JSON nulls across importer, API, and UI.
-- Records (`/lifting` badges) are derived from full set history when the
+- Records (`/fitness/lift/*` badges) are derived from full set history when the
   in-memory snapshot is rebuilt, never stored or imported.
+- Run metrics use integer milliseconds and millimeters. Pace is always derived
+  at render time; it is never stored. Garmin supplies an absolute source start
+  instant; manual entry uses the first write's server timestamp. Both project
+  through the same `America/New_York` DST rules as lifts, and that projection
+  supplies the public date/path. Manual distance accepts miles and manual
+  elapsed time accepts total minutes plus seconds before exact integer scaling.
 
 ## API contract
 
@@ -284,7 +379,7 @@ for corrections: delete, then repaste or resync.
   $FITNESS_SYNC_TOKEN` (scripts, no browser evidence needed), or the
   signed-in `ADMIN_EMAIL` viewer cookie *plus* `is_same_origin` evidence.
   Hidden-page grants never authorize it. Anyone else gets 401; a signed-in
-  non-admin gets 404, like `/lifting/upload`.
+  non-admin gets 404, like `/fitness/lift/import`.
 - 200 returns `{path,workout_id,source,sets_deleted,version}`. `source` is
   the deleted workout's, because deleting a `workout-data-csv` workout is
   undone by the next `just sync-fitness` — sync resends any workout holding
@@ -303,13 +398,13 @@ for corrections: delete, then repaste or resync.
   taxonomy and weights survive a delete-and-repaste. Records need no
   cleanup — they are derived at snapshot build, so the remaining history
   re-derives its own podium.
-- The snapshot is rebuilt in-process on success, so `/lifting` reflects the
+- The snapshot is rebuilt in-process on success, so `/fitness` reflects the
   delete immediately. A rebuild failure is logged, not reported: the commit
   already landed, and a retry would now 404.
 
 ```sh
 just delete-lift 2026-07-27T13-42-00-04-00           # prompts, confirms by path
-just delete-lift <workout URL> --yes                 # accepts a pasted /lifting/ URL
+just delete-lift <workout URL> --yes                 # accepts /fitness/lift/ or legacy /lifting/
 just delete-lift <path> --api http://127.0.0.1:3000  # local
 ```
 
@@ -331,12 +426,16 @@ The default token file is `~/.config/benjisponge/fitness.token`; installing
 the matching `FITNESS_SYNC_TOKEN` secret is covered in
 `docs/railway-deploy.md#database-and-secrets`.
 
-The browser write is separate from that API and is authorized only by
-`content::access::ADMIN_EMAIL`; hidden-page grants never authorize it. Pasted writes are create-only: an exact repeat redirects to the existing
-permanent workout, while the same deterministic timestamp ID with different
-workout content returns 409. Existing exercise taxonomy is preserved;
-taxonomy is inserted only for a new exercise. The JSON sync endpoint
-continues to accept only `source='workout-data-csv'`.
+The browser writes are separate from that API and are authorized only by
+`content::access::ADMIN_EMAIL`; hidden-page grants never authorize them. Lift
+and manual-run writes also require positive same-origin evidence and remain
+create-only. A repeated pasted lift redirects to the existing permanent
+workout, while the same deterministic timestamp ID with different workout
+content returns 409. A repeated manual-run submission token redirects to the
+first stored run when its metrics match and returns 409 when they do not.
+Existing exercise taxonomy is preserved; taxonomy is inserted only for a new
+exercise. The JSON sync endpoint continues to accept only
+`source='workout-data-csv'`.
 
 ## Local development
 
@@ -353,8 +452,8 @@ continues to accept only `source='workout-data-csv'`.
   ```
 
   This replaces local fitness data only; it never affects production or local
-  Spire fixtures. It also removes manual workouts from the local archive; they
-  cannot be reconstructed from the CSV.
+  Spire fixtures. It also removes manual workouts, manual runs, and imported
+  Garmin runs from the local archive; none can be reconstructed from the CSV.
 
 ## Muscle weights
 
@@ -475,6 +574,8 @@ verify row counts afterwards rather than trusting the status.
 just check
 just build
 node --check src/app/interests/lifting/auto-filter.js
+node --check src/app/interests/running/pwa.js
+node --check src/app/running/sw.js
 bash -n scripts/dev.sh
 bash -n scripts/reset-fitness-local.sh
 bash -n scripts/delete-lift.sh

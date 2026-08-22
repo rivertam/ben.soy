@@ -1,4 +1,4 @@
-//! `/lifting/exercise/{name}` — one exercise's muscle weights, and the
+//! `/fitness/exercise/{name}` — one exercise's muscle weights, and the
 //! admin's only surface for editing them.
 //!
 //! The URL segment is the percent-encoded exact exercise name, the same
@@ -16,8 +16,9 @@ use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, HeaderValue, Response, StatusCode, error::not_found, header, headers,
-        page, path_param, query_params, route, to_bytes,
+        Body, HeaderMap, HeaderValue, Response, StatusCode, error::not_found,
+        error::redirect_permanent, header, headers, page, path_param, query_params, route,
+        to_bytes,
     },
     view::{class, component, view},
 };
@@ -34,7 +35,7 @@ use super::{
     archive::{db, store::FitnessStore},
     filters::LOG_PATH,
     format::plural,
-    muscle_taxonomy, muscles,
+    muscle_taxonomy, muscles, with_raw_query,
 };
 
 const BODY_LIMIT_BYTES: usize = 8 * 1024;
@@ -43,7 +44,7 @@ const NO_STORE: &str = "no-store";
 /// Canonical page URL for one exercise; the name is always re-encoded, so
 /// it is safe in `href`s and `Location` headers alike.
 pub(super) fn page_url(name: &str) -> String {
-    format!("/lifting/exercise/{}", urlencode(name))
+    format!("/fitness/exercise/{}", urlencode(name))
 }
 
 #[path_param]
@@ -54,7 +55,7 @@ struct ExerciseQuery {
     notice: Option<String>,
 }
 
-#[page("/lifting/exercise/{exercise_name}")]
+#[page("/fitness/exercise/{exercise_name}")]
 async fn exercise_page(cx: &Cx) -> Result {
     let name = path_param::<ExerciseName>(cx);
     if !plausible_exercise_name(name) {
@@ -70,6 +71,7 @@ async fn exercise_page(cx: &Cx) -> Result {
                     title: "Exercise",
                     active: "",
                     runtime: false,
+                    fitness_pwa: true,
                     <header class="rail-row mt-16">
                         <p class="rail-stamp rail-stamp-label">"exercise"</p>
                         <h1 class="font-display text-4xl font-bold tracking-tight break-words">
@@ -137,7 +139,7 @@ async fn exercise_page(cx: &Cx) -> Result {
         profile.last_date,
     );
     let log_href = format!("{LOG_PATH}?exercise={}#set-log", urlencode(name));
-    let title = format!("{name} · lifting");
+    let title = format!("{name} · Fitness");
 
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
@@ -145,6 +147,7 @@ async fn exercise_page(cx: &Cx) -> Result {
             title: title.as_str(),
             active: "",
             runtime: false,
+            fitness_pwa: true,
             <header class="rail-row mt-16">
                 <p class="rail-stamp rail-stamp-label">"exercise"</p>
                 <div class="min-w-0">
@@ -225,6 +228,16 @@ async fn exercise_page(cx: &Cx) -> Result {
             </div>
         )
     }
+}
+
+#[route(GET "/lifting/exercise/{exercise_name}")]
+async fn legacy_exercise_page(cx: &Cx) -> Result {
+    let name = path_param::<ExerciseName>(cx);
+    if !plausible_exercise_name(name) {
+        return Err(not_found().into());
+    }
+    let target = with_raw_query(cx, &page_url(name));
+    Err(redirect_permanent(&target).into())
 }
 
 /// The read-only ratio list: group headers, one bar per weighted muscle.
@@ -321,8 +334,19 @@ async fn weight_form(name: &str, weights: &[(&'static str, u32)]) -> Result {
     }
 }
 
-#[route(POST "/lifting/exercise/{exercise_name}")]
+#[route(POST "/fitness/exercise/{exercise_name}")]
 async fn save_weights(cx: &Cx, body: Body) -> Result<Response> {
+    save_weights_inner(cx, body).await
+}
+
+/// Keep already-rendered admin forms functional during the permanent URL
+/// migration. Successful responses still point at the canonical page.
+#[route(POST "/lifting/exercise/{exercise_name}")]
+async fn legacy_save_weights(cx: &Cx, body: Body) -> Result<Response> {
+    save_weights_inner(cx, body).await
+}
+
+async fn save_weights_inner(cx: &Cx, body: Body) -> Result<Response> {
     let name = path_param::<ExerciseName>(cx).to_string();
     if !plausible_exercise_name(&name) {
         return Ok(plain(StatusCode::NOT_FOUND, "not found"));
@@ -582,7 +606,7 @@ mod tests {
     fn page_urls_reencode_names() {
         assert_eq!(
             page_url("Bench Press (Barbell)"),
-            "/lifting/exercise/Bench%20Press%20%28Barbell%29"
+            "/fitness/exercise/Bench%20Press%20%28Barbell%29"
         );
         assert!(plausible_exercise_name("Sled 45° Leg Press"));
         assert!(!plausible_exercise_name(""));
@@ -607,7 +631,7 @@ mod tests {
         );
     }
 
-    /// The exercise pages are dynamic per-name routes like `/lifting/{path}`
+    /// The exercise pages are dynamic per-name routes like `/fitness/lift/{path}`
     /// permalinks: out of `site_routes()`, like every other public lifting detail.
     #[test]
     fn exercise_pages_stay_out_of_the_route_registry() {

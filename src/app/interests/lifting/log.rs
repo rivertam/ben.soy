@@ -1,8 +1,10 @@
-//! `/lifting/log` — the searchable, filterable set log.
+//! `/fitness/log` — the searchable, filterable fitness activity log.
 
 use super::*;
+use crate::app::interests::running;
+use benjisponge::data::Data;
 
-#[page("/lifting/log")]
+#[page("/fitness/log")]
 async fn lifting_log(cx: &Cx) -> Result {
     let raw = match parse_query_params::<Vec<(String, String)>>(cx) {
         Ok(raw) => raw,
@@ -16,28 +18,34 @@ async fn lifting_log(cx: &Cx) -> Result {
         return Err(redirect(&filters.url(false)).into());
     }
 
-    let meta = interest("lifting");
+    let meta = interest("fitness");
     let can_edit = viewer(cx).is_some_and(|current| is_admin(&current.email));
     let api_pairs = filters.api_pairs();
-    let (facets, sets, calendar, interruptions, page_interruptions) =
-        fitness::load(app_context::<FitnessStore>(cx), &api_pairs).await;
+    let runs = running::load(app_context::<Data>(cx)).await;
+    let (facets, activities, calendar, interruptions) = fitness::load(
+        app_context::<FitnessStore>(cx),
+        &api_pairs,
+        &runs.activities,
+    )
+    .await;
     if let Err(error) = &facets {
         eprintln!("fitness facets fetch failed: {error}");
     }
-    if let Err(error) = &sets {
-        eprintln!("fitness sets fetch failed: {error}");
+    if let Err(error) = &activities {
+        eprintln!("fitness activity fetch failed: {error}");
     }
     if let Err(error) = &interruptions {
         eprintln!("fitness interruptions fetch failed: {error}");
     }
-    if let Err(error) = &page_interruptions {
-        eprintln!("fitness log interruptions fetch failed: {error}");
-    }
     let calendar_days = calendar.ok().map(|calendar| calendar.days);
+    let run_days = activities
+        .as_ref()
+        .ok()
+        .map(|page| heatmap::run_days(&page.matching_runs))
+        .unwrap_or_default();
     let interruption_rows = interruptions.unwrap_or_default();
-    let page_interruption_rows = page_interruptions.unwrap_or_default();
     let day_link_query = filters.day_link_query();
-    if let Ok(page) = &sets {
+    if let Ok(page) = &activities {
         let last_page = total_pages(page);
         if page.page > last_page {
             return Err(redirect(&filters.page_url(last_page)).into());
@@ -66,35 +74,28 @@ async fn lifting_log(cx: &Cx) -> Result {
     }
 
     let active_filters = filters.active();
-    let result_summary = match &sets {
-        Ok(page) if page.total_sets > 0 => {
-            let visible_sets = page
-                .workouts
-                .iter()
-                .map(|workout| workout.sets.len() as u64)
-                .sum::<u64>();
-            format!(
-                "{} matching sets across {} workouts · {} on this page",
-                format_integer(page.total_sets),
-                format_integer(page.total_workouts),
-                format_integer(visible_sets),
-            )
-        }
-        Ok(_) => "No sets match these filters.".to_string(),
+    let result_summary = match &activities {
+        Ok(page) => format!(
+            "{} matching sets · {} lifts · {} runs · {} visible activities",
+            format_integer(page.total_sets),
+            format_integer(page.total_lifts),
+            format_integer(page.total_runs),
+            format_integer(page.activities.len() as u64),
+        ),
         Err(error) => error
             .rejected_message()
             .map(|message| format!("A filter was rejected · {message}"))
-            .unwrap_or_else(|| "Workout database is unreachable.".to_string()),
+            .unwrap_or_else(|| "Fitness database is unreachable.".to_string()),
     };
-    let pager = sets
+    let pager = activities
         .as_ref()
         .ok()
         .and_then(|page| make_pager(page, &filters));
     let retry_url = filters.url(true);
-    let log_items = sets
+    let log_items = activities
         .as_ref()
         .ok()
-        .map(|page| interruptions::merge_log_items(&page.workouts, &page_interruption_rows));
+        .map(|page| interruptions::merge_log_items(&page.activities, &page.interruptions));
 
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
@@ -102,6 +103,7 @@ async fn lifting_log(cx: &Cx) -> Result {
             title: meta.title,
             active: "",
             runtime: true,
+            fitness_pwa: true,
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             <div class="relative min-[90rem]:min-h-[28rem]">
                 <aside
@@ -125,6 +127,7 @@ async fn lifting_log(cx: &Cx) -> Result {
                         <div id="volume">
                             heatmap::calendar_heatmap(
                                 days: days,
+                                runs: run_days.clone(),
                                 link_query: day_link_query,
                                 filtered: !active_filters.is_empty(),
                                 interruptions: interruption_rows.clone()
@@ -132,10 +135,15 @@ async fn lifting_log(cx: &Cx) -> Result {
                         </div>
                     )
                 }
+                if !runs.live {
+                    <p class="mt-3 font-meta text-xs text-muted">
+                        "Runs are unavailable right now; lift matches and interruptions are still shown."
+                    </p>
+                }
 
                 rail_section(
                     class: "mt-12",
-                    stamp: "sets",
+                    stamp: "activity",
                     <header id="set-log">
                         filter_ui::log_pager(
                             filters: &filters,
@@ -145,20 +153,20 @@ async fn lifting_log(cx: &Cx) -> Result {
                     </header>
                 )
 
-                <section class=(LIST) aria-label="Filtered workout sets">
-                    if let Err(error) = &sets {
+                <section class=(LIST) aria-label="Filtered fitness activities">
+                    if let Err(error) = &activities {
                         <div class=(EMPTY_ERROR_CARD)>
                             if let Some(message) = error.rejected_message() {
                                 <p class=(EMPTY_TITLE)>
                                     "That filter combination is not valid."
                                 </p>
                                 <p class=(EMPTY_COPY)>(message)</p>
-                                <a class=(EMPTY_RESET) href="/lifting/log#set-log">
+                                <a class=(EMPTY_RESET) href="/fitness/log#set-log">
                                     "clear every filter"
                                 </a>
                             } else {
                                 <p class=(EMPTY_TITLE)>
-                                    "The set log did not load."
+                                    "The fitness log did not load."
                                 </p>
                                 <p class=(EMPTY_COPY)>
                                     "The filters are intact. Try the database again."
@@ -169,34 +177,39 @@ async fn lifting_log(cx: &Cx) -> Result {
                             }
                         </div>
                     }
-                    if let Ok(page) = &sets
-                        && page.workouts.is_empty()
-                        && page_interruption_rows.is_empty()
+                    if let Ok(page) = &activities
+                        && page.activities.is_empty()
+                        && page.interruptions.is_empty()
                     {
                         <div class=(EMPTY_CARD)>
                             <p class=(EMPTY_TITLE)>
-                                if page.total_sets > 0 {
+                                if page.total_activities() > 0 {
                                     "This page is empty."
                                 } else {
-                                    "No matching sets."
+                                    "No matching activities."
                                 }
                             </p>
                             <p class=(EMPTY_COPY)>
-                                if page.total_sets > 0 {
+                                if page.total_activities() > 0 {
                                     "Try a previous page."
                                 } else {
                                     "Loosen a movement, date, or filter and the log will reappear."
                                 }
                             </p>
-                            <a class=(EMPTY_RESET) href="/lifting/log#set-log">
+                            <a class=(EMPTY_RESET) href="/fitness/log#set-log">
                                 "clear every filter"
                             </a>
                         </div>
                     }
                     if let Some(items) = &log_items {
                         for item in items.iter() {
-                            if let interruptions::LogItem::Workout(workout) = item {
-                                workout_sheet(workout: workout, permalink: true)
+                            if let interruptions::LogItem::Activity(activity) = item {
+                                if let fitness::LogActivity::Lift(lift) = activity {
+                                    workout_sheet(workout: &lift.workout, permalink: true)
+                                }
+                                if let fitness::LogActivity::Run(run) = activity {
+                                    running::activity_card(activity: &run.activity)
+                                }
                             }
                             if let interruptions::LogItem::Interruption(row) = item {
                                 interruptions::log_entry(row: row, can_edit: can_edit)
@@ -208,4 +221,9 @@ async fn lifting_log(cx: &Cx) -> Result {
             back_link(href: "/", label: "~")
         )
     }
+}
+
+#[route(GET "/lifting/log")]
+async fn legacy_lifting_log(cx: &Cx) -> Result {
+    Err(redirect_permanent(&with_raw_query(cx, LOG_PATH)).into())
 }

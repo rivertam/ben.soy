@@ -7,7 +7,7 @@
 
 use super::Db;
 
-const CURRENT_SCHEMA_EPOCH: u16 = 5;
+const CURRENT_SCHEMA_EPOCH: u16 = 6;
 
 struct Migration {
     epoch: u16,
@@ -34,6 +34,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         epoch: 5,
         sql: include_str!("schema_migrations/0005_thought_comments.surql"),
+    },
+    Migration {
+        epoch: 6,
+        sql: include_str!("schema_migrations/0006_running_activities.surql"),
     },
 ];
 
@@ -161,13 +165,18 @@ mod tests {
         apply(&db).await.unwrap();
         apply(&db).await.unwrap();
 
-        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2, 3, 4, 5, 6]);
         db.query("INFO FOR INDEX workouts_started_at_utc ON workouts")
             .await
             .unwrap()
             .check()
             .unwrap();
         db.query("INFO FOR INDEX thought_comments_thought_created_at ON thought_comments")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        db.query("INFO FOR INDEX running_activities_started_at_utc ON running_activities")
             .await
             .unwrap()
             .check()
@@ -185,7 +194,7 @@ mod tests {
             .iter()
             .map(|migration| migration.sql.matches("DEFINE INDEX IF NOT EXISTS").count())
             .sum::<usize>();
-        assert_eq!(indexes, 14);
+        assert_eq!(indexes, 16);
         assert!(MIGRATIONS.iter().all(|migration| {
             !migration
                 .sql

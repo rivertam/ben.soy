@@ -3,9 +3,9 @@
 //! publishes to the feed. Slay the Spire victories (and only victories —
 //! deaths stay on `/spire`) join the feed at render time from the synced run
 //! database, as do workouts explicitly published through the authenticated
-//! manual-entry path (same set the home timeline shows). Not a page: it
-//! renders no shell and stays out of `site_routes()` (the 404 index is for
-//! pages).
+//! manual-entry path and running activities (the same sets the home
+//! timeline shows). Not a page: it renders no shell and stays out of
+//! `site_routes()` (the 404 index is for pages).
 
 use topcoat::{
     Result,
@@ -13,11 +13,12 @@ use topcoat::{
     router::route,
 };
 
-use benjisponge::data::Data;
+use benjisponge::data::{Data, running_models::RunningActivity};
 use jiff::Timestamp;
 
 use crate::app::interests::{
     lifting::archive::{api::Workout, scoring, snapshot::PublishedWorkout, store::FitnessStore},
+    running,
     spire::runs::{self as spire_runs, Run, fmt_duration},
 };
 use crate::content::logbook::{Entry, LOG};
@@ -30,7 +31,8 @@ fn origin() -> String {
 
 #[route(GET "/feed.xml")]
 async fn feed(cx: &Cx) -> Result<([(&'static str, &'static str); 2], String)> {
-    let log = spire_runs::load(app_context::<Data>(cx)).await;
+    let spire = spire_runs::load(app_context::<Data>(cx)).await;
+    let run_log = running::load(app_context::<Data>(cx)).await;
     let workouts = match app_context::<FitnessStore>(cx).snapshot().await {
         Ok(snapshot) => snapshot.published_workouts(),
         Err(error) => {
@@ -43,11 +45,12 @@ async fn feed(cx: &Cx) -> Result<([(&'static str, &'static str); 2], String)> {
     Ok((
         [
             ("Content-Type", "application/rss+xml; charset=utf-8"),
-            // Fresh runs and workouts appear within a minute; CDN honors
+            // Fresh Spire runs, workouts, and running activities appear
+            // within a minute; CDN honors
             // s-maxage (see docs/railway-deploy.md).
             ("Cache-Control", "public, max-age=0, s-maxage=60"),
         ],
-        rss_xml(&origin(), &log.runs, &workouts),
+        rss_xml(&origin(), &spire.runs, &workouts, &run_log.activities),
     ))
 }
 
@@ -70,7 +73,12 @@ struct FeedItem {
 /// The whole feed as a string. Pure — origin and dynamic rows in, XML out.
 /// Losses and abandoned runs are filtered here so callers can pass the full
 /// Spire log; workout publication was already filtered by the snapshot.
-pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> String {
+pub fn rss_xml(
+    origin: &str,
+    runs: &[Run],
+    workouts: &[PublishedWorkout],
+    running_activities: &[RunningActivity],
+) -> String {
     let mut items: Vec<FeedItem> = Vec::new();
 
     for (index, entry) in LOG.iter().enumerate() {
@@ -152,7 +160,7 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
 
     for published in workouts {
         let workout = &published.workout;
-        let link = format!("{origin}/lifting/{}", workout.path);
+        let link = format!("{origin}/fitness/lift/{}", workout.path);
         items.push(FeedItem {
             date: published.date.clone(),
             pub_date: rfc2822_timestamp(published.start_time, &published.date),
@@ -168,8 +176,26 @@ pub fn rss_xml(origin: &str, runs: &[Run], workouts: &[PublishedWorkout]) -> Str
         });
     }
 
+    for activity in running_activities {
+        let path = running::public_url(activity);
+        let start_time = running::start_time_seconds(activity);
+        items.push(FeedItem {
+            date: running::activity_date(activity).to_string(),
+            pub_date: rfc2822_timestamp(start_time, running::activity_date(activity)),
+            curated: false,
+            start_time,
+            title: format!("[fitness] run — {}", activity.title),
+            link: format!("{origin}{path}"),
+            description: running::feed_description(activity),
+            // The storage id is derived from the Garmin or manual source
+            // identity, while the reader-facing path is derived from local
+            // time. Keep the id as the immutable feed identity anchor.
+            guid: format!("{origin}/running/activity/{}", activity.id),
+        });
+    }
+
     // Newest first; a curated entry leads dynamic entries on its date, then
-    // exact source instants interleave workouts and Spire runs.
+    // exact source instants interleave lifts, fitness runs, and Spire runs.
     items.sort_by(|a, b| {
         b.date
             .cmp(&a.date)
@@ -422,9 +448,28 @@ mod tests {
         }
     }
 
+    fn fitness_run(id: &str, date: &str, utc_time: &str, title: &str) -> RunningActivity {
+        RunningActivity {
+            id: id.to_string(),
+            source: "garmin-connect".to_string(),
+            source_activity_id: "24065766206".to_string(),
+            source_url: Some("https://connect.garmin.com/app/activity/24065766206".to_string()),
+            title: title.to_string(),
+            activity_type: "running".to_string(),
+            started_at_utc: format!("{date} {utc_time}"),
+            started_at_local: format!("{date} 19:45:00"),
+            eastern_offset_minutes: -240,
+            duration_milliseconds: 2_600_000,
+            moving_duration_milliseconds: Some(2_550_000),
+            distance_millimeters: 6_437_376,
+            ascent_millimeters: Some(91_440),
+            imported_at: 1,
+        }
+    }
+
     #[test]
     fn one_item_per_log_entry() {
-        let xml = rss_xml(ORIGIN, &[], &[]);
+        let xml = rss_xml(ORIGIN, &[], &[], &[]);
         assert_eq!(xml.matches("<item>").count(), LOG.len());
         assert_eq!(xml.matches("</item>").count(), LOG.len());
     }
@@ -435,7 +480,7 @@ mod tests {
             run("1784587453", "2026-07-20", true),
             run("1784500000", "2026-07-19", false),
         ];
-        let xml = rss_xml(ORIGIN, &runs, &[]);
+        let xml = rss_xml(ORIGIN, &runs, &[], &[]);
         assert_eq!(xml.matches("<item>").count(), LOG.len() + 1);
         assert!(xml.contains(&format!("{ORIGIN}/spire/run/1784587453")));
         assert!(!xml.contains("1784500000"));
@@ -453,12 +498,12 @@ mod tests {
             12,
             &["Incline Bench Press", "Upright Row", "MTS Biceps Curl"],
         )];
-        let xml = rss_xml(ORIGIN, &[], &workouts);
+        let xml = rss_xml(ORIGIN, &[], &workouts, &[]);
 
         assert_eq!(xml.matches("<item>").count(), LOG.len() + 1);
         assert!(xml.contains("<title>[fitness] lift — Quickest Arms in the Wesf</title>"));
         assert!(xml.contains(&format!(
-            "<link>{ORIGIN}/lifting/2026-07-24T10-38-00-04-00</link>"
+            "<link>{ORIGIN}/fitness/lift/2026-07-24T10-38-00-04-00</link>"
         )));
         assert!(xml.contains(&format!(
             "<guid isPermaLink=\"false\">{ORIGIN}/lifting/workout/fitness:2026-07-24T14:38:00</guid>"
@@ -471,13 +516,35 @@ mod tests {
     }
 
     #[test]
+    fn running_activities_join_the_feed_with_archive_identity() {
+        const RUN_ID: &str = "6872944a6872944a6872944a6872944a6872944a6872944a6872944a6872944a";
+        let activities = [fitness_run(RUN_ID, "2026-07-20", "23:45:00", "Evening Run")];
+        let xml = rss_xml(ORIGIN, &[], &[], &activities);
+
+        assert_eq!(xml.matches("<item>").count(), LOG.len() + 1);
+        assert!(xml.contains("<title>[fitness] run — Evening Run</title>"));
+        assert!(xml.contains(&format!(
+            "<link>{ORIGIN}/fitness/run/2026-07-20T19-45-00-04-00/{RUN_ID}</link>"
+        )));
+        assert!(xml.contains(&format!(
+            "<guid isPermaLink=\"false\">{ORIGIN}/running/activity/{RUN_ID}</guid>"
+        )));
+        assert!(
+            xml.contains(
+                "<description>4.00 mi in 43:20 at 10:50 /mi · 300 ft ascent.</description>"
+            )
+        );
+        assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 23:45:00 +0000</pubDate>"));
+    }
+
+    #[test]
     fn items_are_sorted_newest_first_with_curated_leading_ties() {
         // One win newer than every log entry, one sharing the newest log date.
         let runs = [
             run("1784587453", "2026-07-20", true),
             run("1752300000", "2026-07-12", true),
         ];
-        let xml = rss_xml(ORIGIN, &runs, &[]);
+        let xml = rss_xml(ORIGIN, &runs, &[], &[]);
         let win_new = xml.find("/spire/run/1784587453").unwrap();
         let essay = xml.find("How bad are planes?").unwrap();
         let win_tied = xml.find("/spire/run/1752300000").unwrap();
@@ -497,13 +564,24 @@ mod tests {
             1,
             &["Upright Row"],
         )];
-        let xml = rss_xml(ORIGIN, &runs, &workouts);
+        let activities = [fitness_run(
+            "run-between",
+            "2026-07-20",
+            "23:00:00",
+            "Middle run",
+        )];
+        let xml = rss_xml(ORIGIN, &runs, &workouts, &activities);
         let lift = xml
             .find("/lifting/workout/fitness:2026-07-20T15:00:00")
             .unwrap();
+        let activity = xml.find("/running/activity/run-between").unwrap();
         let win = xml.find("/spire/run/1784587453").unwrap();
-        assert!(lift < win, "later workout leads an earlier same-date run");
+        assert!(
+            lift < activity && activity < win,
+            "dynamic entries interleave by exact time, independent of kind"
+        );
         assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 23:26:40 +0000</pubDate>"));
+        assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 23:00:00 +0000</pubDate>"));
         assert!(xml.contains("<pubDate>Mon, 20 Jul 2026 22:44:13 +0000</pubDate>"));
     }
 
@@ -519,7 +597,7 @@ mod tests {
             1,
             &["Curl & Press <Machine>"],
         )];
-        let xml = rss_xml(ORIGIN, &runs, &workouts);
+        let xml = rss_xml(ORIGIN, &runs, &workouts, &[]);
         assert!(xml.contains("Necrobinder &amp; &lt;Friends&gt;"));
         assert!(xml.contains("[fitness] lift — Arms &amp; &lt;Stuff&gt;"));
         assert!(xml.contains("Curl &amp; Press &lt;Machine&gt;"));
@@ -530,7 +608,7 @@ mod tests {
     #[test]
     fn no_raw_ampersands_outside_entities() {
         let runs = [run("1784587453", "2026-07-20", true)];
-        let xml = rss_xml(ORIGIN, &runs, &[]);
+        let xml = rss_xml(ORIGIN, &runs, &[], &[]);
         let mut rest = xml.as_str();
         while let Some(pos) = rest.find('&') {
             let tail = &rest[pos..];
@@ -558,7 +636,7 @@ mod tests {
         );
 
         // Every emitted pubDate matches the RFC 2822 shape.
-        let xml = rss_xml(ORIGIN, &[run("1784587453", "2026-07-20", true)], &[]);
+        let xml = rss_xml(ORIGIN, &[run("1784587453", "2026-07-20", true)], &[], &[]);
         for line in xml.lines().filter(|l| l.starts_with("<pubDate>")) {
             let date = line
                 .trim_start_matches("<pubDate>")
@@ -591,9 +669,10 @@ mod tests {
             1,
             &["Curl"],
         )];
-        let xml = rss_xml(ORIGIN, &runs, &workouts);
+        let activities = [fitness_run("run-guid", "2026-07-22", "23:45:00", "Run")];
+        let xml = rss_xml(ORIGIN, &runs, &workouts, &activities);
         let guids: Vec<&str> = xml.lines().filter(|l| l.starts_with("<guid")).collect();
-        assert_eq!(guids.len(), LOG.len() + 3);
+        assert_eq!(guids.len(), LOG.len() + 4);
         let mut deduped = guids.clone();
         deduped.sort_unstable();
         deduped.dedup();
@@ -605,7 +684,7 @@ mod tests {
         let sts2 = run("1784587453", "2026-07-20", true);
         let mut sts1 = sts2.clone();
         sts1.game = "sts1".to_string();
-        let xml = rss_xml(ORIGIN, &[sts1, sts2], &[]);
+        let xml = rss_xml(ORIGIN, &[sts1, sts2], &[], &[]);
         assert!(xml.contains(&format!("{ORIGIN}/spire/run/sts1/1784587453")));
         assert!(xml.contains(&format!("{ORIGIN}/spire/run/1784587453")));
     }
@@ -626,7 +705,7 @@ mod tests {
 
     #[test]
     fn structure_is_sound() {
-        let xml = rss_xml(ORIGIN, &[], &[]);
+        let xml = rss_xml(ORIGIN, &[], &[], &[]);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
         assert!(xml.contains("<title>Ben Berman — logbook</title>"));
         assert!(xml.contains(&format!("<link>{ORIGIN}/</link>")));

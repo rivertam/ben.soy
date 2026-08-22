@@ -1,6 +1,6 @@
 //! Admin-only browser endpoint for publishing a pasted workout.
 //!
-//! The dialog lives on the public `/lifting` page but is rendered only for the
+//! The dialog lives on the public `/fitness` page but is rendered only for the
 //! signed-in `ADMIN_EMAIL`. This POST route independently repeats that exact
 //! identity check and requires positive same-origin browser evidence before
 //! reading a bounded form body.
@@ -27,13 +27,32 @@ use super::interests::lifting::canonical_share_text;
 use super::login::viewer;
 use crate::util::is_same_origin;
 
-const PATH: &str = "/lifting/upload";
-const LOGIN_REDIRECT: &str = "/login?next=%2Flifting";
-const BODY_LIMIT_BYTES: usize = 64 * 1024;
+const PATH: &str = "/fitness/lift/import";
+const LOGIN_REDIRECT: &str = "/login?next=%2Ffitness";
+// URL encoding can expand each byte to `%HH`; the decoded Lyfta parser keeps
+// the authoritative 64 KiB workout-text bound.
+const BODY_LIMIT_BYTES: usize = manual::LYFTA_TEXT_LIMIT * 3 + 1_024;
 const NO_STORE: &str = "no-store";
 
-#[route(POST "/lifting/upload")]
+#[route(POST "/fitness/lift/import")]
 async fn publish_pasted_workout(cx: &Cx, body: Body) -> Result<Response> {
+    publish_pasted_workout_inner(cx, body, false).await
+}
+
+/// Existing forms, bookmarks, and older bundled upload JavaScript keep their
+/// write contract. Its JSON response retains the old `/lifting/...` alias so
+/// a cached client accepts the result; following that URL redirects to the
+/// canonical Fitness permalink.
+#[route(POST "/lifting/upload")]
+async fn legacy_publish_pasted_workout(cx: &Cx, body: Body) -> Result<Response> {
+    publish_pasted_workout_inner(cx, body, true).await
+}
+
+async fn publish_pasted_workout_inner(
+    cx: &Cx,
+    body: Body,
+    legacy_json_location: bool,
+) -> Result<Response> {
     let json = wants_json(headers(cx));
     let Some(current) = viewer(cx) else {
         return Ok(if json {
@@ -151,7 +170,7 @@ async fn publish_pasted_workout(cx: &Cx, body: Body) -> Result<Response> {
             ));
         }
     }
-    let location = format!("/lifting/{}", parsed.public_path);
+    let location = published_location(&parsed.public_path, legacy_json_location && json);
     if !json {
         return Ok(see_other(&location));
     }
@@ -173,6 +192,14 @@ async fn publish_pasted_workout(cx: &Cx, body: Body) -> Result<Response> {
             "share_text": share_text,
         }),
     ))
+}
+
+fn published_location(public_path: &str, legacy_json_location: bool) -> String {
+    if legacy_json_location {
+        format!("/lifting/{public_path}")
+    } else {
+        format!("/fitness/lift/{public_path}")
+    }
 }
 
 async fn stored_share_text(cx: &Cx, public_path: &str) -> std::result::Result<String, String> {
@@ -391,13 +418,19 @@ mod tests {
         let mut headers = HeaderMap::new();
         assert_eq!(declared_body_length(&headers), Ok(None));
 
-        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("65536"));
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&BODY_LIMIT_BYTES.to_string()).unwrap(),
+        );
         assert_eq!(declared_body_length(&headers), Ok(Some(BODY_LIMIT_BYTES)));
 
         headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("-1"));
         assert_eq!(declared_body_length(&headers), Err(()));
 
-        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("65537"));
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&(BODY_LIMIT_BYTES + 1).to_string()).unwrap(),
+        );
         assert!(
             declared_body_length(&headers)
                 .unwrap()
@@ -458,15 +491,35 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_enhancement_uses_the_shared_server_response() {
-        let source = include_str!("interests/lifting/workout-upload.js");
-        assert!(source.contains("navigator.clipboard.readText()"));
-        assert!(source.contains("new ClipboardItem"));
-        assert!(source.contains("result.share_text"));
-        assert!(source.contains("window.location.assign(result.location)"));
-        assert!(source.contains("typeof dialog.showModal"));
-        assert!(source.contains("dialog.showModal()"));
-        assert!(source.contains("fallback.append(content)"));
-        assert!(source.contains("removeEventListener(\"click\", openDialog)"));
+    fn cached_legacy_uploader_gets_the_alias_shape_it_accepts() {
+        let path = "2026-07-24T10-38-00-04-00";
+        assert_eq!(
+            published_location(path, false),
+            "/fitness/lift/2026-07-24T10-38-00-04-00"
+        );
+        assert_eq!(
+            published_location(path, true),
+            "/lifting/2026-07-24T10-38-00-04-00"
+        );
+    }
+
+    #[test]
+    fn clipboard_enhancement_uses_the_shared_server_response_and_modal_driver() {
+        let upload = include_str!("interests/lifting/workout-upload.js");
+        let modals = include_str!("../components/browser/modals.js");
+
+        assert!(upload.contains("navigator.clipboard.readText()"));
+        assert!(upload.contains("new ClipboardItem"));
+        assert!(upload.contains("result.share_text"));
+        assert!(upload.contains("window.location.assign(result.location)"));
+        assert!(upload.contains("/^\\/fitness\\/lift\\/[A-Za-z0-9-]+$/"));
+
+        // The lift script is now only a clipboard companion inside the shared
+        // native dialog; the site-wide driver owns opening and focus return.
+        assert!(upload.contains("document.querySelector(\"#fitness-lift-dialog\")"));
+        assert!(!upload.contains("dialog.showModal()"));
+        assert!(modals.contains("[data-modal-open]"));
+        assert!(modals.contains("dialog.showModal()"));
+        assert!(modals.contains("opener.focus()"));
     }
 }

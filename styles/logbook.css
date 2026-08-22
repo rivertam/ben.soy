@@ -22,7 +22,8 @@
   /* Exactly-fits the longest rotation: the timeline sets --log-hero-fit to
      the widest "I like {word}." line in ems (log.rs derives it from the
      interest registry at Fira Mono's 0.6em advance), and 100cqi is the hero
-     section's own width (it is an @container). Narrow viewports get the
+     text column's own width (it is an @container beside the owner action).
+     Narrow viewports get the
      largest size that cannot overflow — the nowrap line was scrolling
      phones sideways — and roomy ones rest at the caps. */
   font-size: min(2.75rem, calc(100cqi / var(--log-hero-fit, 13.2)));

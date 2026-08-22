@@ -1,6 +1,6 @@
 //! `~`: the front door is the logbook itself. Desktop renders the timeline
 //! straight — the tmux windows are the site map — while phones get the pane
-//! deck: log ⇄ felix ⇄ lifting ⇄ résumé as side-by-side panes (real swipe
+//! deck: log ⇄ felix ⇄ fitness ⇄ résumé as side-by-side panes (real swipe
 //! via CSS scroll-snap; `browser/panes.js` keeps the tab bar and the hash
 //! honest), plus a netrw-style `more` pane listing everything else. Granted
 //! hidden pages join that listing as dotfiles for their viewers only (the
@@ -28,7 +28,7 @@ const PANES_JS: Asset = asset!("../components/browser/panes.js");
 /// Interests promoted to their own deck pane (and pane-bar tab); the `more`
 /// listing carries the rest. Tests below hold this in line with the interest
 /// registry and the shell's `PANE_TABS`.
-const PANE_INTERESTS: [&str; 2] = ["felix", "lifting"];
+const PANE_INTERESTS: [&str; 2] = ["felix", "fitness"];
 
 /// One `more` listing row: the name as netrw would print it (directories
 /// keep their trailing slash, hidden pages wear a leading dot), where it
@@ -45,6 +45,9 @@ async fn home(cx: &Cx) -> Result {
     // Allowlisted hidden pages join the `more` listing for their viewers
     // only, the way netrw shows dotfiles to people who ask.
     let current = viewer(cx);
+    let can_log = current
+        .as_ref()
+        .is_some_and(|current| access::is_admin(&current.email));
     let granted: Vec<&access::HiddenPage> = match current.as_ref() {
         Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
         None => Vec::new(),
@@ -76,7 +79,7 @@ async fn home(cx: &Cx) -> Result {
     view! {
         // Fresh runs and lifts appear within a minute; CDN honors s-maxage
         // (see docs/railway-deploy.md). The embedded lifting pane rides the
-        // same TTL — only the standalone /lifting page stays no-store.
+        // same TTL — only the standalone /fitness page stays no-store.
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
         shell(title: "", active: "~",
         <div class="pane-deck" data-pane-deck="">
@@ -86,8 +89,8 @@ async fn home(cx: &Cx) -> Result {
             <section class="pane pane-felix" id="felix" data-pane="" aria-label="felix">
                 crate::app::interests::felix::felix_content(initial_photo: "", standalone: false)
             </section>
-            <section class="pane" id="lifting" data-pane="" aria-label="lifting">
-                crate::app::interests::lifting::home::lifting_home_content()
+            <section class="pane" id="fitness" data-pane="" aria-label="fitness">
+                crate::app::interests::lifting::home::fitness_home_content()
             </section>
             <section class="pane" id="resume" data-pane="" aria-label="résumé">
                 crate::app::resume::resume_content()
@@ -160,6 +163,12 @@ async fn home(cx: &Cx) -> Result {
             </section>
             <script type="module" src=(PANES_JS)></script>
         </div>
+        // Both the log and fitness headers point at one dialog set. Keeping
+        // it outside the pane deck also keeps the native top-layer surfaces
+        // out of the desktop-hidden fitness pane.
+        if can_log {
+            crate::app::interests::lifting::home::log_dialogs()
+        }
         )
     }
 }

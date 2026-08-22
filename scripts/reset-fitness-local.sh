@@ -37,6 +37,7 @@ reset_query='BEGIN TRANSACTION; DELETE sets RETURN NONE;'\
 ' DELETE exercise_tags RETURN NONE; DELETE exercises RETURN NONE;'\
 ' DELETE exercise_muscles RETURN NONE; DELETE muscles RETURN NONE;'\
 ' DELETE workouts RETURN NONE; DELETE fitness_interruptions RETURN NONE;'\
+' DELETE running_activities RETURN NONE;'\
 ' UPSERT fitness_meta:version SET k = "version", v = 0 RETURN NONE; COMMIT TRANSACTION;'
 reset_output="$(
     printf '%s\n' "${reset_query}" |
@@ -49,7 +50,7 @@ reset_output="$(
             --json \
             --hide-welcome
 )"
-if [[ "${reset_output}" != '[null,[],[],[],[],[],[],[],[],null]' ]]; then
+if [[ "${reset_output}" != '[null,[],[],[],[],[],[],[],[],[],null]' ]]; then
     printf 'reset-fitness-local: database reset failed:\n%s\n' "${reset_output}" >&2
     exit 1
 fi

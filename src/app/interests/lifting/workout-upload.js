@@ -7,14 +7,11 @@
 // while the promise waits for the server. The ordinary textarea + form remain
 // usable when clipboard APIs or permissions are unavailable.
 
-const disclosure = document.querySelector("[data-workout-upload-disclosure]");
-const trigger = document.querySelector("[data-workout-upload-trigger]");
-const fallback = document.querySelector("[data-workout-upload-fallback]");
-const content = document.querySelector("[data-workout-upload-content]");
-const dialog = document.querySelector("[data-workout-upload-dialog]");
-const slot = dialog?.querySelector("[data-workout-upload-dialog-slot]");
-const close = content?.querySelector("[data-workout-upload-close]");
-const form = content?.querySelector("form[data-workout-upload]");
+// Opening, Escape/backdrop dismissal, the focus trap, and focus return belong
+// to the site's generic native-dialog driver. This companion only owns the
+// Lyfta clipboard workflow inside the lift dialog.
+const dialog = document.querySelector("#fitness-lift-dialog");
+const form = dialog?.querySelector("form[data-workout-upload]");
 const box = form?.querySelector("textarea[name=workout]");
 const label = form?.querySelector("[data-workout-upload-label]");
 const upload = form?.querySelector("[data-workout-upload-clipboard]");
@@ -24,7 +21,6 @@ const open = form?.querySelector("[data-workout-upload-result-open]");
 const status = form?.querySelector("[data-workout-upload-status]");
 
 let published = null;
-let returnFocus = null;
 
 function announce(message) {
   if (status) status.textContent = message;
@@ -58,7 +54,7 @@ async function publish(text) {
   }
   if (
     typeof result?.location !== "string"
-      || !/^\/lifting\/[A-Za-z0-9-]+$/.test(result.location)
+      || !/^\/fitness\/lift\/[A-Za-z0-9-]+$/.test(result.location)
   ) {
     throw new Error("The workout was published, but its page could not be opened.");
   }
@@ -81,57 +77,6 @@ function showPublishedFallback(result, message) {
   } else {
     announce(`${message} Open the workout and use “share this workout” to copy it.`);
   }
-}
-
-if (
-  disclosure && dialog && slot && fallback && content && trigger && close && box
-  && typeof dialog.showModal === "function"
-) {
-  slot.append(content);
-  disclosure.removeAttribute("open");
-  trigger.setAttribute("aria-haspopup", "dialog");
-  trigger.setAttribute("aria-controls", dialog.id);
-
-  const openDialog = (event) => {
-    event.preventDefault();
-    returnFocus = trigger;
-    if (!slot.contains(content)) slot.append(content);
-    if (!dialog.open) {
-      try {
-        dialog.showModal();
-      } catch {
-        trigger.removeEventListener("click", openDialog);
-        trigger.removeAttribute("aria-haspopup");
-        trigger.removeAttribute("aria-controls");
-        fallback.append(content);
-        disclosure.open = true;
-        returnFocus = null;
-        box.focus();
-        return;
-      }
-    }
-    if (upload && !upload.hidden) upload.focus();
-    else box.focus();
-  };
-  trigger.addEventListener("click", openDialog);
-
-  close.addEventListener("click", (event) => {
-    event.preventDefault();
-    if (dialog.open) dialog.close();
-    else {
-      disclosure.open = false;
-      trigger.focus();
-    }
-  });
-
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) dialog.close();
-  });
-
-  dialog.addEventListener("close", () => {
-    returnFocus?.focus();
-    returnFocus = null;
-  });
 }
 
 if (

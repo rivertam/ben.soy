@@ -366,7 +366,7 @@ pub struct ApiSet {
 ///
 /// Kept pure so the copy is tuned against tests, not a live channel.
 pub fn render(workout: &ApiWorkout, path: &str, origin: &str) -> String {
-    let link = format!("{origin}/lifting/{path}");
+    let link = format!("{origin}/fitness/lift/{path}");
     let header = message_header(workout);
     let groups = exercise_groups(&workout.sets);
 
@@ -765,7 +765,7 @@ W. 45 lbs × 10
 II. Cable Crossover
 1. 25 lbs × 9 · failure
 
-https://ben.soy/lifting/2026-07-21T10-39-04-04-00"
+https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00"
         );
     }
 
@@ -891,10 +891,9 @@ https://ben.soy/lifting/2026-07-21T10-39-04-04-00"
         // Two separately numbered headings, each restarting its sets at 1.
         assert_eq!(message.matches("Incline Bench Press").count(), 2);
         assert!(message.contains("I. Incline Bench Press"));
-        assert!(
-            message
-                .ends_with("III. Incline Bench Press\n1. 155 lbs × 2\n\nhttps://x.test/lifting/p")
-        );
+        assert!(message.ends_with(
+            "III. Incline Bench Press\n1. 155 lbs × 2\n\nhttps://x.test/fitness/lift/p"
+        ));
     }
 
     #[test]
@@ -994,7 +993,7 @@ https://ben.soy/lifting/2026-07-21T10-39-04-04-00"
             message.chars().count()
         );
         assert!(message.starts_with("**I missed 9am gym**"));
-        assert!(message.ends_with("https://x.test/lifting/p"));
+        assert!(message.ends_with("https://x.test/fitness/lift/p"));
         assert!(message.contains("… and "), "{message}");
         // Nothing is half-rendered: the last kept block is complete.
         assert!(!message.contains("Exercise number 399"));

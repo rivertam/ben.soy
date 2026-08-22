@@ -46,7 +46,7 @@ impl<'a> From<&'a fitness::Workout> for WorkoutCard<'a> {
 }
 
 pub(super) fn workout_url(path: &str) -> String {
-    format!("/lifting/{}", urlencode(path))
+    format!("/fitness/lift/{}", urlencode(path))
 }
 
 pub(super) struct ExerciseGroup<'a> {
@@ -235,7 +235,7 @@ fn set_type_label(value: &str) -> String {
         .unwrap_or_else(|| value.to_ascii_lowercase().replace('_', " "))
 }
 
-pub(super) fn make_pager(page: &fitness::SetPage, filters: &Filters) -> Option<Pager> {
+pub(super) fn make_pager(page: &fitness::FitnessLogPage, filters: &Filters) -> Option<Pager> {
     let pages = total_pages(page);
     if pages <= 1 {
         return None;
@@ -249,8 +249,8 @@ pub(super) fn make_pager(page: &fitness::SetPage, filters: &Filters) -> Option<P
     })
 }
 
-pub(super) fn total_pages(page: &fitness::SetPage) -> usize {
-    (page.total_workouts as usize)
+pub(super) fn total_pages(page: &fitness::FitnessLogPage) -> usize {
+    page.total_activities()
         .div_ceil(page.per_page.max(1))
         .max(1)
 }
@@ -379,6 +379,33 @@ mod tests {
     }
 
     #[test]
+    fn pager_counts_lifts_and_runs_but_not_interruptions() {
+        let page = fitness::FitnessLogPage {
+            page: 2,
+            per_page: 10,
+            total_sets: 31,
+            total_lifts: 9,
+            total_runs: 2,
+            matching_runs: Vec::new(),
+            activities: Vec::new(),
+            interruptions: vec![fitness::Interruption {
+                id: "travel".into(),
+                from_date: "2026-08-01".into(),
+                to_date: Some("2026-08-02".into()),
+                note: "travel".into(),
+                emoji: "✈️".into(),
+                updated_at: 0,
+            }],
+        };
+        assert_eq!(total_pages(&page), 2);
+        let filters = Filters::normalize(vec![("page".into(), "2".into())]).unwrap();
+        let pager = make_pager(&page, &filters).unwrap();
+        assert_eq!(pager.current, 2);
+        assert_eq!(pager.newer.as_deref(), Some("/fitness/log#set-log"));
+        assert!(pager.older.is_none());
+    }
+
+    #[test]
     fn fallback_time_and_distance_are_not_repeated_in_details() {
         let mut timed = set();
         timed.set_time_seconds = Some(75);
@@ -431,11 +458,14 @@ mod tests {
     fn workout_links_use_the_workers_canonical_public_path() {
         let workout = workout();
         let card = WorkoutCard::from(&workout);
-        assert_eq!(card.href, "/lifting/2026-07-21T17-03-00-04-00");
+        assert_eq!(card.href, "/fitness/lift/2026-07-21T17-03-00-04-00");
     }
 
     #[test]
     fn worker_paths_are_escaped_as_one_url_segment() {
-        assert_eq!(workout_url("manual:abc 123"), "/lifting/manual%3Aabc%20123");
+        assert_eq!(
+            workout_url("manual:abc 123"),
+            "/fitness/lift/manual%3Aabc%20123"
+        );
     }
 }

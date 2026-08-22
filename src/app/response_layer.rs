@@ -21,7 +21,11 @@
 //!    browsers. Never exempt by request path: `/_topcoat/junk` falls through
 //!    to the catch-all 404, which renders the personalized shell under its
 //!    public default TTL (a review caught exactly that hole).
-//! 2. **Em-dash links.** Em dashes in HTML page bodies become `/llms` links
+//! 2. **Native-share privacy.** Every `/fitness/share` response (and its
+//!    short-lived `/running/share` compatibility alias), including a
+//!    signed-out framework redirect or malformed-query error produced before
+//!    the page can attach headers, is `no-store` with no referrer.
+//! 3. **Em-dash links.** Em dashes in HTML page bodies become `/llms` links
 //!    (`crate::emdash`).
 
 use topcoat::{
@@ -35,21 +39,39 @@ use crate::emdash::link_em_dashes;
 
 #[layer("/")]
 async fn site_responses(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Result<Response> {
-    let personalized = cx
+    let (personalized, native_share) = cx
         .get::<http::request::Parts>()
-        .is_some_and(|parts| names_viewer_cookie(&parts.headers));
+        .map(|parts| {
+            (
+                names_viewer_cookie(&parts.headers),
+                is_native_share_path(parts.uri.path()),
+            )
+        })
+        .unwrap_or((false, false));
     let (mut response, from_error) = match next.run(cx, body).await {
         Ok(response) => (response, false),
         // Framework error responses (404/405 terminals, query-param
         // redirects, handler 500s) normally render OUTSIDE every layer and
         // would escape the stamp below; convert personalized ones here.
-        Err(error) if personalized => (IntoResponse::into_response(error, cx)?, true),
+        Err(error) if personalized || native_share => {
+            (IntoResponse::into_response(error, cx)?, true)
+        }
         Err(error) => return Err(error),
     };
     if personalized && !immutable(response.headers().get(header::CACHE_CONTROL)) {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("private, no-store"),
+        );
+    } else if native_share {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    if native_share {
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
         );
     }
 
@@ -66,6 +88,10 @@ async fn site_responses(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Resul
     let rewritten = link_em_dashes(&html);
     parts.headers.remove(header::CONTENT_LENGTH);
     Ok(Response::from_parts(parts, Body::from(rewritten)))
+}
+
+fn is_native_share_path(path: &str) -> bool {
+    matches!(path, "/fitness/share" | "/running/share")
 }
 
 /// Whether any `Cookie` header names the viewer cookie. Cookie syntax is
@@ -149,5 +175,14 @@ mod tests {
         assert!(!names_viewer_cookie(&headers(&["__Host-viewer2=1"])));
         assert!(!names_viewer_cookie(&headers(&["ref=__Host-viewer"])));
         assert!(!names_viewer_cookie(&headers(&["__Host-viewer"])));
+    }
+
+    #[test]
+    fn only_the_exact_native_share_landing_is_sensitive() {
+        assert!(is_native_share_path("/fitness/share"));
+        assert!(is_native_share_path("/running/share"));
+        assert!(!is_native_share_path("/fitness"));
+        assert!(!is_native_share_path("/fitness/share/extra"));
+        assert!(!is_native_share_path("/lifting/share"));
     }
 }

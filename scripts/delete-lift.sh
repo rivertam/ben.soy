@@ -14,7 +14,8 @@ usage() {
 usage: just delete-lift <path> [--api <origin>] [--token <token>] [--yes]
 
   <path>    the permanent path segment, e.g. 2026-07-27T13-42-00-04-00
-            (the last component of https://ben.soy/lifting/...)
+            (the last component of https://ben.soy/fitness/lift/...;
+             legacy /lifting/... URLs also work)
   --api     API origin (default: https://ben.soy)
   --token   FITNESS_SYNC_TOKEN; default $FITNESS_SYNC_TOKEN, then
             ~/.config/benjisponge/fitness.token
@@ -42,6 +43,7 @@ done
 
 # Accept a pasted workout URL as well as a bare path segment — that URL is
 # what the browser has on screen when you notice the lift is wrong.
+workout_path="${workout_path##*/fitness/lift/}"
 workout_path="${workout_path##*/lifting/}"
 workout_path="${workout_path%%[?#]*}"
 

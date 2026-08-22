@@ -1,4 +1,4 @@
-//! Page-only muscle load and next-focus guidance for `/lifting`.
+//! Page-only lifting load and next-focus guidance for `/fitness`.
 //!
 //! This is intentionally an approximation, not a hypertrophy prescription.
 //! It scales the archive's effort-weighted volume score by each exercise's

@@ -83,6 +83,6 @@ mod tests {
         assert!(source.contains(r#"credentials: "same-origin""#));
         // Two steps, and the safe control takes focus between them.
         assert!(source.contains("cancel.focus()"));
-        assert!(source.contains("window.location.assign(\"/lifting\")"));
+        assert!(source.contains("window.location.assign(\"/fitness\")"));
     }
 }

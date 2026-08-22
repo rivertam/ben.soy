@@ -29,7 +29,7 @@ pub const KWERM_EMOJI: &str = "🪱";
 pub struct PodrickAnnouncement {
     pub id: String,
     pub workout_id: String,
-    /// The workout's canonical public path segment (`/lifting/{path}`).
+    /// The workout's canonical public path segment (`/fitness/lift/{path}`).
     pub workout_path: String,
     pub channel_id: String,
     pub message_id: Option<String>,

@@ -82,6 +82,44 @@ DEFINE FIELD OVERWRITE id ON fitness_meta TYPE string;
 DEFINE FIELD OVERWRITE k ON fitness_meta TYPE string;
 DEFINE FIELD OVERWRITE v ON fitness_meta TYPE int;
 
+-- Route-free running summaries imported from Garmin Connect's public share
+-- surface or entered manually as distance + elapsed time. The deterministic
+-- record key is sha-256 of `<source>\n<source identity>`: Garmin supplies its
+-- numeric activity id, while a manual form carries a 64-hex submission token
+-- so retrying it cannot double-log a run. Garmin imports keep only a canonical
+-- activity link alongside the summary. The public embed also exposes the
+-- complete GPS trace and account/device metadata; those are deliberately never
+-- stored. Pace remains derived from integer duration + distance.
+DEFINE TABLE OVERWRITE running_activities SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON running_activities TYPE string
+    ASSERT string::matches(record::id($value), '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE source ON running_activities TYPE string
+    ASSERT $value IN ['garmin-connect', 'manual'];
+DEFINE FIELD OVERWRITE source_activity_id ON running_activities TYPE string
+    ASSERT string::matches($value, '^([0-9]{1,20}|[0-9a-f]{64})$');
+DEFINE FIELD OVERWRITE source_url ON running_activities TYPE option<string>
+    ASSERT $value IS NONE OR string::matches($value, '^https://connect[.]garmin[.]com/app/activity/[0-9]{1,20}$');
+DEFINE FIELD OVERWRITE title ON running_activities TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 200;
+DEFINE FIELD OVERWRITE activity_type ON running_activities TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 80;
+DEFINE FIELD OVERWRITE started_at_utc ON running_activities TYPE string
+    ASSERT string::matches($value, '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$');
+DEFINE FIELD OVERWRITE started_at_local ON running_activities TYPE string
+    ASSERT string::matches($value, '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$');
+DEFINE FIELD OVERWRITE eastern_offset_minutes ON running_activities TYPE int
+    ASSERT $value IN [-300, -240];
+DEFINE FIELD OVERWRITE duration_milliseconds ON running_activities TYPE int
+    ASSERT $value >= 1 AND $value <= 604800000;
+DEFINE FIELD OVERWRITE moving_duration_milliseconds ON running_activities TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 1 AND $value <= 604800000);
+DEFINE FIELD OVERWRITE distance_millimeters ON running_activities TYPE int
+    ASSERT $value >= 1 AND $value <= 1000000000;
+DEFINE FIELD OVERWRITE ascent_millimeters ON running_activities TYPE option<int>
+    ASSERT $value IS NONE OR ($value >= 0 AND $value <= 100000000);
+DEFINE FIELD OVERWRITE imported_at ON running_activities TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
 -- The granular muscle vocabulary as data. Rust's
 -- lifting::muscle_taxonomy::MUSCLE_GROUPS stays the rendering source of
 -- truth (order, labels, grouping); these rows mirror it so weighted

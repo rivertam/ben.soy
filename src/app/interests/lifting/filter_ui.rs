@@ -1,4 +1,4 @@
-//! Compact tag chrome + two-step add-filter picker for `/lifting/log`.
+//! Compact tag chrome + two-step add-filter picker for `/fitness/log`.
 
 use super::{
     AUTO_FILTER_JS, LOG_PATH, META_LABEL, PAGE_CURRENT, PAGE_DISABLED, PAGE_GAP, PAGE_LINK,
@@ -220,7 +220,7 @@ pub(super) async fn filter_chrome(
                 }
             </div>
 
-            <form class="space-y-2" action="/lifting/log#set-log" method="get">
+            <form class="space-y-2" action="/fitness/log#set-log" method="get">
                 for (name, value) in search_carry.iter() {
                     <input type="hidden" name=(name.as_str()) value=(value.as_str())>
                 }
@@ -495,7 +495,7 @@ async fn value_body(
             let from = filters.value("from");
             let to = filters.value("to");
             view! {
-                <form class="space-y-3" action="/lifting/log#set-log" method="get">
+                <form class="space-y-3" action="/fitness/log#set-log" method="get">
                     for (name, value) in carry.iter() {
                         <input type="hidden" name=(name.as_str()) value=(value.as_str())>
                     }
@@ -539,7 +539,7 @@ async fn value_body(
             };
             let carry = filters.form_carry("exercise");
             view! {
-                <form class="space-y-2" action="/lifting/log#set-log" method="get">
+                <form class="space-y-2" action="/fitness/log#set-log" method="get">
                     for (key, value) in carry.iter() {
                         <input type="hidden" name=(key.as_str()) value=(value.as_str())>
                     }
@@ -607,7 +607,7 @@ pub(super) async fn log_pager(
     view! {
         <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div class="min-w-0">
-                <h2 class="font-display text-2xl font-semibold">"Set log"</h2>
+                <h2 class="font-display text-2xl font-semibold">"Activity log"</h2>
                 <p class=(RESULT_COUNT)>(result_summary)</p>
             </div>
             <div
@@ -616,7 +616,7 @@ pub(super) async fn log_pager(
             >
                 <p
                     class="flex items-center gap-1.5 font-meta text-[0.67rem] text-muted"
-                    aria-label="Workouts per page"
+                    aria-label="Activities per page"
                 >
                     <span>"per page"</span>
                     per_page_choice(
