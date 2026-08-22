@@ -370,10 +370,50 @@ async fn garmin_import_form() -> Result {
             </summary>
             <div class="mt-3 max-w-prose">
                 <p class="text-sm leading-relaxed text-ink2">
-                    "On Android, install Fitness once and share an Everyone-visible Garmin \
-                     activity to it. Or paste the activity URL here. You will review the \
-                     summary before it is logged."
+                    "On Android, Fitness must appear in Settings → Apps before Garmin can \
+                     share to it. Open this page in Chrome and use “Install Fitness app” \
+                     when it appears below—a browser-badged home-screen shortcut cannot \
+                     receive shares. Then, for an Everyone-visible activity in Garmin, \
+                     choose Share → Web Link → Fitness—not Activity Details, which shares \
+                     an image. Or paste its URL here. You will review the summary before \
+                     it is logged."
                 </p>
+                <div
+                    data-fitness-install=""
+                    hidden=""
+                    class="mt-4 rounded-sm border border-patina/50 bg-card p-4"
+                >
+                    <p class="font-meta text-sm font-semibold text-ink">
+                        "Install the Android app"
+                    </p>
+                    <p
+                        id="fitness-install-copy"
+                        class="mt-1 text-sm leading-relaxed text-ink2"
+                    >
+                        "This opens the browser's app-install prompt. After it finishes, \
+                         confirm Fitness is listed in Android Settings → Apps."
+                    </p>
+                    <button
+                        type="button"
+                        data-fitness-install-button=""
+                        aria-describedby="fitness-install-copy fitness-install-status"
+                        class="mt-3 cursor-pointer rounded-sm border border-patina bg-patina \
+                               px-4 py-2 font-meta text-sm text-card hover:bg-ink \
+                               disabled:cursor-wait disabled:opacity-60 \
+                               focus-visible:outline-solid focus-visible:outline-2 \
+                               focus-visible:outline-patina focus-visible:outline-offset-2"
+                    >
+                        "Install Fitness app"
+                    </button>
+                    <p
+                        id="fitness-install-status"
+                        data-fitness-install-status=""
+                        class="mt-2 font-meta text-xs leading-relaxed text-muted"
+                        role="status"
+                        aria-live="polite"
+                        aria-atomic="true"
+                    ></p>
+                </div>
                 <p class="mt-2 font-meta text-xs leading-relaxed text-muted">
                     "The import keeps summary statistics and the canonical Garmin activity \
                      link—not the map, route, account, device, or raw sensor data. Restore the \
@@ -1551,6 +1591,8 @@ fn log_failure(stage: &str, error: impl std::fmt::Display) {
 mod tests {
     use super::*;
 
+    const PWA_SOURCE: &str = include_str!("pwa.js");
+
     const LYFTA_SHARE: &str = "Morning lift
 Friday 24. July 2026 at 10:38 AM
 
@@ -1576,6 +1618,20 @@ https://lyfta.app/wk/example";
         assert_eq!(distance_label(&run), "4.03 mi");
         assert_eq!(duration_label(&run), "43:34");
         assert_eq!(pace_label(&run), "10:49 /mi");
+    }
+
+    #[test]
+    fn pwa_install_control_uses_the_native_install_event() {
+        for needle in [
+            "beforeinstallprompt",
+            "event.preventDefault()",
+            "prompt.prompt()",
+            "prompt.userChoice",
+            "appinstalled",
+            "Settings → Apps",
+        ] {
+            assert!(PWA_SOURCE.contains(needle), "pwa.js lost {needle:?}");
+        }
     }
 
     #[test]

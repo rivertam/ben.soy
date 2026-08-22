@@ -81,7 +81,7 @@ async fn home(cx: &Cx) -> Result {
         // (see docs/railway-deploy.md). The embedded lifting pane rides the
         // same TTL — only the standalone /fitness page stays no-store.
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
-        shell(title: "", active: "~",
+        shell(title: "", active: "~", fitness_pwa: true,
         <div class="pane-deck" data-pane-deck="">
             <section class="pane pane-log" id="log" data-pane="" aria-label="the log">
                 crate::app::log::timeline()
@@ -169,6 +169,14 @@ async fn home(cx: &Cx) -> Result {
         if can_log {
             crate::app::interests::lifting::home::log_dialogs()
         }
+        // A visitor can still reach Fitness by swiping the home deck instead
+        // of following the canonical tab link. Advertise and register the
+        // same narrowly scoped app here so installing from that live pane
+        // still launches `/fitness`, never a generic `/` shortcut.
+        <script
+            type="module"
+            src=(crate::app::interests::running::PWA_JS)
+        ></script>
         )
     }
 }
@@ -221,5 +229,14 @@ mod tests {
                 "promoted interest `{slug}` is missing from the pane tabs"
             );
         }
+    }
+
+    /// The Fitness pane can still be reached by swiping rather than by its
+    /// canonical tab link. That document must advertise and register the same
+    /// narrowly scoped app or Android will offer a generic `/` shortcut.
+    #[test]
+    fn home_deck_can_install_the_fitness_app() {
+        assert!(HOME_SRC.contains("fitness_pwa: true"));
+        assert!(HOME_SRC.contains("running::PWA_JS"));
     }
 }

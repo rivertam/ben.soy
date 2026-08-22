@@ -143,6 +143,24 @@ has install/activate only—no fetch interception, cache, private state, or diar
 code. `Service-Worker-Allowed: /fitness` lets the script below the path control
 the exact `/fitness` start URL.
 
+The phone Fitness tab always navigates to canonical `/fitness`, rather than
+the home deck's `/#fitness` fragment, so the browser sees that manifest before
+offering installation. The swipeable Fitness pane on `/` also links the same
+manifest and registers the same worker: installing while paused on that pane
+still creates app identity `/fitness` and launches `/fitness`. The manifest and
+worker scopes remain `/fitness`; advertising them from `/` does not grant the
+installed app control of the rest of the site.
+
+Android native sharing requires a real WebAPK, not a browser-badged home-screen
+shortcut. The Garmin disclosure in the Run dialog contains an install region
+that remains hidden until Chromium emits `beforeinstallprompt`; its button then
+uses that one-shot native prompt and reports accepted, dismissed, failed, and
+`appinstalled` states. The operational check is that Fitness appears in Android
+Settings → Apps. Install from full Chrome (not an in-app custom tab), choose
+Install rather than Create shortcut, and remove/reinstall any old shortcut.
+The manifest is already complete; if Chrome never offers the prompt after its
+engagement threshold, WebAPK minting on that browser/device is unavailable.
+
 The signed-in `ADMIN_EMAIL` sees the same “log” launcher in the `/fitness` and
 main log headers, with Lift, Run, and Interruption choices opening separate
 native dialogs. On `/`, both header controls target one dialog set rendered

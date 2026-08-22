@@ -122,11 +122,14 @@ fn pane_tab(path: &str, hidden_pages: &[&'static access::HiddenPage]) -> Option<
     more.then_some("more")
 }
 
-/// A pane tab's destination. On `/` the tabs address the deck's panes by
-/// bare fragment (no reload, and active filters in the query survive);
-/// everywhere else they carry the visitor home first.
+/// A pane tab's destination. Fitness always uses its canonical installable
+/// page; the other tabs address the home deck by fragment when possible.
+/// Keeping `/fitness` out of the fragment-only path ensures its manifest and
+/// narrowly scoped service worker are present before the browser offers an
+/// install.
 fn pane_href(at_home: bool, tab: &str) -> String {
     match (at_home, tab) {
+        (_, "fitness") => "/fitness".to_string(),
         (true, _) => format!("#{tab}"),
         (false, "log") => "/".to_string(),
         (false, _) => format!("/#{tab}"),
@@ -607,5 +610,24 @@ async fn theme_switcher() -> Result {
                 </button>
             </div>
         </details>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pane_href;
+
+    #[test]
+    fn fitness_tab_always_opens_the_installable_page() {
+        assert_eq!(pane_href(true, "fitness"), "/fitness");
+        assert_eq!(pane_href(false, "fitness"), "/fitness");
+    }
+
+    #[test]
+    fn other_tabs_keep_the_home_deck_contract() {
+        assert_eq!(pane_href(true, "felix"), "#felix");
+        assert_eq!(pane_href(true, "log"), "#log");
+        assert_eq!(pane_href(false, "felix"), "/#felix");
+        assert_eq!(pane_href(false, "log"), "/");
     }
 }
