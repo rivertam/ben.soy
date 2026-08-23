@@ -223,7 +223,7 @@ async fn diary_entry(cx: &Cx) -> Result {
 async fn write_entry(cx: &Cx, body: Body) -> Result<Response> {
     let bytes = match gate(cx, body).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let Some((raw, reply_to)) = parse_write_form(&bytes) else {
         return Ok(back("invalid"));
@@ -245,7 +245,7 @@ async fn write_entry(cx: &Cx, body: Body) -> Result<Response> {
 async fn delete_entry(cx: &Cx, body: Body) -> Result<Response> {
     let bytes = match gate(cx, body).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let Some(path) = parse_single_field(&bytes, "path") else {
         return Ok(back("invalid"));
@@ -552,25 +552,28 @@ async fn remove_entry(data: &Data, id: &str) -> std::result::Result<(), String> 
 }
 
 /// The shared preamble both POSTs run before believing anything in the body.
-async fn gate(cx: &Cx, body: Body) -> std::result::Result<Vec<u8>, Response> {
+async fn gate(cx: &Cx, body: Body) -> std::result::Result<Vec<u8>, Box<Response>> {
     let Some(current) = viewer(cx) else {
-        return Err(see_other(LOGIN_REDIRECT));
+        return Err(Box::new(see_other(LOGIN_REDIRECT)));
     };
     if !is_admin(&current.email) {
-        return Err(plain(StatusCode::NOT_FOUND, "not found"));
+        return Err(Box::new(plain(StatusCode::NOT_FOUND, "not found")));
     }
     if !is_same_origin(headers(cx)) {
-        return Err(plain(StatusCode::FORBIDDEN, "forbidden"));
+        return Err(Box::new(plain(StatusCode::FORBIDDEN, "forbidden")));
     }
     if !is_form_content_type(headers(cx)) {
-        return Err(plain(
+        return Err(Box::new(plain(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Content-Type must be application/x-www-form-urlencoded",
-        ));
+        )));
     }
     match to_bytes(body, BODY_LIMIT_BYTES).await {
         Ok(bytes) => Ok(bytes.to_vec()),
-        Err(_) => Err(plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large")),
+        Err(_) => Err(Box::new(plain(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "form is too large",
+        ))),
     }
 }
 

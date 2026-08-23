@@ -357,7 +357,7 @@ async fn create_comment(cx: &Cx, body: Body) -> Result<Response> {
     }
     let bytes = match form_bytes(cx, body).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let Some(form) = parse_comment_form(&bytes) else {
         return Ok(plain(StatusCode::BAD_REQUEST, "bad form"));
@@ -424,7 +424,7 @@ async fn delete_comment(cx: &Cx, body: Body) -> Result<Response> {
     }
     let bytes = match form_bytes(cx, body).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let Some(form) = parse_delete_form(&bytes) else {
         return Ok(plain(StatusCode::BAD_REQUEST, "bad form"));
@@ -474,7 +474,7 @@ async fn update_settings(cx: &Cx, body: Body) -> Result<Response> {
     }
     let bytes = match form_bytes(cx, body).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let Some(form) = parse_settings_form(&bytes) else {
         return Ok(plain(StatusCode::BAD_REQUEST, "bad form"));
@@ -937,27 +937,30 @@ fn parse_settings_form(body: &[u8]) -> Option<SettingsForm> {
     })
 }
 
-async fn form_bytes(cx: &Cx, body: Body) -> std::result::Result<Vec<u8>, Response> {
+async fn form_bytes(cx: &Cx, body: Body) -> std::result::Result<Vec<u8>, Box<Response>> {
     if !is_form_content_type(headers(cx)) {
-        return Err(plain(
+        return Err(Box::new(plain(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Content-Type must be application/x-www-form-urlencoded",
-        ));
+        )));
     }
     if let Some(length) = headers(cx).get(header::CONTENT_LENGTH) {
         let length = length
             .to_str()
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .ok_or_else(|| plain(StatusCode::BAD_REQUEST, "bad Content-Length"))?;
+            .ok_or_else(|| Box::new(plain(StatusCode::BAD_REQUEST, "bad Content-Length")))?;
         if length > BODY_LIMIT_BYTES {
-            return Err(plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large"));
+            return Err(Box::new(plain(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "form is too large",
+            )));
         }
     }
     to_bytes(body, BODY_LIMIT_BYTES)
         .await
         .map(|bytes| bytes.to_vec())
-        .map_err(|_| plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large"))
+        .map_err(|_| Box::new(plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large")))
 }
 
 fn is_form_content_type(headers: &HeaderMap) -> bool {

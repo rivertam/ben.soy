@@ -353,7 +353,7 @@ async fn save_weights_inner(cx: &Cx, body: Body) -> Result<Response> {
     }
     let ratios = match gate(cx, body).await {
         Ok(ratios) => ratios,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     // The exercise must exist in the archive; weights for phantom names
@@ -404,30 +404,35 @@ async fn save_weights_inner(cx: &Cx, body: Body) -> Result<Response> {
 /// The shared preamble the POST runs before believing anything in the body.
 /// Order is load-bearing: viewer → admin → same-origin → content type →
 /// bounded body → strict parse (`src/app/admin.rs` is the pattern).
-async fn gate(cx: &Cx, body: Body) -> std::result::Result<Vec<(String, u32)>, Response> {
+async fn gate(cx: &Cx, body: Body) -> std::result::Result<Vec<(String, u32)>, Box<Response>> {
     let name = path_param::<ExerciseName>(cx);
     if viewer(cx).is_none() {
         let login = format!("/login?next={}", urlencode(&page_url(name)));
-        return Err(see_other(&login));
+        return Err(Box::new(see_other(&login)));
     }
     let current = viewer(cx).expect("viewer checked above");
     if !is_admin(&current.email) {
-        return Err(plain(StatusCode::NOT_FOUND, "not found"));
+        return Err(Box::new(plain(StatusCode::NOT_FOUND, "not found")));
     }
     if !is_same_origin(headers(cx)) {
-        return Err(plain(StatusCode::FORBIDDEN, "forbidden"));
+        return Err(Box::new(plain(StatusCode::FORBIDDEN, "forbidden")));
     }
     if !is_form_content_type(headers(cx)) {
-        return Err(plain(
+        return Err(Box::new(plain(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Content-Type must be application/x-www-form-urlencoded",
-        ));
+        )));
     }
     let bytes = match to_bytes(body, BODY_LIMIT_BYTES).await {
         Ok(bytes) => bytes,
-        Err(_) => return Err(plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large")),
+        Err(_) => {
+            return Err(Box::new(plain(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "form is too large",
+            )));
+        }
     };
-    parse_weight_form(&bytes).ok_or_else(|| plain(StatusCode::BAD_REQUEST, "bad form"))
+    parse_weight_form(&bytes).ok_or_else(|| Box::new(plain(StatusCode::BAD_REQUEST, "bad form")))
 }
 
 /// Exactly one `ratio_<muscle>` field per canonical muscle, nothing else.

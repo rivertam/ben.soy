@@ -84,7 +84,7 @@ async fn legacy_create_interruption(cx: &Cx, body: Body) -> Result<Response> {
 async fn create_interruption_inner(cx: &Cx, body: Body) -> Result<Response> {
     let bytes = match gate(cx, body).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let write = match parse_interruption_form(&bytes) {
         Ok(write) => write,
@@ -132,7 +132,7 @@ async fn update_interruption_inner(cx: &Cx, body: Body) -> Result<Response> {
     }
     let bytes = match gate(cx, body).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let write = match parse_interruption_form(&bytes) {
         Ok(write) => write,
@@ -181,7 +181,7 @@ async fn delete_interruption_inner(cx: &Cx, body: Body) -> Result<Response> {
     }
     // Delete posts an empty body; still run the auth gate (and discard bytes).
     if let Err(response) = gate(cx, body).await {
-        return Ok(response);
+        return Ok(*response);
     }
     let handle = match app_context::<Data>(cx).db().await {
         Ok(handle) => handle,
@@ -209,30 +209,42 @@ async fn delete_interruption_inner(cx: &Cx, body: Body) -> Result<Response> {
     }
 }
 
-async fn gate(cx: &Cx, body: Body) -> std::result::Result<Bytes, Response> {
+async fn gate(cx: &Cx, body: Body) -> std::result::Result<Bytes, Box<Response>> {
     let viewer_email = viewer(cx).map(|current| current.email.clone());
     match authorize_write(viewer_email.as_deref(), is_same_origin(headers(cx))) {
-        WriteAuth::Login => return Err(see_other(LOGIN_REDIRECT)),
-        WriteAuth::NotFound => return Err(plain(StatusCode::NOT_FOUND, "not found")),
-        WriteAuth::Forbidden => return Err(plain(StatusCode::FORBIDDEN, "forbidden")),
+        WriteAuth::Login => return Err(Box::new(see_other(LOGIN_REDIRECT))),
+        WriteAuth::NotFound => {
+            return Err(Box::new(plain(StatusCode::NOT_FOUND, "not found")));
+        }
+        WriteAuth::Forbidden => {
+            return Err(Box::new(plain(StatusCode::FORBIDDEN, "forbidden")));
+        }
         WriteAuth::Allowed => {}
     }
     if !is_form_content_type(headers(cx)) {
-        return Err(plain(
+        return Err(Box::new(plain(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Content-Type must be application/x-www-form-urlencoded",
-        ));
+        )));
     }
     match declared_body_length(headers(cx)) {
         Ok(Some(length)) if length > BODY_LIMIT_BYTES => {
-            return Err(plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large"));
+            return Err(Box::new(plain(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "form is too large",
+            )));
         }
         Ok(_) => {}
-        Err(()) => return Err(plain(StatusCode::BAD_REQUEST, "bad Content-Length")),
+        Err(()) => {
+            return Err(Box::new(plain(
+                StatusCode::BAD_REQUEST,
+                "bad Content-Length",
+            )));
+        }
     }
     to_bytes(body, BODY_LIMIT_BYTES)
         .await
-        .map_err(|_| plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large"))
+        .map_err(|_| Box::new(plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large")))
 }
 
 #[derive(Debug, PartialEq, Eq)]
