@@ -1,6 +1,6 @@
 // Controls that belong specifically to the default tmux session: its status
 // bar, prefix, windows, clock, and Vimium notice. Site-wide f/j/k navigation
-// lives in navigation.js and continues under every appearance.
+// and H/L history live in navigation.js and continue under every appearance.
 
 const config = document.querySelector("[data-session-runtime]");
 const root = document.documentElement;

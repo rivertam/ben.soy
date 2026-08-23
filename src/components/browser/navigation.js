@@ -1,6 +1,7 @@
 // Site-wide structural keyboard navigation. Appearance does not participate:
-// f follows visible controls, while j/k move through intrinsic rail rows and
-// explicitly adapted list rows in document order.
+// f follows visible controls, while j/k move through intrinsic rail rows,
+// explicitly adapted rows, and children of declaratively navigable regions
+// in document order. H/L traverse browser history.
 
 const config = document.querySelector("[data-navigation-runtime]");
 
@@ -17,13 +18,45 @@ const hintFeatures = () => {
 const editable = (target) =>
   target?.closest("input, textarea, select, [contenteditable='true']");
 
-const railItems = () =>
-  [...document.querySelectorAll(".rail-row, [data-rail-item]")].filter(
-    (item) =>
-      !item.hasAttribute("data-rail-ignore") &&
-      !item.closest("[hidden]") &&
-      item.getClientRects().length > 0
-  );
+// An empty data-navigable attribute contributes the region's direct children.
+// Its value can instead be a selector scoped to that region, which covers
+// deeper structures without making every repeated item carry an attribute.
+const declaredItems = () => {
+  const items = [];
+  document.querySelectorAll("[data-navigable]").forEach((region) => {
+    const selector = region.dataset.navigable.trim();
+    if (!selector) {
+      items.push(...region.children);
+      return;
+    }
+    try {
+      items.push(...region.querySelectorAll(selector));
+    } catch {
+      // One malformed authored selector must not disable navigation elsewhere.
+    }
+  });
+  return items;
+};
+
+const railItems = () => {
+  const items = new Set([
+    ...document.querySelectorAll(".rail-row, [data-rail-item]"),
+    ...declaredItems(),
+  ]);
+  return [...items]
+    .filter(
+      (item) =>
+        !item.hasAttribute("data-rail-ignore") &&
+        !item.closest("[hidden]") &&
+        item.getClientRects().length > 0
+    )
+    .sort((left, right) => {
+      const position = left.compareDocumentPosition(right);
+      if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+};
 
 let currentRail = null;
 
@@ -102,6 +135,16 @@ document.addEventListener("keydown", (event) => {
       event.preventDefault();
       void hintFeatures().then((loadedHints) => loadedHints.start());
       break;
+    case "H":
+      acknowledge(event.key);
+      event.preventDefault();
+      history.back();
+      break;
+    case "L":
+      acknowledge(event.key);
+      event.preventDefault();
+      history.forward();
+      break;
     case "G":
       if (!selectRail(railItems().length - 1)) {
         scrollTo({
@@ -113,7 +156,8 @@ document.addEventListener("keydown", (event) => {
       break;
     case "g":
       if (performance.now() - lastG < 450) {
-        if (!selectRail(0)) scrollTo({ top: 0, behavior: "instant" });
+        clearRail();
+        scrollTo({ top: 0, behavior: "instant" });
         event.preventDefault();
       }
       lastG = performance.now();

@@ -81,7 +81,7 @@ async fn crop_deaths(cx: &Cx) -> Result {
 
                     <div class="crop-argument-card">
                         <p>"Things I agree with"</p>
-                        <ol>
+                        <ol data-navigable="">
                             <li>
                                 inline_popover(
                                           id: "crop-premise-one",
@@ -114,7 +114,7 @@ async fn crop_deaths(cx: &Cx) -> Result {
                         <h2 id="notes-title">"Objections to this argument"</h2>
                     </div>
 
-                    <ol class="crop-notes">
+                    <ol class="crop-notes" data-navigable="">
                         <li>
                             <h3>"Farmed animals eat crops too"</h3>
                             <p>"

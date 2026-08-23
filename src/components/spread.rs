@@ -39,8 +39,8 @@ pub async fn doc_head(
         format!("doc-head {class}")
     };
     view! {
-        <header class=(head.as_str())>
-            <p class="doc-head-home">
+        <header class=(head.as_str()) data-rail-item="">
+            <p class="doc-head-home" data-rail-item="" data-rail-href=(home_href)>
                 <a class="quiet-link" href=(home_href)>
                     <span class="link-arrow link-arrow-before" aria-hidden="true">"<-"</span>
                     " "

@@ -138,8 +138,10 @@ mod tests {
     const VIMIUM_JS: &str = include_str!("../components/browser/session/vimium.js");
     const CHROME_RS: &str = include_str!("../components/chrome.rs");
     const RAIL_RS: &str = include_str!("../components/rail.rs");
+    const SPREAD_RS: &str = include_str!("../components/spread.rs");
     const HOME_RS: &str = include_str!("../app/home.rs");
     const LOG_RS: &str = include_str!("../app/log.rs");
+    const CROP_DEATHS_RS: &str = include_str!("../app/thoughts/crop_deaths/mod.rs");
     const SITE_CSS: &str = include_str!("../../styles/site.css");
 
     /// Every `[data-theme="…"]` selector target in package styles, ignoring
@@ -317,14 +319,23 @@ mod tests {
         assert!(HINTS_JS.contains("export function createHints"));
         assert!(VIMIUM_JS.contains("export function createVimiumNotice"));
         assert!(NAVIGATION_JS.contains(".rail-row, [data-rail-item]"));
+        assert!(NAVIGATION_JS.contains("[data-navigable]"));
+        assert!(NAVIGATION_JS.contains("region.querySelectorAll(selector)"));
         assert!(NAVIGATION_JS.contains("currentRail.dataset.railHref"));
         assert!(NAVIGATION_JS.contains("[data-rail-enter]"));
-        for key in ["j", "k", "f", "Enter"] {
+        for key in ["j", "k", "f", "H", "L", "Enter"] {
             assert!(
                 NAVIGATION_JS.contains(&format!("case \"{key}\"")),
                 "site navigation lost {key}"
             );
         }
+        assert!(NAVIGATION_JS.contains("history.back()"));
+        assert!(NAVIGATION_JS.contains("history.forward()"));
+        assert!(
+            NAVIGATION_JS
+                .contains("clearRail();\n        scrollTo({ top: 0, behavior: \"instant\" });")
+        );
+        assert!(!NAVIGATION_JS.contains("selectRail(0)"));
         assert!(!NAVIGATION_JS.contains("dataset.theme"));
         assert!(SESSION_JS.contains("site:navigationkey"));
 
@@ -332,10 +343,18 @@ mod tests {
         // Enter action when one exists.
         assert!(RAIL_RS.contains("enter_href"));
         assert!(RAIL_RS.contains("data-rail-href"));
+        assert!(RAIL_RS.contains("data-navigable"));
+        assert!(SPREAD_RS.contains("<header class=(head.as_str()) data-rail-item"));
+        assert!(SPREAD_RS.contains("data-rail-href=(home_href)"));
         assert!(HOME_RS.contains("data-rail-item"));
         assert!(HOME_RS.contains("data-rail-href"));
         assert!(LOG_RS.contains("data-rail-item"));
         assert!(LOG_RS.contains("data-rail-enter"));
+        assert_eq!(
+            CROP_DEATHS_RS.matches("data-navigable").count(),
+            2,
+            "the crop-deaths prose lists should remain keyboard-navigable"
+        );
         for selector in ["[data-rail-current] {", ".key-hints {", ".key-hint {"] {
             assert!(SITE_CSS.contains(selector), "site CSS lost {selector}");
             assert!(

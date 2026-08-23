@@ -87,8 +87,8 @@
 }
 
 /* Structural keyboard navigation is part of the site, not the tmux palette.
- * Every .rail-row participates automatically; data-rail-item adapts other
- * row shapes such as the log timeline and home directory listing. */
+ * Every .rail-row participates automatically; data-rail-item adapts a single
+ * other row, while data-navigable adapts a container's repeated children. */
 [data-rail-current] {
   position: relative;
   border-radius: 1px;

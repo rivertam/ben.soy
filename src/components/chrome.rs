@@ -413,7 +413,7 @@ pub async fn shell(
                         }
                     </div>
                     <span class="tmux-status-right">
-                        <span class="tmux-keys">"^a n: windows · f: follow · j/k: move"</span>
+                        <span class="tmux-keys">"^a n: windows · f: follow · j/k: move · H/L: history"</span>
                         <span class="tmux-prefix" aria-hidden="true">"^A"</span>
                         <span class="tmux-host">"sponge"</span>
                         <span class="tmux-clock" data-session-clock=""></span>

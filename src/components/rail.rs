@@ -2,6 +2,11 @@
 //! back-link row. Every `.rail-row` participates in site-wide j/k navigation
 //! automatically. A row can opt into Enter by setting `enter_href`, or its
 //! child markup can mark any link/button with `data-rail-enter`.
+//!
+//! Repeated content outside the rail can opt in at its container: an empty
+//! `data-navigable` makes direct children j/k targets (for example,
+//! `<ol data-navigable="">`), while an attribute value is a descendant CSS
+//! selector scoped to that container. `data-rail-ignore` excludes an item.
 
 use topcoat::{
     Result,
