@@ -4,13 +4,22 @@ use topcoat::{
     view::{component, view},
 };
 
-use crate::{
-    components::{
-        back_link, ext_link, inline_popover, link_label, page_head, rail_prose, rail_section,
-        shell, video_card,
-    },
-    content::interests::interest,
+use crate::components::{
+    back_link, ext_link, inline_popover, link_label, page_head, rail_prose, rail_section, shell,
+    video_card,
 };
+
+crate::register_post!(
+    essay,
+    slug: "simulation",
+    shortlink: "simulation",
+    title: "Housing Market Simulation",
+    date: "2023-05-15",
+    teaser: "I once spent a bunch of time working on an ECS/actor framework for \
+             react-three-fiber with the intention of creating some interesting visuals about \
+             the housing market.",
+    tags: &["toys"],
+);
 
 #[component]
 async fn map_generator_citation() -> Result {
@@ -60,14 +69,13 @@ async fn react_three_fiber_citation() -> Result {
     }
 }
 
-#[page("/simulation")]
+#[page("/thoughts/simulation")]
 async fn simulation() -> Result {
-    let meta = interest("simulation");
     view! {
         shell(
-            page: meta.title,
+            page: POST.title,
             active: "",
-            page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
+            page_head(stamp: POST.date, title: POST.title, lede: POST.teaser)
             rail_prose(
                 stamp: "backstory",
                 <p>
@@ -165,5 +173,5 @@ async fn simulation() -> Result {
 
 #[route(GET "/interests/simulation")]
 async fn legacy_simulation() -> Result {
-    Err(redirect_permanent("/simulation").into())
+    Err(redirect_permanent("/thoughts/simulation").into())
 }

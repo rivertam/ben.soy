@@ -4,19 +4,25 @@ use topcoat::{
     view::view,
 };
 
-use crate::{
-    components::{back_link, link_label, page_head, rail_prose, rail_section, shell},
-    content::interests::interest,
-};
+use crate::components::{back_link, link_label, page_head, rail_prose, rail_section, shell};
 
-#[page("/puzzles")]
+crate::register_post!(
+    essay,
+    slug: "puzzles",
+    shortlink: "puzzles",
+    title: "Crosswords",
+    date: "2021-09-27",
+    teaser: "I built a little TUI to solve crosswords for fun once",
+    tags: &["rust", "games"],
+);
+
+#[page("/thoughts/puzzles")]
 async fn puzzles() -> Result {
-    let meta = interest("puzzles");
     view! {
         shell(
-            page: meta.title,
+            page: POST.title,
             active: "",
-            page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
+            page_head(stamp: POST.date, title: POST.title, lede: POST.teaser)
             rail_prose(
                 stamp: "",
                 <p>
@@ -49,5 +55,5 @@ async fn puzzles() -> Result {
 
 #[route(GET "/interests/puzzles")]
 async fn legacy_puzzles() -> Result {
-    Err(redirect_permanent("/puzzles").into())
+    Err(redirect_permanent("/thoughts/puzzles").into())
 }

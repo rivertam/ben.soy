@@ -8,8 +8,8 @@
 /*
  * Hero rotation, CSS only: the interest words stack in one inline-grid cell
  * and take turns — each rises in (the design's wordIn feel), holds for its
- * 2.6s slot of the 15.6s cycle (6 interests; simulation and puzzles are
- * omitted), and cuts out as the next one starts. nowrap keeps "I like" and
+ * 2.6s slot of the 15.6s cycle (6 interests), and cuts out as the next one
+ * starts. nowrap keeps "I like" and
  * the word on one line even when the grid is as wide as the longest title.
  * Visibility hides the off words from hit-testing so only the live one is
  * a link; hover pauses the cycle so you can click. The global reduced-motion

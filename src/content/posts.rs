@@ -308,16 +308,26 @@ mod tests {
         use topcoat::router::{Body, Request, Router, RouterBuilderDiscoverExt, header};
 
         let router = Router::builder().discover().build();
-        let request = Request::builder()
-            .uri("/crops?food=tofu&meal=2")
-            .body(Body::empty())
-            .unwrap();
-        let response = router.handle(request).await;
+        for (source, target) in [
+            (
+                "/crops?food=tofu&meal=2",
+                "/thoughts/crop-deaths?food=tofu&meal=2",
+            ),
+            (
+                "/simulation?from=old-link",
+                "/thoughts/simulation?from=old-link",
+            ),
+            ("/puzzles?from=old-link", "/thoughts/puzzles?from=old-link"),
+        ] {
+            let request = Request::builder().uri(source).body(Body::empty()).unwrap();
+            let response = router.handle(request).await;
 
-        assert_eq!(response.status(), 308);
-        assert_eq!(
-            response.headers().get(header::LOCATION).unwrap(),
-            "/thoughts/crop-deaths?food=tofu&meal=2"
-        );
+            assert_eq!(response.status(), 308, "{source}");
+            assert_eq!(
+                response.headers().get(header::LOCATION).unwrap(),
+                target,
+                "{source}"
+            );
+        }
     }
 }

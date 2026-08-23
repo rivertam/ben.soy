@@ -12,7 +12,7 @@ pub struct Interest {
     pub teaser: &'static str,
 }
 
-pub static INTERESTS: [Interest; 8] = [
+pub static INTERESTS: [Interest; 6] = [
     Interest {
         slug: "felix",
         title: "Felix",
@@ -43,18 +43,6 @@ pub static INTERESTS: [Interest; 8] = [
         slug: "drums",
         title: "Drums",
         teaser: "Mediocre drummer. Recording turns out to be much harder than playing.",
-    },
-    Interest {
-        slug: "simulation",
-        title: "Housing Market Simulation",
-        teaser: "I once spent a bunch of time working on an ECS/actor framework for \
-                 react-three-fiber with the intention of creating some interesting visuals about \
-                 the housing market.",
-    },
-    Interest {
-        slug: "puzzles",
-        title: "Crosswords",
-        teaser: "I built a little TUI to solve crosswords for fun once",
     },
 ];
 

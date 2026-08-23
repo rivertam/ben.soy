@@ -10,8 +10,6 @@ pub(crate) mod felix;
 mod keyboards;
 pub(crate) mod lifting;
 mod podrick;
-mod puzzles;
 pub(crate) mod running;
-mod simulation;
 pub(crate) mod spire;
 mod swing;

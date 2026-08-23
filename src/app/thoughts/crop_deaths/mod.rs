@@ -11,7 +11,7 @@ crate::register_post!(
     title: "So you think you care about crop deaths…",
     date: "2026-08-23",
     teaser: "I've spent too much time arguing about this online",
-    read_label: "audit the claim →",
+    read_label: "read →",
     tags: &["animals", "food", "veganism"],
 );
 

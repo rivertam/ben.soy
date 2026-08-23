@@ -83,7 +83,7 @@ pub fn serial(index: usize) -> String {
     format!("№ {:04}", LOG.len() - index)
 }
 
-const UPDATES: [Entry; 5] = [
+const UPDATES: [Entry; 3] = [
     Entry::Update {
         date: "2026-06-28",
         stamp: "pr",
@@ -110,24 +110,6 @@ const UPDATES: [Entry; 5] = [
         href: "/spire",
         link_label: "spire →",
         tags: &["games"],
-    },
-    Entry::Update {
-        date: "2025-04-11",
-        stamp: "shipped",
-        label: "puzzles",
-        body: "A Rust crossword engine — .puz files open in the terminal now.",
-        href: "/puzzles",
-        link_label: "puzzles →",
-        tags: &["rust", "games"],
-    },
-    Entry::Update {
-        date: "2024-11-08",
-        stamp: "shipped",
-        label: "simulation",
-        body: "Procedural cities with opinionated residents, running Schelling-style agents.",
-        href: "/simulation",
-        link_label: "simulation →",
-        tags: &["toys"],
     },
 ];
 

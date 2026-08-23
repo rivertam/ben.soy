@@ -30,13 +30,9 @@ use crate::{
     util::urlencode,
 };
 
-/// The interests the hero cycles through — the registry minus the two that
-/// read better as projects than likes.
+/// The interests the hero cycles through.
 fn hero_words() -> Vec<&'static Interest> {
-    INTERESTS
-        .iter()
-        .filter(|i| !matches!(i.slug, "simulation" | "puzzles"))
-        .collect()
+    INTERESTS.iter().collect()
 }
 
 /// The hero's longest rendered line, in ems: "I like {title}." at Fira

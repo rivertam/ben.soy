@@ -2,7 +2,9 @@ pub(crate) mod comments;
 pub mod crop_deaths;
 pub mod pesky_code;
 pub mod planes;
+pub mod puzzles;
 pub mod saamd;
+pub mod simulation;
 
 use topcoat::{Result, router::page, view::view};
 
