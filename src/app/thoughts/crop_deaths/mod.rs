@@ -165,6 +165,14 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                             Saying the feed is all \"for cattle\" would be too narrow.
                                             Poultry and pigs consume large shares of soy meal too.
                                         "</span>
+                                        <span class="inline-popover-paragraph">"
+                                            Incidentally, I often eat soy meal sold as textured vegetable protein,
+                                            or TVP. It is mostly protein and fiber, and it works in all sorts of food.
+                                            I am boiling some as I type this. A vegan can also eat whole beans or
+                                            products such as Beyond Meat and Impossible Meat instead of feeding the
+                                            soy through an animal first.
+                                        "</span>
+
                                     </span>
                                     ext_link(
                                         class: "quiet-link crop-inline-source-link",
@@ -175,13 +183,6 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                 deforestation, the demand story is overwhelmingly livestock feed,
                                 not a tofu boom."
                             </p>
-                            <p>"
-                                Incidentally, I often eat soy meal sold as textured vegetable protein,
-                                or TVP. It is mostly protein and fiber, and it works in all sorts of food.
-                                I am boiling some as I type this. A vegan can also eat whole beans or
-                                products such as Beyond Meat and Impossible Meat instead of feeding the
-                                soy through an animal first.
-                            "</p>
                             <p>"
                                 One caveat is important: "
                                 inline_popover(
@@ -252,7 +253,7 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                         "</span>
                                     </span>
                                 ) " Pastures and other direct land use from animal agriculture still
-                                uses pesticides, still removes wild habitats, and can cause pollution
+                                use pesticides, still remove wild habitats, and can cause pollution
                                 or other disruptions to local ecosystems. You are "
                                 inline_popover(
                                     id: "crop-comparative-land",
@@ -272,7 +273,8 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                     )
                                 ) " than a vegan who eats crops directly. But, even if this
                                 weren't true, if you " <em>"really"</em> " care about crop deaths,
-                                you wouldn't focus on vegans.
+                                you should still recognize that vegans reduce crop deaths
+                                substantially over virtually all other consumers.
                             "</p>
                         </li>
                         <li>
