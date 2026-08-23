@@ -131,7 +131,7 @@ async fn diary(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: "Diary",
+            page: "Diary",
             active: "",
             runtime: false,
             pwa: true,
@@ -198,7 +198,7 @@ async fn diary_entry(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: title.as_str(),
+            page: title.as_str(),
             active: "",
             runtime: false,
             pwa: true,

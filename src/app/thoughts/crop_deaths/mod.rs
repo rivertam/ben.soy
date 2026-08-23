@@ -45,7 +45,7 @@ async fn crop_deaths(cx: &Cx) -> Result {
     );
 
     view! {
-        shell(title: POST.title, active: "", hide_nav: true, runtime: false,
+        shell(page: POST.title, active: "", hide_nav: true, runtime: false,
             <article class="crop-deaths">
                 full_bleed(class: "crop-hero-band",
                     <div class="crop-page-wrap crop-hero">
@@ -180,8 +180,9 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                         label: "Oxford FCRN report ↗"
                                     )
                                 ) ". When you see stories about soy expansion and South American
-                                deforestation, the demand story is overwhelmingly livestock feed,
-                                not a tofu boom."
+                                deforestation, the demand is coming from the livestock industry.
+                                Canola is more efficient for making oil; the demand for soy comes
+                                from livestock feed."
                             </p>
                             <p>"
                                 One caveat is important: "

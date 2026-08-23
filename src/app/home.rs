@@ -81,7 +81,7 @@ async fn home(cx: &Cx) -> Result {
         // (see docs/railway-deploy.md). The embedded lifting pane rides the
         // same TTL — only the standalone /fitness page stays no-store.
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
-        shell(title: "", active: "~", fitness_pwa: true,
+        shell(page: "", active: "~", fitness_pwa: true,
         <div class="pane-deck" data-pane-deck="">
             <section class="pane pane-log" id="log" data-pane="" aria-label="the log">
                 crate::app::log::timeline()

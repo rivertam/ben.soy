@@ -65,7 +65,7 @@ async fn simulation() -> Result {
     let meta = interest("simulation");
     view! {
         shell(
-            title: meta.title,
+            page: meta.title,
             active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_prose(

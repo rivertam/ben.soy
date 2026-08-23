@@ -285,8 +285,15 @@ mod tests {
             assert!(boot.contains(&format!("'{}'", theme.id)));
         }
         assert!(boot.contains("delete r.dataset.theme"));
-        assert!(CHROME_RS.contains("<html lang=\"en\">"));
-        assert!(!CHROME_RS.contains("<html lang=\"en\" data-theme"));
+        let html_tag = CHROME_RS
+            .split_once("<html")
+            .expect("chrome owns the root html element")
+            .1
+            .split_once('>')
+            .expect("the root html element has an opening tag")
+            .0;
+        assert!(html_tag.contains("lang=\"en\""));
+        assert!(!html_tag.contains("data-theme"));
         for hook in [
             "data-default-theme=(themes::DEFAULT_THEME_ID)",
             "data-theme-key=(themes::THEME_STORAGE_KEY)",

@@ -88,7 +88,7 @@ async fn admin_index(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: "Admin",
+            page: "Admin",
             active: "",
             runtime: false,
             page_head(stamp: "index", title: "Admin", lede: "The back office.")
@@ -152,7 +152,7 @@ async fn permissions(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: "Permissions",
+            page: "Permissions",
             active: "",
             runtime: false,
             page_head(

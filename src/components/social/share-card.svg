@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#465232" stroke-width="1" opacity="0.42"/>
+    </pattern>
+    <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#333c29"/>
+      <stop offset="1" stop-color="#283021"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#151a11" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="#1e241a"/>
+  <rect x="30" y="28" width="1140" height="574" rx="8" fill="url(#page)" filter="url(#shadow)"/>
+  <rect x="30" y="28" width="1140" height="574" rx="8" fill="url(#grid)"/>
+  <rect x="30" y="28" width="1140" height="8" rx="4" fill="#e8a33d"/>
+
+  <g font-family="JetBrains Mono, DejaVu Sans Mono, monospace">
+    <text x="92" y="108" fill="#8b9a68" font-size="21" font-weight="700" letter-spacing="3">~/ BEN.SOY</text>
+    <path d="M92 146H276" stroke="#e8a33d" stroke-width="4"/>
+    <path d="M92 146H1092" stroke="#465232" stroke-width="2"/>
+
+    <text x="92" y="288" fill="#d2dab0" font-size="82" font-weight="800" letter-spacing="-3">Ben Berman</text>
+    <text x="96" y="356" fill="#aebb87" font-size="29" font-weight="500">logbook · projects · curiosities</text>
+
+    <g transform="translate(92 425)">
+      <rect width="408" height="58" rx="4" fill="#37402c" stroke="#596840" stroke-width="2"/>
+      <text x="24" y="38" fill="#e8a33d" font-size="24" font-weight="700">&gt;_</text>
+      <text x="75" y="38" fill="#d2dab0" font-size="24" font-weight="600">bens-site</text>
+      <rect x="276" y="17" width="2" height="25" fill="#596840"/>
+      <text x="302" y="38" fill="#8b9a68" font-size="19">online</text>
+    </g>
+
+    <g transform="translate(30 542)">
+      <rect width="1140" height="60" fill="#20271b"/>
+      <rect x="0" width="146" height="60" fill="#e8a33d"/>
+      <text x="23" y="39" fill="#20271b" font-size="20" font-weight="800">0 ~</text>
+      <text x="176" y="39" fill="#aebb87" font-size="20">1 resume</text>
+      <text x="330" y="39" fill="#aebb87" font-size="20">2 felix</text>
+      <text x="464" y="39" fill="#aebb87" font-size="20">3 fitness</text>
+      <text x="940" y="39" fill="#e8a33d" font-size="20" font-weight="700">ben.soy</text>
+    </g>
+  </g>
+</svg>

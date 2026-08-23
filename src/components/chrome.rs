@@ -14,7 +14,7 @@ use topcoat::{
 use crate::app::login::{
     POPUP_ERROR_PARAM, auth_return_target, login_configured, popup_notice, viewer,
 };
-use crate::components::{back_link, modal};
+use crate::components::{back_link, modal, social};
 use crate::content::{access, interests::INTERESTS, logbook::LOG, posts::post_for_path, themes};
 use crate::util::urlencode;
 
@@ -138,10 +138,12 @@ fn pane_href(at_home: bool, tab: &str) -> String {
 
 /// The full document: every page renders through this, so every page owns its
 /// title. Pages invoke it as markup with the page content as trailing children:
-/// `view! { shell(title: "…", active: "…", <p>"…"</p>) }`.
+/// `view! { shell(page: "…", active: "…", <p>"…"</p>) }`.
 ///
-/// `title` is the bare page title — the shell appends "— Ben Berman" itself;
-/// pass `""` for the homepage, whose title is just the name.
+/// `page` is normally the bare page title — the shell appends "— Ben Berman"
+/// itself; pass `""` for the homepage, whose title is just the name. Dynamic
+/// pages can pass `PageMeta` to override their social description or canonical
+/// URL without adding more shell props.
 ///
 /// `active` names the nav item the page lives under — `"~"`, `"log"`,
 /// `"resume"`, or `""` for none — and gets the oxide underline.
@@ -170,7 +172,7 @@ fn pane_href(at_home: bool, tab: &str) -> String {
 #[component]
 pub async fn shell(
     cx: &Cx,
-    title: &str,
+    page: impl Into<social::PageMeta> + Send,
     active: &str,
     #[default(false)] hide_nav: bool,
     #[default(true)] runtime: bool,
@@ -179,12 +181,15 @@ pub async fn shell(
     #[default(false)] marker_font: bool,
     child: View,
 ) -> Result {
-    let title = if title.is_empty() {
+    let page = page.into();
+    let social_meta = social::metadata(cx, &page);
+    let social_head = social::head(cx, &social_meta).await?;
+    let document_title = if page.title().is_empty() {
         "Ben Berman".to_string()
     } else {
-        format!("{title} — Ben Berman")
+        format!("{} — Ben Berman", page.title())
     };
-    let title = title.as_str();
+    let document_title = document_title.as_str();
     let nav = |item: &str| {
         if active == item {
             "nav-active"
@@ -232,12 +237,17 @@ pub async fn shell(
         // not needed.
         ((header::CACHE_CONTROL, cache_control))
         <!DOCTYPE html>
-        <html lang="en">
+        <html
+            lang="en"
+            prefix="og: https://ogp.me/ns# article: https://ogp.me/ns/article#"
+        >
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <meta name="referrer" content="strict-origin-when-cross-origin">
-                <title>(title)</title>
+                <meta name="theme-color" content="#2e3626">
+                <title>(document_title)</title>
+                (social_head)
                 // Fresh HTML is already the tmux session. Rust derives this
                 // tiny pre-paint allowlist from the appearance registry; only
                 // a remembered alternate adds data-theme.
@@ -295,11 +305,9 @@ pub async fn shell(
                     // The /diary app surface (app/pwa.rs); the color matches
                     // --color-page so the standalone status bar blends in.
                     <link rel="manifest" href="/diary.webmanifest">
-                    <meta name="theme-color" content="#2e3626">
                 }
                 if fitness_pwa {
                     <link rel="manifest" href="/fitness.webmanifest">
-                    <meta name="theme-color" content="#2e3626">
                 }
                 <link
                     rel="alternate"

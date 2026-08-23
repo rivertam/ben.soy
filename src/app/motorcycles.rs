@@ -35,7 +35,7 @@ async fn motorcycles(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
-            title: "Motorcycles",
+            page: "Motorcycles",
             active: "",
             runtime: false,
             page_head(

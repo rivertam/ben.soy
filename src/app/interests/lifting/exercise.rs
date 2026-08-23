@@ -68,7 +68,7 @@ async fn exercise_page(cx: &Cx) -> Result {
             return view! {
                 ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
                 shell(
-                    title: "Exercise",
+                    page: "Exercise",
                     active: "",
                     runtime: false,
                     fitness_pwa: true,
@@ -144,7 +144,7 @@ async fn exercise_page(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: title.as_str(),
+            page: crate::components::PageMeta::new(title.as_str()).description(history.as_str()),
             active: "",
             runtime: false,
             fitness_pwa: true,

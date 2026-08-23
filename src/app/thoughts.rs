@@ -13,7 +13,7 @@ use crate::{
 
 #[page("/thoughts")]
 async fn thoughts() -> Result {
-    view! { shell(title: "Thoughts", active: "",
+    view! { shell(page: "Thoughts", active: "",
         page_head(
             stamp: "log",
             title: "Thoughts",

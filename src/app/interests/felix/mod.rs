@@ -157,7 +157,7 @@ async fn felix_page(initial_photo: &str) -> Result {
     let meta = interest("felix");
     view! {
         shell(
-            title: meta.title,
+            page: meta.title,
             active: "",
             hide_nav: true,
             felix_content(initial_photo: initial_photo, standalone: true)

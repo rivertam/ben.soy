@@ -134,7 +134,7 @@ async fn login(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: "Sign in",
+            page: "Sign in",
             active: "",
             runtime: false,
             <section class="mt-16 sm:mt-24">

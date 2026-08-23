@@ -121,6 +121,8 @@ async fn planes(cx: &Cx) -> Result {
     let revealed = from.is_some() && to.is_some();
 
     let title;
+    let mut social_description = POST.teaser.to_string();
+    let mut canonical_path = uri(cx).path().to_string();
     let mut seal_total = String::new();
     // The vias the form redisplays: the canonical collapsed chain once the
     // route is filed, the raw resolved codes before that.
@@ -166,6 +168,7 @@ async fn planes(cx: &Cx) -> Result {
 
             let iatas: Vec<&str> = chain.iter().map(|a| a.iata.as_str()).collect();
             let share_path = share_path(&iatas, cabin, round_trip);
+            canonical_path.clone_from(&share_path);
             let share_origin = share::request_origin(cx);
             let share_text = share::share_text(
                 share_origin.as_deref(),
@@ -178,6 +181,13 @@ async fn planes(cx: &Cx) -> Result {
                 &share_path,
             );
             seal_total = format_tonnes(impact.tonnes_co2e);
+            social_description = format!(
+                "A {} {}-class flight on {}: an estimated {} CO₂e per passenger. See the assumptions and comparisons.",
+                if round_trip { "round-trip" } else { "one-way" },
+                cabin.as_str(),
+                iatas.join(if round_trip { " ⇄ " } else { " → " }),
+                seal_total,
+            );
             title = format!(
                 "{} · {} CO₂e — {}",
                 iatas.join(if round_trip { " ⇄ " } else { " → " }),
@@ -210,7 +220,12 @@ async fn planes(cx: &Cx) -> Result {
         "desk-spread"
     };
 
-    view! { shell(title: title.as_str(), active: "", hide_nav: true,
+    view! { shell(
+        page: crate::components::PageMeta::new(title.as_str())
+            .description(social_description.as_str())
+            .canonical_path(canonical_path.as_str()),
+        active: "",
+        hide_nav: true,
         <article>
             full_bleed(class: "desk-band",
                 <div class=(spread_class)>

@@ -230,6 +230,7 @@ async fn lift_detail(cx: &Cx) -> Result {
     let page_title = workout
         .map(|workout| format!("{} · {}", workout.title, meta.title))
         .unwrap_or_else(|| meta.title.to_string());
+    let social_description = workout.map(crate::app::feed::workout_description);
     let page_heading = workout
         .map(|workout| workout.title.as_str())
         .unwrap_or("Workout");
@@ -248,7 +249,8 @@ async fn lift_detail(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
-            title: page_title.as_str(),
+            page: crate::components::PageMeta::new(page_title.as_str())
+                .description(social_description.as_deref().unwrap_or("")),
             active: "",
             runtime: false,
             fitness_pwa: true,

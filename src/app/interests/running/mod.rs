@@ -539,11 +539,13 @@ async fn run_detail(cx: &Cx) -> Result {
     let title = activity
         .map(|activity| format!("{} · Running", activity.title))
         .unwrap_or_else(|| "Running".to_string());
+    let social_description = activity.map(feed_description);
 
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: title.as_str(),
+            page: crate::components::PageMeta::new(title.as_str())
+                .description(social_description.as_deref().unwrap_or("")),
             active: "",
             runtime: false,
             fitness_pwa: true,
@@ -810,7 +812,7 @@ async fn lyfta_review_response(cx: &Cx, workout: &str) -> Result<Response> {
     let page = view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: "Review Lyfta workout",
+            page: "Review Lyfta workout",
             active: "",
             runtime: false,
             fitness_pwa: true,
@@ -862,7 +864,7 @@ async fn share_problem_response(cx: &Cx, title: &str, copy: &str) -> Result<Resp
     let page = view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: title,
+            page: title,
             active: "",
             runtime: false,
             fitness_pwa: true,
@@ -901,7 +903,7 @@ async fn review_shared_run(cx: &Cx) -> Result {
             return view! {
                 ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
                 shell(
-                    title: "Review Garmin run",
+                    page: "Review Garmin run",
                     active: "",
                     runtime: false,
                     fitness_pwa: true,
@@ -935,7 +937,7 @@ async fn review_shared_run(cx: &Cx) -> Result {
             return view! {
                 ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
                 shell(
-                    title: "Run already logged",
+                    page: "Run already logged",
                     active: "",
                     runtime: false,
                     fitness_pwa: true,
@@ -961,7 +963,7 @@ async fn review_shared_run(cx: &Cx) -> Result {
             return view! {
                 ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
                 shell(
-                    title: "Review Garmin run",
+                    page: "Review Garmin run",
                     active: "",
                     runtime: false,
                     fitness_pwa: true,
@@ -980,7 +982,7 @@ async fn review_shared_run(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: "Review Garmin run",
+            page: "Review Garmin run",
             active: "",
             runtime: false,
             fitness_pwa: true,
@@ -1016,7 +1018,7 @@ async fn unavailable_review() -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
-            title: "Review Garmin run",
+            page: "Review Garmin run",
             active: "",
             runtime: false,
             fitness_pwa: true,

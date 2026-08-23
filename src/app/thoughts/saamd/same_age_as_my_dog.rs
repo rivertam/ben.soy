@@ -103,7 +103,7 @@ async fn same_age_as_my_dog(cx: &Cx) -> Result {
     let parsed = parse_birthdays(query, today);
 
     view! {
-        shell(title: "Same age as my dog", active: "", runtime: false, marker_font: true,
+        shell(page: POST.title, active: "", runtime: false, marker_font: true,
             <article>
                 page_head(
                     stamp: POST.date,

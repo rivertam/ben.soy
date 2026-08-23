@@ -100,7 +100,7 @@ async fn lifting_log(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
-            title: meta.title,
+            page: meta.title,
             active: "",
             runtime: true,
             fitness_pwa: true,

@@ -14,6 +14,7 @@ mod links;
 mod modals;
 mod popover;
 mod rail;
+mod social;
 mod spread;
 
 pub use cards::{index_card, video_card};
@@ -22,4 +23,5 @@ pub use links::{ext_link, link_label};
 pub use modals::modal;
 pub use popover::inline_popover;
 pub use rail::{back_link, page_head, rail_group, rail_prose, rail_section};
+pub use social::PageMeta;
 pub use spread::{doc_head, full_bleed, margin_notes, stamp_seal};

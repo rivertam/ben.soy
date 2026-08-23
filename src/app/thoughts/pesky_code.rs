@@ -22,7 +22,7 @@ async fn pesky_code() -> Result {
     };
     view! {
         shell(
-            title: POST.title,
+            page: POST.title,
             active: "",
             <article class="rail-row mt-16 sm:mt-24">
                 <p class="rail-stamp">(POST.date)</p>

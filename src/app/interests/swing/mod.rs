@@ -134,7 +134,7 @@ async fn swing_page(initial_media: &str) -> Result {
     let meta = interest("swing");
     view! {
         shell(
-            title: meta.title,
+            page: meta.title,
             active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_prose(

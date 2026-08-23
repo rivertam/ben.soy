@@ -95,7 +95,7 @@ async fn resume(cx: &Cx) -> Result {
 
     view! {
         shell(
-            title: title.as_str(),
+            page: title.as_str(),
             active: "resume",
             <div class="resume-page">
                 <header class="resume-print-header resume-print-only">

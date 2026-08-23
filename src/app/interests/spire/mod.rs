@@ -95,7 +95,7 @@ async fn spire(cx: &Cx) -> Result {
         // Fresh runs appear within a minute; CDN honors s-maxage (see docs/railway-deploy.md).
         ((header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0, s-maxage=60")))
         shell(
-            title: meta.title,
+            page: meta.title,
             active: "",
             page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
             rail_section(

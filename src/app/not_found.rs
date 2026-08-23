@@ -66,7 +66,7 @@ pub async fn not_found_page(requested: &str) -> Result {
 
     view! {
         shell(
-            title: "404",
+            page: "404",
             active: "",
             (StatusCode::NOT_FOUND)
             <section class="mt-16 sm:mt-24">

@@ -9,7 +9,7 @@ use crate::components::{ext_link, inline_popover, page_head, rail_prose, shell};
 async fn llms() -> Result {
     view! {
         shell(
-            title: "LLMs",
+            page: "LLMs",
             active: "",
             page_head(
                 stamp: "llms",
