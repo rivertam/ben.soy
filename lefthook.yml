@@ -4,13 +4,13 @@
 pre-commit:
   parallel: false
   commands:
-    clippy:
-      glob: "*.rs"
-      run: cargo clippy --fix --all-targets --allow-dirty --allow-staged -- -D warnings
-      stage_fixed: true
     format:
       glob: "*.rs"
       run: cargo fmt
       stage_fixed: true
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --fix --workspace --all-targets --allow-dirty --allow-staged -- -D warnings
+      stage_fixed: true
     test:
-      run: cargo test
+      run: cargo test --workspace --quiet

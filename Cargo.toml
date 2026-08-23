@@ -75,3 +75,13 @@ topcoat = { version = "0.5.0", default-features = false, features = ["tailwind"]
 
 [dev-dependencies]
 surrealdb = { workspace = true, features = ["kv-mem"] }
+
+# Full DWARF makes the SurrealDB-heavy dev and test executables enormous (the
+# main test harness alone was over 700 MB). Line tables preserve useful file
+# and line backtraces while substantially reducing codegen, linking, and disk
+# traffic during local checks.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
