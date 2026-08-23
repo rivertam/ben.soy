@@ -201,7 +201,7 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                             "Crop residues are trickier. They come from a crop already grown for another output, so assigning its upstream deaths to the residue is a co-product choice—not a second field planted for feed."
                                         </span>
                                         <span class="inline-popover-paragraph">
-                                            "Livestock also consume about one-third of global cereal production. Inedibility narrows the feed-versus-food claim; it does not erase harm."
+                                            "Livestock also consume about one-third of global cereal production. It's very typical for an animal to graze or forage on pastures for much of their life and then to be \"finished\" in a feedlot by essentially force-feeding them grains."
                                         </span>
                                     </span>
                                     ext_link(
