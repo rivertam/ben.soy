@@ -94,16 +94,21 @@ const EXCLUDED_SET_TYPES: [&str; 1] = ["WARMUP_SET"];
 /// `w * (30 + reps)` — same ordering, exact integer math.
 fn metric(kind: Kind, weight_milli: Option<i64>, reps: Option<i64>) -> Option<i128> {
     match kind {
-        Kind::MaxWeight => weight_milli.map(i128::from),
+        Kind::MaxWeight => weight_milli.filter(|weight| *weight >= 0).map(i128::from),
         Kind::Reps => reps.map(i128::from),
         Kind::Volume => match (weight_milli, reps) {
-            (Some(weight), Some(reps)) => Some(i128::from(weight) * i128::from(reps)),
+            (Some(weight), Some(reps)) if weight >= 0 => {
+                Some(i128::from(weight) * i128::from(reps))
+            }
             _ => None,
         },
         Kind::OneRm => match (weight_milli, reps) {
             // A 1RM estimate needs at least one performed rep; at zero reps
-            // Epley degenerates into max-weight.
-            (Some(weight), Some(reps)) if reps >= 1 => {
+            // Epley degenerates into max-weight. Negative weights represent
+            // assistance, not resistance, so weight-derived metrics are not
+            // meaningful or comparable to older positive-assistance history.
+            // Reps remain useful.
+            (Some(weight), Some(reps)) if weight >= 0 && reps >= 1 => {
                 Some(i128::from(weight) * (30 + i128::from(reps)))
             }
             _ => None,
@@ -290,6 +295,28 @@ mod tests {
     fn bodyweight_sets_medal_in_reps_only() {
         let derived = derive([set("pullup", "Pull Up", "NORMAL_SET", None, Some(12))]);
         assert_eq!(kinds(&derived["pullup"]), [("gold", "reps")]);
+    }
+
+    #[test]
+    fn negative_assistance_earns_reps_records_only() {
+        let derived = derive([
+            set(
+                "more",
+                "Pull Up (Assisted)",
+                "NORMAL_SET",
+                Some(-50_000),
+                Some(5),
+            ),
+            set(
+                "less",
+                "Pull Up (Assisted)",
+                "NORMAL_SET",
+                Some(-25_000),
+                Some(6),
+            ),
+        ]);
+        assert_eq!(kinds(&derived["more"]), [("gold", "reps")]);
+        assert_eq!(kinds(&derived["less"]), [("gold", "reps")]);
     }
 
     #[test]

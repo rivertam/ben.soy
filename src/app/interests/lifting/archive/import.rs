@@ -338,8 +338,9 @@ fn parse_set(value: &Value) -> Result<IncomingSet, String> {
         .ok_or("bad exercise_note")?;
     let superset_id = validate::nullable_integer_value(set.get("superset_id"), 0, 1_000_000)
         .ok_or("bad superset_id")?;
-    let weight_milli = validate::nullable_integer_value(set.get("weight_milli"), 0, 1_000_000_000)
-        .ok_or("bad weight_milli")?;
+    let weight_milli =
+        validate::nullable_integer_value(set.get("weight_milli"), -1_000_000_000, 1_000_000_000)
+            .ok_or("bad weight_milli")?;
     if set.get("weight_unit").and_then(Value::as_str) != Some("lbs") {
         return Err("bad weight_unit".to_string());
     }
@@ -444,6 +445,27 @@ mod tests {
         assert_eq!(w.eastern_offset_minutes, -240);
         assert!(!parsed.sets[0].incomplete, "reps recorded");
         assert_eq!(parsed.exercises[0].tags.len(), 2);
+    }
+
+    #[test]
+    fn accepts_bounded_negative_assistance_but_not_negative_reps() {
+        let mut assisted = payload();
+        assisted["sets"][0]["weight_milli"] = Value::from(-225_000);
+        let parsed = parse_import_payload(&assisted).unwrap();
+        assert_eq!(parsed.sets[0].weight_milli, Some(-225_000));
+
+        assisted["sets"][0]["weight_milli"] = Value::from(-1_000_000_001_i64);
+        assert_eq!(
+            parse_import_payload(&assisted).unwrap_err(),
+            "sets[0]: bad weight_milli"
+        );
+
+        let mut negative_reps = payload();
+        negative_reps["sets"][0]["reps"] = Value::from(-1);
+        assert_eq!(
+            parse_import_payload(&negative_reps).unwrap_err(),
+            "sets[0]: bad reps"
+        );
     }
 
     #[test]

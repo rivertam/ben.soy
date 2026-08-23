@@ -180,7 +180,7 @@ mod tests {
     fn set(
         ordinal: u32,
         exercise: &str,
-        weight: Option<u64>,
+        weight: Option<i64>,
         reps: Option<u64>,
         effort: Option<u64>,
         set_type: &str,
@@ -268,6 +268,14 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00";
     fn share_text_without_an_origin_keeps_the_bare_path() {
         let text = share_text(&workout(), None);
         assert!(text.ends_with("\n/fitness/lift/2026-07-21T10-39-04-04-00"));
+    }
+
+    #[test]
+    fn share_text_keeps_negative_assistance() {
+        let mut workout = workout();
+        workout.sets[0].weight_milli = Some(-45_000);
+        let text = share_text(&workout, None);
+        assert!(text.contains("1. -45 lbs × 10 · warm-up"));
     }
 
     #[test]

@@ -3,7 +3,9 @@
 use super::{
     data as fitness,
     filters::{Filters, SET_TYPES, lookup},
-    format::{format_duration, format_scaled, workout_datetime, workout_timing},
+    format::{
+        format_duration, format_scaled, format_signed_scaled, workout_datetime, workout_timing,
+    },
 };
 use crate::util::urlencode;
 
@@ -185,11 +187,11 @@ fn prescription(set: &fitness::Set) -> String {
     match (set.weight_milli, set.reps) {
         (Some(load), Some(reps)) => format!(
             "{} {} × {reps}",
-            format_scaled(load, 1_000),
+            format_signed_scaled(load, 1_000),
             set.weight_unit
         ),
         (Some(load), None) => {
-            format!("{} {}", format_scaled(load, 1_000), set.weight_unit)
+            format!("{} {}", format_signed_scaled(load, 1_000), set.weight_unit)
         }
         (None, Some(reps)) => format!("{reps} reps"),
         (None, None) => {
@@ -429,6 +431,10 @@ mod tests {
 
         weighted.reps = None;
         assert_eq!(prescription(&weighted), "95 lbs");
+
+        weighted.weight_milli = Some(-45_500);
+        weighted.reps = Some(8);
+        assert_eq!(prescription(&weighted), "-45.5 lbs × 8");
     }
 
     #[test]

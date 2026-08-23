@@ -27,6 +27,15 @@ pub(super) fn format_scaled(value: u64, scale: u64) -> String {
     output
 }
 
+pub(super) fn format_signed_scaled(value: i64, scale: u64) -> String {
+    let formatted = format_scaled(value.unsigned_abs(), scale);
+    if value < 0 {
+        format!("-{formatted}")
+    } else {
+        formatted
+    }
+}
+
 pub(super) fn format_duration(seconds: u64) -> String {
     let hours = seconds / 3_600;
     let minutes = seconds % 3_600 / 60;
@@ -228,6 +237,8 @@ mod tests {
         assert_eq!(format_scaled(102_500, 1_000), "102.5");
         assert_eq!(format_scaled(100_000, 1_000), "100");
         assert_eq!(format_scaled(50, 100), "0.5");
+        assert_eq!(format_signed_scaled(-45_125, 1_000), "-45.125");
+        assert_eq!(format_signed_scaled(-1_250_000, 1_000), "-1,250");
         assert_eq!(format_duration(7_534), "2h 05m");
     }
 

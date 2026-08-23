@@ -2,9 +2,9 @@
 //! the site's own pages (consume directly, no HTTP round trip).
 //!
 //! Struct field order IS the response key order — the golden fixtures pin
-//! it. Integers use the reader-friendly unsigned types the pages always
-//! assumed; every value is range-checked at import so the casts from the
-//! stored `i64`s are total.
+//! it. Set weight is signed because assisted movements use negative pounds;
+//! the other reader-facing quantities stay unsigned. Every value is
+//! range-checked at import so the casts from stored `i64`s are total.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,7 @@ pub struct Set {
     pub raw_exercise_name: String,
     pub exercise_note: Option<String>,
     pub superset_id: Option<u64>,
-    pub weight_milli: Option<u64>,
+    pub weight_milli: Option<i64>,
     pub weight_unit: String,
     pub reps: Option<u64>,
     pub effort_hundredths: Option<u64>,

@@ -184,7 +184,7 @@ pub fn build(
                     raw_exercise_name: set.raw_exercise_name.clone(),
                     exercise_note: set.exercise_note.clone(),
                     superset_id: set.superset_id.map(to_u64),
-                    weight_milli: set.weight_milli.map(to_u64),
+                    weight_milli: set.weight_milli,
                     weight_unit: set.weight_unit.clone(),
                     reps: set.reps.map(to_u64),
                     effort_hundredths: set.effort_hundredths.map(to_u64),
@@ -781,12 +781,18 @@ impl Snapshot {
         }
         // Numeric comparisons exclude NULL, like SQL.
         if let Some(min) = filters.min_load
-            && !set.wire.weight_milli.is_some_and(|weight| weight >= min)
+            && !set
+                .wire
+                .weight_milli
+                .is_some_and(|weight| weight >= i64::try_from(min).unwrap_or(i64::MAX))
         {
             return false;
         }
         if let Some(max) = filters.max_load
-            && !set.wire.weight_milli.is_some_and(|weight| weight <= max)
+            && !set
+                .wire
+                .weight_milli
+                .is_some_and(|weight| weight <= i64::try_from(max).unwrap_or(i64::MAX))
         {
             return false;
         }
@@ -1062,6 +1068,38 @@ mod tests {
                 .iter()
                 .any(|r| r.level == "gold" && r.kind == "1rm")
         );
+    }
+
+    #[test]
+    fn negative_assistance_survives_the_public_snapshot() {
+        let snap = build(
+            1,
+            vec![workout_row(
+                "2026-07-21T14:39:04",
+                "2026-07-21 14:39:04",
+                "2026-07-21 10:39:04",
+                -240,
+            )],
+            vec![set_row(
+                "2026-07-21T14:39:04",
+                1,
+                "Pull Up (Assisted)",
+                Some(-45_500),
+                Some(8),
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        let page = snap.sets_page(&parse_filters(&[]).unwrap());
+        assert_eq!(page.workouts[0].sets[0].weight_milli, Some(-45_500));
+
+        let nonpositive = parse_filters(&[("max_load".into(), "0".into())]).unwrap();
+        assert_eq!(snap.sets_page(&nonpositive).total_sets, 1);
+        let nonnegative = parse_filters(&[("min_load".into(), "0".into())]).unwrap();
+        assert_eq!(snap.sets_page(&nonnegative).total_sets, 0);
     }
 
     #[test]

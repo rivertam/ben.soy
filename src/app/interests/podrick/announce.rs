@@ -600,9 +600,9 @@ fn truncated(header: &[String], groups: &[ExerciseGroup<'_>], link: &str) -> Str
 /// `137_500/1_000` -> `137.5`. Mirrors `format::format_scaled`, including its
 /// thousands separators.
 fn format_scaled(value: i64, scale: i64) -> String {
-    if value < 0 {
-        return value.to_string();
-    }
+    let negative = value < 0;
+    let value = value.unsigned_abs();
+    let scale = scale.unsigned_abs();
     let whole = value / scale;
     let remainder = value % scale;
     let mut output = format_integer(whole);
@@ -614,10 +614,13 @@ fn format_scaled(value: i64, scale: i64) -> String {
         output.push('.');
         output.push_str(&fraction);
     }
+    if negative {
+        output.insert(0, '-');
+    }
     output
 }
 
-fn format_integer(value: i64) -> String {
+fn format_integer(value: u64) -> String {
     let digits = value.to_string();
     let mut output = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, character) in digits.chars().enumerate() {
@@ -912,6 +915,8 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00"
         assert_eq!(format_scaled(1_250_000, 1_000), "1,250");
         assert_eq!(format_scaled(800, 100), "8");
         assert_eq!(format_scaled(850, 100), "8.5");
+        assert_eq!(format_scaled(-45_125, 1_000), "-45.125");
+        assert_eq!(format_scaled(-1_250_000, 1_000), "-1,250");
         assert_eq!(format_duration(2110), "35m 10s");
         assert_eq!(format_duration(3_840), "1h 04m");
         assert_eq!(format_duration(12), "12s");

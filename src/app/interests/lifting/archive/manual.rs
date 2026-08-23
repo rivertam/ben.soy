@@ -336,6 +336,7 @@ fn validate_pounds_volume(value: &str) -> Result<(), ParseError> {
         .chars()
         .filter(|character| !matches!(character, ' ' | ',' | '_'))
         .collect();
+    let number = number.strip_prefix('-').unwrap_or(&number);
     if number.is_empty()
         || number.matches('.').count() > 1
         || !number
@@ -465,16 +466,22 @@ fn parse_set_line(
         None => (prescription, None),
     };
     let pieces: Vec<&str> = prescription.split_whitespace().collect();
-    if pieces.len() != 4
-        || pieces[1] != "x"
-        || !matches!(pieces[3].to_ascii_lowercase().as_str(), "rep" | "reps")
-    {
+    let (weight, reps, reps_label) = match pieces.as_slice() {
+        [weight, "x", reps, reps_label] => ((*weight).to_string(), *reps, *reps_label),
+        ["-", weight, "x", reps, reps_label] => (format!("-{weight}"), *reps, *reps_label),
+        _ => {
+            return Err(ParseError::new(format!(
+                "malformed weight/reps prescription in {line:?}"
+            )));
+        }
+    };
+    if !matches!(reps_label.to_ascii_lowercase().as_str(), "rep" | "reps") {
         return Err(ParseError::new(format!(
             "malformed weight/reps prescription in {line:?}"
         )));
     }
-    let weight_milli = parse_weight(pieces[0])?;
-    let reps: i64 = pieces[2]
+    let weight_milli = parse_weight(&weight)?;
+    let reps: i64 = reps
         .parse()
         .map_err(|_| ParseError::new(format!("malformed reps in {line:?}")))?;
     if !(0..=1_000_000).contains(&reps) {
@@ -571,11 +578,15 @@ fn parse_weight(value: &str) -> Result<i64, ParseError> {
             "only set weights recorded in pounds are supported",
         ));
     };
-    let scaled = parse_scaled_decimal(number, 3, "weight")?;
-    if scaled > 1_000_000_000 {
+    let (negative, number) = match number.strip_prefix('-') {
+        Some(number) => (true, number.trim_start()),
+        None => (false, number),
+    };
+    let magnitude = parse_scaled_decimal(number, 3, "weight")?;
+    if magnitude > 1_000_000_000 {
         return Err(ParseError::new("set weight is out of range"));
     }
-    Ok(scaled)
+    Ok(if negative { -magnitude } else { magnitude })
 }
 
 fn parse_effort(value: &str) -> Result<i64, ParseError> {
@@ -715,6 +726,34 @@ https://lyfta.app/wk/5";
         assert_eq!(
             parsed.payload.sets[2].exercise_note.as_deref(),
             Some("Left")
+        );
+    }
+
+    #[test]
+    fn accepts_spaced_and_compact_negative_assistance() {
+        let input = SAMPLE
+            .replacen("Set 1: 45lbs x 10 reps", "Set 1: - 45lbs x 10 reps", 1)
+            .replacen("Set 2: 65lbs x 6 reps", "Set 2: -65.5lbs x 6 reps", 1);
+        let parsed = parse_lyfta(&input).unwrap();
+        assert_eq!(parsed.payload.sets[0].weight_milli, Some(-45_000));
+        assert_eq!(parsed.payload.sets[1].weight_milli, Some(-65_500));
+
+        let signed_volume = input.replace("7 430lbs", "- 7 430lbs");
+        assert!(parse_lyfta(&signed_volume).is_ok());
+    }
+
+    #[test]
+    fn negative_assistance_keeps_the_symmetric_weight_bound() {
+        let input = SAMPLE.replacen(
+            "Set 1: 45lbs x 10 reps",
+            "Set 1: - 1000000.001lbs x 10 reps",
+            1,
+        );
+        assert!(
+            parse_lyfta(&input)
+                .unwrap_err()
+                .to_string()
+                .contains("weight is out of range")
         );
     }
 

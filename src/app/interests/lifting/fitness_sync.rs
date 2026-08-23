@@ -335,6 +335,17 @@ fn optional_decimal(value: &str, decimal_places: u32) -> Result<Option<i64>, Str
     }
 }
 
+/// Weight is the one signed set quantity: negative pounds represent
+/// assistance. Reps, effort, distance, and time keep using
+/// `optional_decimal`, which rejects negatives.
+fn optional_weight(value: &str) -> Result<Option<i64>, String> {
+    if optional_text(value).is_none() {
+        Ok(None)
+    } else {
+        parse_scaled_decimal(value, 3).map(Some)
+    }
+}
+
 /// Strong combines RIR and RPE in one column. This archive stores only RPE:
 /// values below 6 are interpreted as RIR and converted with RPE = 10 - RIR.
 fn normalize_effort_to_rpe(effort_hundredths: i64) -> i64 {
@@ -530,7 +541,7 @@ fn parse_reader<R: Read>(reader: R) -> Result<Export, String> {
             "records",
         )?;
         let weight_milli = contextual(
-            optional_decimal(get(columns.weight, "Weight")?, 3),
+            optional_weight(get(columns.weight, "Weight")?),
             row,
             "Weight",
         )?;
@@ -1032,6 +1043,19 @@ mod tests {
         assert!(parse_scaled_decimal("1.234", 2).is_err());
         assert!(parse_scaled_decimal("1.2.3", 3).is_err());
         assert!(optional_decimal("-1", 3).is_err());
+    }
+
+    #[test]
+    fn csv_weights_allow_negative_assistance_only() {
+        let csv = format!(
+            "{HEADER}\
+             Assisted,2026-07-21 14:39:04,00:10:00,,,Pull Up (Assisted),,,\
+             -45.125,8,,,,NORMAL_SET,,\n"
+        );
+        let export = parse_reader(csv.as_bytes()).unwrap();
+        assert_eq!(export.workouts[0].sets[0].weight_milli, Some(-45_125));
+        assert_eq!(optional_weight("-45.125").unwrap(), Some(-45_125));
+        assert!(optional_decimal("-8", 0).is_err(), "reps stay unsigned");
     }
 
     #[test]

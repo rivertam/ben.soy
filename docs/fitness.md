@@ -239,6 +239,9 @@ API/filter/import contracts are in this file under "API contract".
   change identity, deduplication, or import ordering.
 - Strong omits load and distance units. This archive assumes every imported
   load is pounds and persists `weight_unit='lbs'`; distance remains unitless.
+- Set load is signed: a negative `weight_milli` represents assistance. CSV,
+  authenticated JSON import, storage, public JSON, pages, shares, and Podrick
+  preserve the sign; all other scaled set quantities remain non-negative.
 - Strong labels effort `RIR/RPE`. On import, values below 6 are treated as RIR
   and converted with `RPE = 10 - RIR`; values at or above 6 are stored as RPE.
 - Lyfta shares label their timestamp in the user's local wall clock. The
@@ -248,7 +251,8 @@ API/filter/import contracts are in this file under "API contract".
   seconds `00`. The displayed weekday and declared exercise/set counts must
   agree with the parsed body. The reported aggregate volume is informational:
   do not recompute or validate it from the set rows.
-- Browser uploads accept pounds only, preserve whole-workout set order, map
+- Browser uploads accept pounds only, including both Lyfta negative-assistance
+  spellings (`- 45lbs` and `-45lbs`), preserve whole-workout set order, map
   `(Warm Up)`/`(Failure)` and supported set annotations to the existing set
   types, and convert `rir` to stored RPE hundredths. The same taxonomy
   classifier as the CSV importer handles exercises. Lyfta's numbered exercise
@@ -262,7 +266,9 @@ API/filter/import contracts are in this file under "API contract".
 - Load/distance are stored in thousandths and effort in hundredths. Keep
   integer scaling and explicit JSON nulls across importer, API, and UI.
 - Records (`/fitness/lift/*` badges) are derived from full set history when the
-  in-memory snapshot is rebuilt, never stored or imported.
+  in-memory snapshot is rebuilt, never stored or imported. Negative assisted
+  sets earn reps records only: assistance alone is not the resistance moved,
+  and it is not comparable to older positive-assistance history.
 - Run metrics use integer milliseconds and millimeters. Pace is always derived
   at render time; it is never stored. Garmin supplies an absolute source start
   instant; manual entry uses the first write's server timestamp. Both project
@@ -290,6 +296,8 @@ Public reads are `Cache-Control: no-store` and include
   field; all user-facing times are Eastern.
   each set is
   `{id,ordinal,exercise_name,raw_exercise_name,exercise_note,superset_id,weight_milli,weight_unit,reps,effort_hundredths,distance_milli,set_time_seconds,set_type,records}`;
+  `weight_milli` is a signed integer or `null`, with negatives representing
+  assistance;
   each record is `{level,kind}` (derived, see above). Pagination is by whole
   workout, so a workout's matching sets are never split across pages.
   `total_sets` and `total_workouts` cover the entire filtered result, not just
@@ -327,8 +335,9 @@ Public reads are `Cache-Control: no-store` and include
   `evening` (17:00-20:59), or `night` (21:00-04:59). All date, weekday, and
   time-of-day filtering uses `America/New_York`, including DST transitions.
 - Numbers: `min_load`/`max_load` are pounds converted exactly to
-  stored thousandths; `min_reps`/`max_reps` are integers; `max_effort` is a
-  decimal converted exactly to stored hundredths.
+  stored thousandths. Those filter inputs remain non-negative; `max_load=0`
+  includes assisted sets. `min_reps`/`max_reps` are integers; `max_effort` is
+  a decimal converted exactly to stored hundredths.
 - Flags: `has_record`, `has_superset`, `has_notes`, and `incomplete` accept
   `true` or `false`; `duration` is `normal` or `suspicious`. A set is
   incomplete when reps, distance, and set duration are all absent.
@@ -363,7 +372,9 @@ The write path is `POST /api/fitness/import`, protected by the
 A payload that includes a `records` key is rejected — records are derived,
 never imported. Nullable fields must be explicit JSON `null`. IDs,
 cross-references, UTC source dates, ordinals, scaled integers, enum values,
-and every string/array bound are validated before any write. The server
+and every string/array bound are validated before any write. `weight_milli`
+is bounded to `-1_000_000_000..=1_000_000_000`; the other set quantities are
+non-negative. The server
 derives the Eastern fields; callers never supply them. The response is
 `{received,added,skipped,version}`, where the counts refer to sets. Existing
 set IDs are skipped; a conflicting workout ordinal is an error rather than
