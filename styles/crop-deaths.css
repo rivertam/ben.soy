@@ -291,7 +291,7 @@
 /* This essay-length aside uses the shared popover treatment, but needs a
  * viewport-bound panel rather than the component's usual short note. */
 @media (min-width: 35.01rem) {
-  .crop-deaths #crop-uncle-farm:popover-open {
+  .crop-deaths #crop-uncle-farm:not([data-inline-popover-rail-active]):popover-open {
     position: fixed;
     top: 4rem;
     left: 50%;

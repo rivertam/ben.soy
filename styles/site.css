@@ -635,6 +635,204 @@ a.chip:focus-visible {
 }
 
 /*
+ * Wide-screen annotation rails. The shared browser driver measures the prose
+ * block around each trigger, opts in only when a real gutter remains, and
+ * supplies collision-free x/y/width properties. The CSS turns those
+ * decisions into a quiet terminal instrument: the focused channel brightens,
+ * neighboring channels recede, and an SVG signal trace runs back to the exact
+ * wrapped line fragment that owns the note.
+ */
+[data-inline-popover-lines] {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  display: none;
+  width: 100vw;
+  height: 100dvh;
+  overflow: visible;
+  pointer-events: none;
+}
+
+[data-inline-popover-lines="focused"] {
+  z-index: 19;
+}
+
+:root[data-inline-popover-rails] [data-inline-popover-lines] {
+  display: block;
+}
+
+/* Isolate the document so depth -1 means behind its content, not behind the
+   page canvas. The focused SVG is promoted past this plane, so its one active
+   relationship can cross the prose without altering content stacking. */
+:root[data-inline-popover-rails] body {
+  isolation: isolate;
+}
+
+[data-inline-popover-line] {
+  fill: none;
+  stroke: color-mix(in srgb, var(--color-patina) 62%, var(--color-hairline));
+  stroke-width: 1;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  opacity: 0.46;
+  vector-effect: non-scaling-stroke;
+  transition:
+    opacity 180ms ease,
+    stroke 180ms ease;
+}
+
+[data-inline-popover-line][data-inline-popover-focused] {
+  stroke: var(--color-oxide-hot);
+  stroke-width: 0.75;
+  stroke-dasharray: 2 2.5;
+  opacity: 0.95;
+}
+
+[data-inline-popover-port] {
+  fill: var(--color-patina);
+  stroke: var(--color-page);
+  stroke-width: 1;
+  opacity: 0.65;
+  transition:
+    fill 180ms ease,
+    opacity 180ms ease;
+}
+
+[data-inline-popover-port][data-inline-popover-focused] {
+  fill: var(--color-oxide-hot);
+  opacity: 1;
+}
+
+@media (min-width: 64rem) and (hover: hover) and (pointer: fine) {
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active]:popover-open {
+    position: fixed !important;
+    inset: auto !important;
+    top: var(--inline-popover-rail-y) !important;
+    left: var(--inline-popover-rail-x) !important;
+    z-index: 20;
+    width: var(--inline-popover-rail-width) !important;
+    max-width: none;
+    max-height: min(36rem, 66dvh) !important;
+    margin: 0 !important;
+    padding: 0.8rem 0.95rem 0.9rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    transform: translateX(0) !important;
+    color: var(--color-ink2);
+    background-color: color-mix(in srgb, var(--color-card) 93%, transparent);
+    border-color: color-mix(in srgb, var(--color-patina) 34%, var(--color-hairline));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-page) 72%, transparent),
+      0 0 1.25rem color-mix(in srgb, var(--color-patina) 7%, transparent),
+      0 0.8rem 2rem color-mix(in srgb, var(--color-ink) 22%, transparent);
+    opacity: 0.76;
+    isolation: isolate;
+    overscroll-behavior: contain;
+    scrollbar-color: var(--color-hairline) transparent;
+    scrollbar-width: thin;
+    backdrop-filter: blur(11px);
+    transition:
+      clip-path 220ms cubic-bezier(0.2, 0.78, 0.25, 1),
+      opacity 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease,
+      overlay 180ms allow-discrete,
+      display 180ms allow-discrete;
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active][data-inline-popover-side="left"]:popover-open {
+    border-right-color: color-mix(in srgb, var(--color-patina) 75%, var(--color-hairline));
+    clip-path: polygon(0.55rem 0, 100% 0, 100% 100%, 0 100%, 0 0.55rem);
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active][data-inline-popover-side="right"]:popover-open {
+    border-left-color: color-mix(in srgb, var(--color-patina) 75%, var(--color-hairline));
+    clip-path: polygon(0 0, calc(100% - 0.55rem) 0, 100% 0.55rem, 100% 100%, 0 100%);
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active]:is(:hover, [data-inline-popover-focused]):popover-open {
+    color: var(--color-ink);
+    background-color: color-mix(in srgb, var(--color-card) 97%, transparent);
+    border-color: color-mix(in srgb, var(--color-oxide-hot) 62%, var(--color-hairline));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-page) 78%, transparent),
+      0 0 1.5rem color-mix(in srgb, var(--color-oxide) 13%, transparent),
+      0 0.9rem 2.2rem color-mix(in srgb, var(--color-ink) 28%, transparent);
+    opacity: 1;
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active]
+    [data-inline-popover-kicker][data-inline-popover-channel]::before {
+    content: "ch." attr(data-inline-popover-channel) " / ";
+    color: var(--color-patina);
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-focused]
+    [data-inline-popover-kicker][data-inline-popover-channel]::before {
+    color: var(--color-oxide-hot);
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active]
+    .inline-popover-kicker {
+    margin-right: 1.25rem;
+    border-bottom-color: color-mix(in srgb, var(--color-patina) 35%, var(--color-hairline));
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active]
+    .inline-popover-close {
+    color: var(--color-patina);
+  }
+
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active]
+    .inline-popover-close:is(:hover, :focus-visible) {
+    color: var(--color-oxide-hot);
+  }
+
+  .inline-popover-trigger[data-inline-popover-current] {
+    color: var(--color-patina);
+    text-decoration-color: var(--color-oxide-hot);
+    text-decoration-thickness: 0.13em;
+    text-shadow: 0 0 0.7rem color-mix(in srgb, var(--color-patina) 25%, transparent);
+  }
+
+  @starting-style {
+    :root[data-inline-popover-rails]
+      .inline-popover-panel[data-inline-popover-rail-active][data-inline-popover-side="left"]:popover-open {
+      clip-path: polygon(
+        100% 2rem,
+        100% 2rem,
+        100% 2rem,
+        100% 2rem,
+        100% 2rem
+      );
+      opacity: 0.15;
+    }
+
+    :root[data-inline-popover-rails]
+      .inline-popover-panel[data-inline-popover-rail-active][data-inline-popover-side="right"]:popover-open {
+      clip-path: polygon(0 2rem, 0 2rem, 0 2rem, 0 2rem, 0 2rem);
+      opacity: 0.15;
+    }
+  }
+}
+
+@media (min-width: 64rem) and (hover: hover) and (pointer: fine) and (prefers-reduced-motion: reduce) {
+  :root[data-inline-popover-rails]
+    .inline-popover-panel[data-inline-popover-rail-active]:popover-open {
+    transition: none;
+  }
+}
+
+/*
  * Full-bleed: a band that escapes the shell's centered column (felix's hero
  * trick, extracted). 100vw includes the scrollbar gutter, so every immersive
  * page clips the overshoot — the rule lives here, beside the component that
