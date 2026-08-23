@@ -230,7 +230,8 @@
   content: counter(crop-note, decimal-leading-zero);
   grid-column: 1;
   grid-row: 1;
-  padding-top: 0.2rem;
+  text-align: right;
+  padding-top: 0.22rem;
   font-family: var(--font-meta);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
@@ -284,6 +285,21 @@
   .crop-notes p {
     grid-column: 2;
     padding-left: 0;
+  }
+}
+
+/* This essay-length aside uses the shared popover treatment, but needs a
+ * viewport-bound panel rather than the component's usual short note. */
+@media (min-width: 35.01rem) {
+  .crop-deaths #crop-uncle-farm:popover-open {
+    position: fixed;
+    top: 4rem;
+    left: 50%;
+    width: min(36rem, calc(100vw - 2.5rem));
+    max-height: calc(100dvh - 8rem);
+    margin: 0;
+    overflow-y: auto;
+    transform: translateX(-50%);
   }
 }
 

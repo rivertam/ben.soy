@@ -209,30 +209,60 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                         href: "https://doi.org/10.1016/j.gfs.2017.01.001",
                                         label: "Mottet et al. ↗"
                                     )
-                                ) ". Not all of that material is a crop. \"Human-edible\" is a
-                                food-competition category, not an animal-harm category.
+                                )",
+                                but the basic point still holds. Dedicated feed crops can have
+                                crop deaths. Crop residues share the original crop’s upstream
+                                harms.
                             "</p>
-                            <p>"
-                                The basic point still holds. Dedicated feed crops can have crop
-                                deaths. Crop residues share the original crop’s upstream harms.
-                                The calculator leaves those harder-to-allocate impacts out of its
-                                cheeseburger proxy rather than treating them as zero.
-                            "</p>
-                            <p>"
-                                What about an animal that ate no crops? The feed objection disappears,
-                                but the land-use problem does not. You are "
+                            <p>
+                                inline_popover(
+                                    id: "crop-uncle-farm",
+                                    label: "What about an animal that ate no crops?",
+                                    heading: "A pet peeve",
+                                    <span class="inline-popover-copy">
+                                        <span class="inline-popover-paragraph">"
+                                            I have seen dozens of people claim that
+                                            they get all of their meat from some down-to-earth homesteading
+                                            setup. I call this the \"my uncle's farm\" argument.
+                                        "</span>
+                                        <span class="inline-popover-paragraph">"
+                                            First of all: I don't believe these people. Maybe they visited
+                                            a good farm once upon a time. Maybe they really do get some of
+                                            their meat from their uncle's farm upstate. Maybe they even
+                                            homestead. I don't believe that they never go to restaurants,
+                                            order food online, or buy meat from the grocery store. It's not
+                                            terribly hard to have a homestead and outsource a lot of the
+                                            things that vegans complain about.
+                                        "</span>
+                                        <span class="inline-popover-paragraph">"
+                                            If all animal agriculture were replaced with so-called sustainable,
+                                            local, non-industrialized farms with 100% grass-fed and -finished
+                                            meat, a steak would cost hundreds of dollars and the majority of the
+                                            world would have to become vegan out of necessity. The only way the
+                                            economy can feed all Americans meat every day is through
+                                            industrialization.
+                                        "</span>
+                                        <span class="inline-popover-paragraph">"
+                                            That said, my general stance is that, if you are actually the person
+                                            raising and slaughtering, hunting, or fishing 95% of the animal
+                                            products you eat, I'm not talking to you and you can feel free to exit
+                                            this page believing that you've bested me. I also believe that these
+                                            patterns of behavior result in substantially reduced consumption of
+                                            animal products.
+                                        "</span>
+                                    </span>
+                                ) " Pastures and other direct land use from animal agriculture still
+                                uses pesticides, still removes wild habitats, and can cause pollution
+                                or other disruptions to local ecosystems. You are "
                                 inline_popover(
                                     id: "crop-comparative-land",
                                     label: "still probably responsible for more overall deaths",
                                     <span class="inline-popover-copy">
                                         <span class="inline-popover-paragraph">
-                                            "This is an inference. It is not a measured count of individual animal deaths."
+                                            "Joseph Poore and Thomas Nemecek assembled data from roughly 38,000 farms. Their study finds large variation among producers, but the conclusion is that animal products generally use much more land than plant substitutes."
                                         </span>
                                         <span class="inline-popover-paragraph">
-                                            "Joseph Poore and Thomas Nemecek assembled data from roughly 38,000 farms. Their study finds large variation among producers, but animal products generally use much more land than plant substitutes."
-                                        </span>
-                                        <span class="inline-popover-paragraph">
-                                            "More agricultural land creates more opportunities for habitat displacement and pest control. That is the inference used here; the paper itself measures environmental impacts, not animals killed."
+                                            "More agricultural land creates more opportunities for habitat displacement and pest control. That is the inference used here."
                                         </span>
                                     </span>
                                     ext_link(
@@ -240,7 +270,9 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                         href: "https://ora.ox.ac.uk/objects/uuid:b0b53649-5e93-4415-bf07-6b0b1227172f",
                                         label: "paper + data ↗"
                                     )
-                                ) " than a vegan who eats crops directly.
+                                ) " than a vegan who eats crops directly. But, even if this
+                                weren't true, if you " <em>"really"</em> " care about crop deaths,
+                                you wouldn't focus on vegans.
                             "</p>
                         </li>
                         <li>

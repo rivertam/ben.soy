@@ -7,12 +7,20 @@ use topcoat::{
 
 /// An inline, dismissible popover for citations and other short asides.
 /// `id` must be unique on the page and a valid CSS custom-ident fragment.
+/// `heading` can override the panel's visible kicker without changing the
+/// trigger text or accessible dialog label.
 /// Keep the child phrasing content; use block-styled spans for multiple paragraphs.
 #[component]
-pub async fn inline_popover(id: &str, label: &str, child: View) -> Result {
+pub async fn inline_popover(
+    id: &str,
+    label: &str,
+    #[default("")] heading: &str,
+    child: View,
+) -> Result {
     let anchor_name = format!("anchor-name: --inline-popover-{};", id);
     let position_anchor = format!("position-anchor: --inline-popover-{};", id);
     let href = format!("#{}", id);
+    let heading = if heading.is_empty() { label } else { heading };
     view! {
         <a
             href=(href.as_str())
@@ -39,7 +47,7 @@ pub async fn inline_popover(id: &str, label: &str, child: View) -> Result {
                 popovertargetaction="hide"
                 aria-label="Close popover"
             >"×"</button>
-            <span class="inline-popover-kicker">(label)</span>
+            <span class="inline-popover-kicker">(heading)</span>
             (child)
         </span>
     }
@@ -69,6 +77,25 @@ mod tests {
         assert!(html.contains("aria-controls=\"test-source\""));
         assert!(html.contains("id=\"test-source\" class=\"inline-popover-panel\""));
         assert!(!html.contains("popovertarget=\"test-source\">A long citation label"));
+    }
+
+    #[tokio::test]
+    async fn heading_override_does_not_rename_the_trigger_or_dialog() {
+        let cx = Cx::default();
+        let __cx = &cx;
+        let result: Result = view! {
+            inline_popover(
+                id: "test-aside",
+                label: "Clickable question?",
+                heading: "A pet peeve",
+                <span>"Aside detail"</span>
+            )
+        };
+        let html = result.unwrap().render(__cx);
+
+        assert!(html.contains(">Clickable question?</a>"));
+        assert!(html.contains("role=\"dialog\" aria-label=\"Clickable question?\""));
+        assert!(html.contains("class=\"inline-popover-kicker\">A pet peeve</span>"));
     }
 
     #[test]

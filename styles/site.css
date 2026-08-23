@@ -584,6 +584,11 @@ a.chip:focus-visible {
   margin-bottom: 0;
 }
 
+.inline-popover-copy:has(> .inline-popover-paragraph + .inline-popover-paragraph) >
+  .inline-popover-paragraph {
+  text-indent: 0.85em;
+}
+
 .inline-popover-photo {
   display: block;
   width: calc(100% + 2.2rem);
