@@ -1,3 +1,4 @@
+use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use topcoat::{
     Result,
     asset::{Asset, asset},
@@ -26,6 +27,49 @@ struct PhotoSlug(str);
 
 const STUDIO_PORTRAIT: Asset = asset!("./photos/2023-portrait.webp");
 const FELIX_HOME_JS: Asset = asset!("./felix-home.js");
+const FELIX_BIRTHDAY: Date = Date::constant(2021, 10, 31);
+const DAYS_PER_YEAR: f64 = 365.25;
+const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
+
+struct FelixAge {
+    calendar: String,
+    dog_years: String,
+}
+
+fn today_in_new_york() -> Date {
+    let eastern = TimeZone::get("America/New_York").expect("bundled time zone exists");
+    Timestamp::now().to_zoned(eastern).date()
+}
+
+fn felix_age(today: Date) -> FelixAge {
+    let mut years = today.year() - FELIX_BIRTHDAY.year();
+    let mut months = today.month() - FELIX_BIRTHDAY.month();
+
+    if today.day() < FELIX_BIRTHDAY.day() {
+        months -= 1;
+    }
+    if months < 0 {
+        years -= 1;
+        months += 12;
+    }
+
+    let calendar = if months == 0 {
+        format!("{years} {} old", if years == 1 { "year" } else { "years" })
+    } else {
+        format!(
+            "{years} {}, {months} {} old",
+            if years == 1 { "year" } else { "years" },
+            if months == 1 { "month" } else { "months" },
+        )
+    };
+    let days = FELIX_BIRTHDAY.duration_until(today).as_secs() / SECONDS_PER_DAY;
+    let dog_years = format!("{:.1} dog years", days as f64 / DAYS_PER_YEAR * 7.0);
+
+    FelixAge {
+        calendar,
+        dog_years,
+    }
+}
 
 const PHOTOS: &[Photo] = &[
     Photo {
@@ -173,6 +217,7 @@ async fn felix_page(initial_photo: &str) -> Result {
 #[component]
 pub(crate) async fn felix_content(initial_photo: &str, standalone: bool) -> Result {
     let meta = interest("felix");
+    let age = felix_age(today_in_new_york());
     view! {
             <header class="felix-hero" aria-labelledby="felix-title">
                 <img
@@ -185,12 +230,33 @@ pub(crate) async fn felix_content(initial_photo: &str, standalone: bool) -> Resu
                     loading=(if standalone { "eager" } else { "lazy" })
                     fetchpriority=(standalone.then_some("high"))
                 >
+                <span
+                    class="felix-portrait-safe-zone"
+                    data-dont-obstruct=""
+                    aria-hidden="true"
+                ></span>
+                <span
+                    class="felix-popover-slot felix-popover-slot-name"
+                    data-inline-popover-slot="felix-name"
+                    aria-hidden="true"
+                ></span>
+                <span
+                    class="felix-popover-slot felix-popover-slot-carolina"
+                    data-inline-popover-slot="felix-carolina"
+                    aria-hidden="true"
+                ></span>
+                <span
+                    class="felix-popover-slot felix-popover-slot-dingus"
+                    data-inline-popover-slot="felix-dingus"
+                    aria-hidden="true"
+                ></span>
                 <div class="felix-hero-copy">
                     <p class="felix-hero-stamp">"felix / oct 2023"</p>
                     <h1 id="felix-title" class="felix-hero-title">
                         inline_popover(
                             id: "felix-name",
                             label: meta.title,
+                            rail_slot: "felix-name",
                             <span class="inline-popover-preview">
                                 "He's named after Supreme Court Justice Felix Frankfurter.
                              In fact, all of my family's dogs are named after Jewish Supreme Court Justices,
@@ -207,6 +273,7 @@ pub(crate) async fn felix_content(initial_photo: &str, standalone: bool) -> Resu
                         inline_popover(
                             id: "carolina-dog",
                             label: "Carolina Dog",
+                            rail_slot: "felix-carolina",
                             <span class="inline-popover-preview">
                                 "A primitive dog \"breed\" native to the southeastern United States."
                             </span>
@@ -224,6 +291,7 @@ pub(crate) async fn felix_content(initial_photo: &str, standalone: bool) -> Resu
                         inline_popover(
                             id: "dingus",
                             label: "Dingus",
+                            rail_slot: "felix-dingus",
                             <span class="inline-popover-preview">
                                 "Singular of \"Dingo\""
                             </span>
@@ -240,35 +308,21 @@ pub(crate) async fn felix_content(initial_photo: &str, standalone: bool) -> Resu
                             <time
                                 class="felix-age-value"
                                 datetime="2021-10-31"
-                                data-felix-age=""
-                                data-birthday="2021-10-31"
                             >
-                                "born around Oct. 31, 2021"
+                                (age.calendar.as_str())
                             </time>
                         </span>
                         <span class="felix-age-measure">
-                            inline_popover(
-                                id: "dog-years",
-                                label: "dog years",
-                                <span class="inline-popover-preview">
-                                    "The first silly vibe-coded website I ever made; the older cousin of this site"
-                                </span>
-                                ext_link(
-                                    class: "quiet-link",
-                                    href: "https://www.saamd.com",
-                                    label: "saamd.com →"
-                                )
-                            )
-                            <span class="felix-age-value" data-felix-dog-age="">
-                                "7 per calendar year"
-                            </span>
+                            <span class="felix-age-value">(age.dog_years.as_str())</span>
                         </span>
                     </p>
 
-                    <a class="felix-hero-scroll" href="#felix-notes">
-                        "meet Felix "
-                        <span aria-hidden="true">"↓"</span>
-                    </a>
+                    <div>
+                        <a class="felix-hero-scroll" href="#felix-notes">
+                            "meet Felix "
+                            <span aria-hidden="true">"↓"</span>
+                        </a>
+                    </div>
                 </div>
             </header>
             if standalone {
@@ -387,4 +441,25 @@ pub(crate) async fn felix_content(initial_photo: &str, standalone: bool) -> Resu
 #[route(GET "/interests/felix")]
 async fn legacy_felix() -> Result {
     Err(redirect_permanent("/felix").into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn age_is_calculated_for_the_server_render() {
+        let age = felix_age(Date::constant(2026, 8, 23));
+
+        assert_eq!(age.calendar, "4 years, 9 months old");
+        assert_eq!(age.dog_years, "33.7 dog years");
+    }
+
+    #[test]
+    fn birthday_has_no_month_remainder() {
+        let age = felix_age(Date::constant(2026, 10, 31));
+
+        assert_eq!(age.calendar, "5 years old");
+        assert_eq!(age.dog_years, "35.0 dog years");
+    }
 }

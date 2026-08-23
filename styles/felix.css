@@ -94,6 +94,7 @@ body[data-nav-hidden="true"]:has(.felix-hero) .felix-home:focus-visible {
 }
 
 @media (width < 40rem) {
+
   /* The pane owns its gutters: the hero bleeds edge to edge, the sections
      below reclaim the deck's usual padding. */
   .pane-felix {
@@ -128,6 +129,81 @@ body[data-nav-hidden="true"]:has(.felix-hero) .felix-home:focus-visible {
   height: 100%;
   object-fit: cover;
   object-position: center;
+}
+
+/* A geometry-only guard around the portrait's visual subject. Annotation
+   cards may use the surrounding dark-room negative space, but their traces
+   disappear behind Felix instead of drawing across his face. */
+.felix-portrait-safe-zone {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: 32vw;
+  bottom: 27%;
+  left: 34vw;
+  pointer-events: none;
+}
+
+/* Named, geometry-only landing points let the hero compose its annotations
+   inside the photograph instead of forcing them into generic page gutters.
+   The shared solver reads these rectangles, then still applies collision and
+   protected-area rules before committing to them. */
+.felix-popover-slot {
+  position: absolute;
+  z-index: -1;
+  display: none;
+  width: var(--felix-popover-slot-width);
+  height: 1px;
+  pointer-events: none;
+}
+
+@media (min-width: 64rem) and (hover: hover) and (pointer: fine) {
+  .felix-popover-slot {
+    display: block;
+  }
+
+  .felix-popover-slot-name {
+    --felix-popover-slot-width: 15.5rem;
+    top: 24%;
+    left: max(1rem, calc(34vw - var(--felix-popover-slot-width) - 1.25rem));
+  }
+
+  .felix-popover-slot-dingus {
+    --felix-popover-slot-width: 12.5rem;
+    top: 43%;
+    left: max(1rem, calc(34vw - var(--felix-popover-slot-width) - 1.25rem));
+  }
+
+  .felix-popover-slot-carolina {
+    --felix-popover-slot-width: 18.75rem;
+    bottom: 4rem;
+    left: calc(clamp(1.5rem, 6vw, 5rem) + 13rem);
+  }
+
+  .felix-age-measure:last-child {
+    anchor-name: --felix-dog-years;
+  }
+}
+
+@supports (position-anchor: --inline-popover-test) {
+  @media (min-width: 64rem) and (hover: hover) and (pointer: fine) {
+    .felix-popover-slot-name {
+      position-anchor: --inline-popover-felix-name;
+      top: calc(anchor(top) - 16rem);
+    }
+
+    .felix-popover-slot-dingus {
+      position-anchor: --inline-popover-dingus;
+      top: calc(anchor(top) - 18rem);
+    }
+
+    .felix-popover-slot-carolina {
+      position-anchor: --felix-dog-years;
+      top: calc(anchor(bottom) + 1rem);
+      bottom: auto;
+      left: anchor(left);
+    }
+  }
 }
 
 .felix-hero-copy {
@@ -167,7 +243,7 @@ body[data-nav-hidden="true"]:has(.felix-hero) .felix-home:focus-visible {
   gap: 0.35rem;
 }
 
-.felix-age-measure + .felix-age-measure {
+.felix-age-measure+.felix-age-measure {
   padding-left: 0.75rem;
   border-left: 1px solid rgb(244 245 247 / 25%);
 }
@@ -254,6 +330,7 @@ body[data-nav-hidden="true"]:has(.felix-hero) .felix-home:focus-visible {
 }
 
 @supports (position-anchor: --inline-popover-test) {
+
   .felix-hero-title .inline-popover-panel:popover-open,
   .felix-hero-lede .inline-popover-panel:popover-open,
   .felix-age .inline-popover-panel:popover-open {
@@ -344,7 +421,7 @@ body:has(.felix-hero) .felix-photo-spread {
   border-top: 1px solid #493f38;
 }
 
-body:has(.felix-hero) .felix-photo-spread > .rail-stamp {
+body:has(.felix-hero) .felix-photo-spread>.rail-stamp {
   color: #d58a62;
   font-size: 0.7rem;
   letter-spacing: 0.2em;
@@ -627,6 +704,7 @@ body:has(.felix-hero) .felix-photo-button:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   .felix-photo-button img,
   .felix-photo-expand {
     transition: none;

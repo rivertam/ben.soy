@@ -408,7 +408,12 @@ pub async fn shell(
                 </footer>
                 // The primary nav: Rust owns its windows and message surface;
                 // session.js adds only client-local clock and key behavior.
-                <nav class="tmux-bar" aria-label="tmux windows" data-session-bar="">
+                <nav
+                    class="tmux-bar"
+                    aria-label="tmux windows"
+                    data-session-bar=""
+                    data-dont-obstruct=""
+                >
                     <a class="tmux-session" href="/">">_ bens-site"</a>
                     <div class="tmux-windows">
                         for win in windows.iter() {
@@ -544,7 +549,7 @@ async fn account_dialog(cx: &Cx, return_to: &str) -> Result {
 #[component]
 async fn corner_rack() -> Result {
     view! {
-        <div class="corner-rack">
+        <div class="corner-rack" data-dont-obstruct="">
             <div class="band-wrap" hidden="">
                 <input
                     type="range"

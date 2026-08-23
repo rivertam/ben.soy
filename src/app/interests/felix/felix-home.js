@@ -1,31 +1,5 @@
 const home = document.querySelector("[data-felix-home]");
 const hero = document.querySelector(".felix-hero");
-const age = document.querySelector("[data-felix-age]");
-const dogAge = document.querySelector("[data-felix-dog-age]");
-
-if (age) {
-  const [year, month, day] = age.dataset.birthday.split("-").map(Number);
-  const birthday = new Date(year, month - 1, day);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  let years = today.getFullYear() - birthday.getFullYear();
-  let months = today.getMonth() - birthday.getMonth();
-
-  if (today.getDate() < birthday.getDate()) months -= 1;
-  if (months < 0) {
-    years -= 1;
-    months += 12;
-  }
-
-  const parts = [`${years} ${years === 1 ? "year" : "years"}`];
-  if (months) parts.push(`${months} ${months === 1 ? "month" : "months"}`);
-  age.textContent = `${parts.join(", ")} old`;
-
-  if (dogAge) {
-    const yearsInDogYears = ((today - birthday) / (365.25 * 24 * 60 * 60 * 1000)) * 7;
-    dogAge.textContent = `${yearsInDogYears.toFixed(1)} dog years`;
-  }
-}
 
 if (home && hero) {
   const observer = new IntersectionObserver(

@@ -21,7 +21,7 @@ use topcoat::{
 
 use crate::{
     app::login::viewer,
-    components::{ext_link, inline_popover, link_label},
+    components::link_label,
     content::{
         access::is_admin,
         interests::{INTERESTS, Interest},
@@ -565,24 +565,6 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
                         "Software developer in New York"
                         // The phone deck's one hint; desktop has the tmux windows.
                         <span class="text-muted sm:hidden">" · swipe for more →"</span>
-                    </p>
-                    <p class="mt-5 hidden font-meta text-[13px] text-muted sm:block">
-                        "now — building "
-                        inline_popover(
-                            id: "digichem-cite",
-                            label: "DigiChem",
-                            <span class="inline-popover-preview">
-                                "A startup that was trying to do digital manufacturing of specialty \
-                                 chemicals and is currently sourcing ideas."
-                            </span>
-                            ext_link(
-                                class: "quiet-link",
-                                href: "https://digichem.com",
-                                label: "digichem.com →"
-                            )
-                        )"
-                        · I contain " <a class="underline" href="#more">"multitudes"</a>
-                        <span class="log-caret text-oxide">"▍"</span>
                     </p>
                 </div>
                 if can_log {

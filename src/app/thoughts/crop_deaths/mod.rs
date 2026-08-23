@@ -116,6 +116,65 @@ async fn crop_deaths(cx: &Cx) -> Result {
 
                     <ol class="crop-notes" data-navigable="">
                         <li>
+                            <h3>"Crop deaths aren't actually that common"</h3>
+                            <p>"
+                                Deaths attributed to one hectare over a crop year are not deaths per lunch.
+                                The food from that hectare is divided across thousands of meals.
+                            "</p>
+                            <p>"
+                                While a number of studies have been conducted into crop deaths,
+                                it's very difficult to get real data, so we have to rely
+                                on estimates. I made a calculator to do Fermi estimation, which
+                                you can check out at the bottom of this page.
+                                It's built from "
+                                inline_popover(
+                                    id: "crop-field-evidence",
+                                    label: "sparse field evidence and explicit modeling choices",
+                                    <span class="inline-popover-copy">
+                                        <span class="inline-popover-paragraph">"
+                                            A 2018 paper by Bob Fischer and Andy Lamey audits the thin
+                                            empirical record. It explains why famous global totals depend
+                                            on definitions and moral choices as well as field measurements.
+                                        "</span>
+                                        <span class="inline-popover-paragraph">"
+                                            A 2023 Australian field study observed two machinery deaths
+                                            among collared mice thought alive at harvest. The measured
+                                            population decline was only marginal. That result is useful,
+                                            but it is not a universal death rate.
+                                        "</span>
+                                        <span class="inline-popover-paragraph">"
+                                            For pesticides, EPA's framework is the other warning:
+                                            toxicity alone is not field mortality. Exposure, environmental
+                                            fate, species, and uncertainty all change ecological risk.
+                                        "</span>
+                                    </span>
+                                    ext_link(
+                                        class: "quiet-link crop-inline-source-link",
+                                        href: "https://doi.org/10.1007/s10806-018-9733-8",
+                                        label: "estimate audit ↗"
+                                    )
+                                    ext_link(
+                                        class: "quiet-link crop-inline-source-link",
+                                        href: "https://doi.org/10.1002/ps.7670",
+                                        label: "2023 field study ↗"
+                                    )
+                                    ext_link(
+                                        class: "quiet-link crop-inline-source-link",
+                                        href: "https://www.epa.gov/pesticide-science-and-assessing-pesticide-risks/factsheet-ecological-risk-assessment-pesticides",
+                                        label: "EPA method ↗"
+                                    )
+                                ) ".
+                            "</p>
+                            <p>"
+                                Even in the worst case, such as McDonald's cheeseburgers (bun
+                                and beef), you'd have to eat hundreds of meals in order to be
+                                responsible for even one rodent's death in a wheat field. By
+                                contrast, one entire chicken has less than one day's worth of
+                                nutrition.
+                            "</p>
+                        </li>
+
+                        <li>
                             <h3>"Farmed animals eat crops too"</h3>
                             <p>"
                                 Roughly "
@@ -279,58 +338,6 @@ async fn crop_deaths(cx: &Cx) -> Result {
                             "</p>
                         </li>
                         <li>
-                            <h3>"Not that much land can make a lot of food"</h3>
-                            <p>"
-                                Deaths attributed to one hectare over a crop year are not deaths per lunch.
-                                The food from that hectare is divided across many meals.
-                            "</p>
-                            <p>"
-                                The calculator below makes that scale visible. It is built from "
-                                inline_popover(
-                                    id: "crop-field-evidence",
-                                    label: "sparse field evidence and explicit modeling choices",
-                                    <span class="inline-popover-copy">
-                                        <span class="inline-popover-paragraph">"
-                                            A 2018 paper by Bob Fischer and Andy Lamey audits the thin
-                                            empirical record. It explains why famous global totals depend
-                                            on definitions and moral choices as well as field measurements.
-                                        "</span>
-                                        <span class="inline-popover-paragraph">"
-                                            A 2023 Australian field study observed two machinery deaths
-                                            among collared mice thought alive at harvest. The measured
-                                            population decline was only marginal. That result is useful,
-                                            but it is not a universal death rate.
-                                        "</span>
-                                        <span class="inline-popover-paragraph">"
-                                            For pesticides, EPA's framework is the other warning:
-                                            toxicity alone is not field mortality. Exposure, environmental
-                                            fate, species, and uncertainty all change ecological risk.
-                                        "</span>
-                                    </span>
-                                    ext_link(
-                                        class: "quiet-link crop-inline-source-link",
-                                        href: "https://doi.org/10.1007/s10806-018-9733-8",
-                                        label: "estimate audit ↗"
-                                    )
-                                    ext_link(
-                                        class: "quiet-link crop-inline-source-link",
-                                        href: "https://doi.org/10.1002/ps.7670",
-                                        label: "2023 field study ↗"
-                                    )
-                                    ext_link(
-                                        class: "quiet-link crop-inline-source-link",
-                                        href: "https://www.epa.gov/pesticide-science-and-assessing-pesticide-risks/factsheet-ecological-risk-assessment-pesticides",
-                                        label: "EPA method ↗"
-                                    )
-                                ) ".
-                            "</p>
-                            <p>"
-                                The beef example deliberately assigns a large feed-crop equivalent to
-                                each cheeseburger. Even there, the calculation spreads one represented
-                                field-animal death across the food produced from its share of a hectare.
-                            "</p>
-                        </li>
-                        <li>
                             <h3>"I care about some animals more than others"</h3>
                             <p>"
                                 I know there are some vegans who deny this, and there are even
@@ -344,8 +351,8 @@ async fn crop_deaths(cx: &Cx) -> Result {
                                 I'm also, generally, a mammal supremacist. This is related as
                                 well to my size-supremacy; I believe that an elephant's death
                                 is substantially more tragic than a chicken's. The hierarchy
-                                here is not clear but one very obvious thing is: I don't care
-                                that much about bugs/insects.
+                                here is not clear but one very obvious thing is: I care a whole
+                                lot more about pigs than I do about insects.
                             "</p>
                             <p>"
                                 There is evidence that bugs have something approaching feelings,
