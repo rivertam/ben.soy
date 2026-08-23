@@ -499,6 +499,7 @@ a.chip:focus-visible {
   font: inherit;
   line-height: inherit;
   letter-spacing: inherit;
+  text-align: inherit;
   vertical-align: baseline;
   cursor: pointer;
   appearance: none;
@@ -567,6 +568,20 @@ a.chip:focus-visible {
 
 .inline-popover-preview {
   color: var(--color-ink);
+}
+
+.inline-popover-copy {
+  display: block;
+  margin-right: 1.5rem;
+}
+
+.inline-popover-paragraph {
+  display: block;
+  margin-bottom: 0.65rem;
+}
+
+.inline-popover-paragraph:last-child {
+  margin-bottom: 0;
 }
 
 .inline-popover-photo {

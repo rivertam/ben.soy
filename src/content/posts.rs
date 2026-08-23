@@ -4,7 +4,11 @@
 
 use std::sync::LazyLock;
 
-use topcoat::asset::Asset;
+use topcoat::{
+    asset::Asset,
+    context::Cx,
+    router::{Body, IntoResponse, RouteFuture, error::redirect_permanent, uri},
+};
 
 #[derive(Clone, Copy)]
 pub enum PostKind {
@@ -26,6 +30,7 @@ pub struct PostPhoto {
 #[derive(Clone, Copy)]
 pub struct Post {
     pub slug: &'static str,
+    pub shortlink: Option<&'static str>,
     pub title: &'static str,
     pub date: &'static str,
     pub teaser: &'static str,
@@ -39,6 +44,8 @@ inventory::collect!(Post);
 
 /// Declare a post beside its page. The generated `POST` constant is also
 /// available to the page itself, keeping its title/date/copy single-sourced.
+/// An optional `shortlink: "name"` after `slug` registers a permanent redirect
+/// from `/name` to the post's canonical `/thoughts/{slug}` path.
 #[macro_export]
 macro_rules! register_post {
     (@photo) => {
@@ -58,9 +65,29 @@ macro_rules! register_post {
     (@read_label $label:literal) => {
         $label
     };
+    (@shortlink) => {
+        None
+    };
+    (@shortlink $shortlink:literal) => {
+        Some($shortlink)
+    };
+    (@shortlink_route) => {};
+    (@shortlink_route $shortlink:literal) => {
+        const __POST_SHORTLINK: ::topcoat::router::RouteFn =
+            ::topcoat::router::RouteFn::const_new(
+                ::topcoat::router::OwnedMethods::One(::topcoat::router::Method::GET),
+                ::std::borrow::Cow::Borrowed(::topcoat::router::Path::new(concat!(
+                    "/",
+                    $shortlink
+                ))),
+                $crate::content::posts::shortlink_handler,
+            );
+        inventory::submit! { __POST_SHORTLINK }
+    };
     (
         essay,
         slug: $slug:literal,
+        $(shortlink: $shortlink:literal,)?
         title: $title:literal,
         date: $date:literal,
         teaser: $teaser:literal,
@@ -75,6 +102,7 @@ macro_rules! register_post {
     ) => {
         const POST: $crate::content::posts::Post = $crate::content::posts::Post {
             slug: $slug,
+            shortlink: $crate::register_post!(@shortlink $($shortlink)?),
             title: $title,
             date: $date,
             teaser: $teaser,
@@ -86,10 +114,12 @@ macro_rules! register_post {
             kind: $crate::content::posts::PostKind::Essay,
         };
         inventory::submit! { POST }
+        $crate::register_post!(@shortlink_route $($shortlink)?);
     };
     (
         note,
         slug: $slug:literal,
+        $(shortlink: $shortlink:literal,)?
         title: $title:literal,
         date: $date:literal,
         teaser: $teaser:literal,
@@ -106,6 +136,7 @@ macro_rules! register_post {
     ) => {
         const POST: $crate::content::posts::Post = $crate::content::posts::Post {
             slug: $slug,
+            shortlink: $crate::register_post!(@shortlink $($shortlink)?),
             title: $title,
             date: $date,
             teaser: $teaser,
@@ -120,6 +151,7 @@ macro_rules! register_post {
             },
         };
         inventory::submit! { POST }
+        $crate::register_post!(@shortlink_route $($shortlink)?);
     };
 }
 
@@ -138,6 +170,33 @@ pub static POSTS: LazyLock<Vec<&'static Post>> = LazyLock::new(|| {
 pub fn post_for_path(path: &str) -> Option<&'static Post> {
     let slug = path.strip_prefix("/thoughts/")?;
     POSTS.iter().copied().find(|post| post.slug == slug)
+}
+
+/// The registered post for an exact root-level shortlink path.
+pub fn post_for_shortlink_path(path: &str) -> Option<&'static Post> {
+    let shortlink = path.strip_prefix('/')?;
+    if shortlink.is_empty() || shortlink.contains('/') {
+        return None;
+    }
+    POSTS
+        .iter()
+        .copied()
+        .find(|post| post.shortlink == Some(shortlink))
+}
+
+#[doc(hidden)]
+pub(crate) fn shortlink_handler<'cx>(cx: &'cx Cx, _body: Body) -> RouteFuture<'cx> {
+    Box::pin(async move {
+        let request_uri = uri(cx);
+        let post = post_for_shortlink_path(request_uri.path())
+            .expect("register_post! only routes registered shortlinks");
+        let mut target = format!("/thoughts/{}", post.slug);
+        if let Some(query) = request_uri.query() {
+            target.push('?');
+            target.push_str(query);
+        }
+        redirect_permanent(&target).into_response(cx)
+    })
 }
 
 #[cfg(test)]
@@ -163,6 +222,12 @@ mod tests {
                 "non-canonical slug {}",
                 post.slug
             );
+            if let Some(shortlink) = post.shortlink {
+                assert!(
+                    canonical_slug(shortlink),
+                    "non-canonical shortlink {shortlink}"
+                );
+            }
             assert!(
                 !post.slug.is_empty()
                     && !post.title.is_empty()
@@ -190,6 +255,14 @@ mod tests {
                 "duplicate post slug {}",
                 post.slug
             );
+            if let Some(shortlink) = post.shortlink {
+                assert!(
+                    POSTS[index + 1..]
+                        .iter()
+                        .all(|other| other.shortlink != Some(shortlink)),
+                    "duplicate post shortlink {shortlink}"
+                );
+            }
         }
     }
 
@@ -208,5 +281,43 @@ mod tests {
         assert!(post_for_path("/thoughts").is_none());
         assert!(post_for_path("/thoughts/").is_none());
         assert!(post_for_path("/log").is_none());
+    }
+
+    #[test]
+    fn exact_shortlink_paths_resolve_through_the_registry() {
+        for post in POSTS.iter() {
+            let Some(shortlink) = post.shortlink else {
+                continue;
+            };
+            let path = format!("/{shortlink}");
+            assert_eq!(
+                post_for_shortlink_path(&path).map(|found| found.slug),
+                Some(post.slug)
+            );
+            assert!(post_for_shortlink_path(&format!("{path}/")).is_none());
+            assert!(post_for_shortlink_path(&format!("{path}/more")).is_none());
+        }
+
+        assert!(post_for_shortlink_path("/").is_none());
+        assert!(post_for_shortlink_path("/not-a-shortlink").is_none());
+        assert!(post_for_shortlink_path("thoughts").is_none());
+    }
+
+    #[tokio::test]
+    async fn shortlinks_redirect_permanently_and_preserve_the_query() {
+        use topcoat::router::{Body, Request, Router, RouterBuilderDiscoverExt, header};
+
+        let router = Router::builder().discover().build();
+        let request = Request::builder()
+            .uri("/crops?food=tofu&meal=2")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.handle(request).await;
+
+        assert_eq!(response.status(), 308);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/thoughts/crop-deaths?food=tofu&meal=2"
+        );
     }
 }

@@ -1,4 +1,5 @@
 pub(crate) mod comments;
+pub mod crop_deaths;
 pub mod pesky_code;
 pub mod planes;
 pub mod saamd;
