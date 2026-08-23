@@ -274,7 +274,7 @@ async fn permissions(cx: &Cx) -> Result {
 async fn grant(cx: &Cx, body: Body) -> Result<Response> {
     let form = match gate(cx, body).await {
         Ok(form) => form,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let Some(email) = access::normalize_email(&form.email) else {
         return Ok(back("invalid"));
@@ -295,7 +295,7 @@ async fn grant(cx: &Cx, body: Body) -> Result<Response> {
 async fn revoke(cx: &Cx, body: Body) -> Result<Response> {
     let form = match gate(cx, body).await {
         Ok(form) => form,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let Some(email) = access::normalize_email(&form.email) else {
         return Ok(back("invalid"));
@@ -351,27 +351,33 @@ struct PermissionForm {
 }
 
 /// The shared preamble both POSTs run before believing anything in the body.
-async fn gate(cx: &Cx, body: Body) -> std::result::Result<PermissionForm, Response> {
+async fn gate(cx: &Cx, body: Body) -> std::result::Result<PermissionForm, Box<Response>> {
     let Some(current) = viewer(cx) else {
-        return Err(see_other(LOGIN_REDIRECT));
+        return Err(Box::new(see_other(LOGIN_REDIRECT)));
     };
     if !is_admin(&current.email) {
-        return Err(plain(StatusCode::NOT_FOUND, "not found"));
+        return Err(Box::new(plain(StatusCode::NOT_FOUND, "not found")));
     }
     if !is_same_origin(headers(cx)) {
-        return Err(plain(StatusCode::FORBIDDEN, "forbidden"));
+        return Err(Box::new(plain(StatusCode::FORBIDDEN, "forbidden")));
     }
     if !is_form_content_type(headers(cx)) {
-        return Err(plain(
+        return Err(Box::new(plain(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Content-Type must be application/x-www-form-urlencoded",
-        ));
+        )));
     }
     let bytes = match to_bytes(body, BODY_LIMIT_BYTES).await {
         Ok(bytes) => bytes,
-        Err(_) => return Err(plain(StatusCode::PAYLOAD_TOO_LARGE, "form is too large")),
+        Err(_) => {
+            return Err(Box::new(plain(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "form is too large",
+            )));
+        }
     };
-    parse_permission_form(&bytes).ok_or_else(|| plain(StatusCode::BAD_REQUEST, "bad form"))
+    parse_permission_form(&bytes)
+        .ok_or_else(|| Box::new(plain(StatusCode::BAD_REQUEST, "bad form")))
 }
 
 /// Exactly one `path` and one `email` field, nothing else. Invalid UTF-8
