@@ -6,7 +6,7 @@ use topcoat::{
 
 use crate::{
     components::{back_link, ext_link, inline_popover, page_head, rail_section, shell, video_card},
-    content::interests::interest,
+    content::{drum_covers::DRUM_COVERS, interests::interest},
 };
 
 #[page("/drums")]
@@ -21,14 +21,12 @@ async fn drums() -> Result {
                 class: "mt-4",
                 stamp: "footage",
                 <div class="flex flex-wrap gap-5">
-                    video_card(
-                        youtube_id: "VaKI7J2M2Ms",
-                        label: "Taylor Swift cover →"
-                    )
-                    video_card(
-                        youtube_id: "8lrjsP1KWrY",
-                        label: "Manchester Orchestra cover →"
-                    )
+                    for cover in DRUM_COVERS.iter() {
+                        video_card(
+                            youtube_id: cover.youtube_id,
+                            label: cover.card_label
+                        )
+                    }
                 </div>
             )
             rail_section(

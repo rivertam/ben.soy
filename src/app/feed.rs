@@ -714,7 +714,9 @@ mod tests {
         )));
         // Internal update hrefs got the origin prefix; externals kept theirs.
         assert!(xml.contains(&format!("<link>{ORIGIN}/keyboards</link>")));
-        assert!(xml.contains("<link>https://www.youtube.com/watch?v=8lrjsP1KWrY</link>"));
+        for cover in crate::content::drum_covers::DRUM_COVERS.iter() {
+            assert!(xml.contains(&format!("<link>{}</link>", cover.watch_url)));
+        }
         // Serial-derived guids span 0001..=count.
         assert!(xml.contains(&format!(
             "{ORIGIN}/log/{:04}",

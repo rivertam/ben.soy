@@ -1,4 +1,5 @@
 pub mod access;
+pub mod drum_covers;
 pub mod experience;
 pub mod interests;
 pub mod logbook;

@@ -1,13 +1,17 @@
 //! The logbook: the site's master feed, newest first. Posts register beside
-//! their page; the updates below are the only entries authored here. The
-//! `/log` timeline and `/feed.xml` both derive from the merged registry.
+//! their page, drum covers live in their shared gallery registry, and the
+//! remaining updates are authored here. The `/log` timeline and `/feed.xml`
+//! both derive from the merged registry.
 //!
 //! Serial numbers count from the oldest entry: entry at index `i` is
 //! `№ {LOG.len() - i}` (zero-padded to four digits, see [`serial`]).
 
 use std::sync::LazyLock;
 
-use crate::content::posts::{POSTS, PostKind, PostPhoto};
+use crate::content::{
+    drum_covers::DRUM_COVERS,
+    posts::{POSTS, PostKind, PostPhoto},
+};
 
 /// One logbook entry. The variants render differently (card / pull-quote /
 /// one-liner) but share a date and tags for filtering.
@@ -83,7 +87,7 @@ pub fn serial(index: usize) -> String {
     format!("№ {:04}", LOG.len() - index)
 }
 
-const UPDATES: [Entry; 3] = [
+const UPDATES: [Entry; 2] = [
     Entry::Update {
         date: "2026-06-28",
         stamp: "pr",
@@ -92,15 +96,6 @@ const UPDATES: [Entry; 3] = [
         href: "/keyboards",
         link_label: "keyboards →",
         tags: &["keyboards"],
-    },
-    Entry::Update {
-        date: "2026-05-19",
-        stamp: "footage",
-        label: "drums",
-        body: "New cover on tape:",
-        href: "https://www.youtube.com/watch?v=8lrjsP1KWrY",
-        link_label: "Manchester Orchestra ↗",
-        tags: &["music"],
     },
     Entry::Update {
         date: "2025-06-02",
@@ -115,6 +110,15 @@ const UPDATES: [Entry; 3] = [
 
 pub static LOG: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     let mut entries = UPDATES.to_vec();
+    entries.extend(DRUM_COVERS.iter().map(|cover| Entry::Update {
+        date: cover.published,
+        stamp: "footage",
+        label: "drums",
+        body: "New cover on tape:",
+        href: cover.watch_url,
+        link_label: cover.log_link_label,
+        tags: &["music"],
+    }));
     entries.extend(POSTS.iter().map(|post| match post.kind {
         PostKind::Essay => Entry::Essay {
             date: post.date,
@@ -133,7 +137,9 @@ pub static LOG: LazyLock<Vec<Entry>> = LazyLock::new(|| {
             tags: post.tags,
         },
     }));
-    entries.sort_unstable_by(|a, b| b.date().cmp(a.date()));
+    // Stable sorting keeps source order deterministic when two things share
+    // a publication date (currently a cover and an essay on 2026-08-23).
+    entries.sort_by(|a, b| b.date().cmp(a.date()));
     entries
 });
 
@@ -165,14 +171,14 @@ mod tests {
     }
 
     #[test]
-    fn dates_are_iso_and_strictly_newest_first() {
+    fn dates_are_iso_and_newest_first() {
         for entry in LOG.iter() {
             assert!(iso_date(entry.date()), "bad date: {}", entry.date());
         }
         for pair in LOG.windows(2) {
             assert!(
-                pair[0].date() > pair[1].date(),
-                "not strictly newest-first: {} then {}",
+                pair[0].date() >= pair[1].date(),
+                "not newest-first: {} then {}",
                 pair[0].date(),
                 pair[1].date()
             );
@@ -240,6 +246,28 @@ mod tests {
                 })
                 .count();
             assert_eq!(matches, 1, "log entries for {}", post.slug);
+        }
+    }
+
+    #[test]
+    fn every_drum_cover_becomes_exactly_one_log_entry() {
+        for cover in DRUM_COVERS.iter() {
+            let matches = LOG
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry,
+                        Entry::Update {
+                            date,
+                            stamp: "footage",
+                            label: "drums",
+                            href,
+                            ..
+                        } if *date == cover.published && *href == cover.watch_url
+                    )
+                })
+                .count();
+            assert_eq!(matches, 1, "log entries for {}", cover.youtube_id);
         }
     }
 
