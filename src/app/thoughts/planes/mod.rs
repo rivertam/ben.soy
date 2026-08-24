@@ -20,6 +20,7 @@ mod sources;
 crate::register_post!(
     essay,
     slug: "how-bad-are-planes",
+    shortlink: "planes",
     title: "How bad are planes?",
     date: "2026-07-12",
     teaser: "Why I don't generally take planes for leisure",
