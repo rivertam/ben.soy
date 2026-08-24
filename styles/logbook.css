@@ -368,3 +368,124 @@
 .log-update-link:focus-visible {
   color: var(--color-oxide);
 }
+
+/* Drum footage: a compact contact-sheet card inside the timeline. The whole
+   plate is the outbound YouTube link, so mouse, touch, and rail-keyboard
+   navigation all share one target. */
+.log-cover-link {
+  display: grid;
+  width: min(100%, 34rem);
+  overflow: hidden;
+  color: var(--color-ink2);
+  text-decoration: none;
+  background: color-mix(in srgb, var(--color-card) 82%, var(--color-page));
+  border: 1px solid var(--color-hairline);
+  transition: border-color 160ms ease;
+}
+
+.log-cover-link:hover {
+  border-color: var(--color-oxide);
+}
+
+.log-cover-link:focus-visible {
+  outline: 2px solid var(--color-oxide-hot);
+  outline-offset: 3px;
+}
+
+.log-cover-media {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: var(--color-hairline);
+}
+
+.log-cover-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 180ms ease;
+}
+
+.log-cover-link:hover .log-cover-media img,
+.log-cover-link:focus-visible .log-cover-media img {
+  transform: scale(1.025);
+}
+
+.log-cover-play {
+  position: absolute;
+  right: 0.7rem;
+  bottom: 0.7rem;
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  padding-left: 0.12rem;
+  font-family: var(--font-meta);
+  font-size: 0.75rem;
+  color: var(--color-page);
+  background: var(--color-oxide);
+  border: 1px solid var(--color-oxide-hot);
+  transform: rotate(-2deg);
+}
+
+.log-cover-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0.85rem 1rem 0.95rem;
+}
+
+.log-cover-kicker,
+.log-cover-artist,
+.log-cover-watch {
+  font-family: var(--font-meta);
+}
+
+.log-cover-kicker {
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+.log-cover-title {
+  margin-top: 0.7rem;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  line-height: 1.35;
+  color: var(--color-ink);
+}
+
+.log-cover-artist {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+
+.log-cover-watch {
+  margin-top: auto;
+  padding-top: 0.8rem;
+  font-size: 0.75rem;
+  color: var(--color-ink2);
+  text-decoration: underline;
+  text-decoration-color: var(--color-hairline);
+  text-underline-offset: 0.28em;
+}
+
+.log-cover-link:hover .log-cover-title,
+.log-cover-link:focus-visible .log-cover-title,
+.log-cover-link:hover .log-cover-watch,
+.log-cover-link:focus-visible .log-cover-watch {
+  color: var(--color-oxide);
+}
+
+@media (min-width: 30rem) {
+  .log-cover-link {
+    grid-template-columns: minmax(11rem, 42%) minmax(0, 1fr);
+  }
+
+  .log-cover-media {
+    border-right: 1px solid var(--color-hairline);
+  }
+}

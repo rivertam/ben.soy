@@ -145,10 +145,16 @@ impl<'a> Item<'a> {
                     link_label: update_link_label,
                     tags,
                     ..
-                } => format!(
-                    "[{stamp}] {label} {body} {update_link_label} {}",
-                    tags.join(" ")
-                ),
+                } => {
+                    let cover_copy = entry
+                        .drum_cover()
+                        .map(|cover| format!(" {} {}", cover.title, cover.artist))
+                        .unwrap_or_default();
+                    format!(
+                        "[{stamp}] {label} {body} {update_link_label}{cover_copy} {}",
+                        tags.join(" ")
+                    )
+                }
             },
             Item::Win(run) => format!(
                 "[spire] win games {} {} a{}",
@@ -717,21 +723,58 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
                         </article>
                     }
                     if let Entry::Update { stamp, label, body, href, link_label: update_link_label, .. } = entry {
-                        <article class="log-row items-baseline" data-rail-item="">
-                            <span class="log-mark log-mark-update"></span>
-                            <p class="log-date">(entry.date())</p>
-                            <p class="log-update min-w-0">
-                                <span class="log-update-stamp">(format!("[{stamp}]"))</span>
-                                " "
-                                <span class="text-patina">(format!("{label} ·"))</span>
-                                " "
-                                (body)
-                                " "
-                                <a class="log-update-link" href=(href) data-rail-enter="">
-                                    link_label(label: update_link_label)
+                        if let Some(cover) = entry.drum_cover() {
+                            <article class="log-row" data-rail-item="">
+                                <span class="log-mark log-mark-update"></span>
+                                <p class="log-date">(entry.date())</p>
+                                <a class="log-cover-link" href=(href) data-rail-enter="">
+                                    <span class="log-cover-media">
+                                        <img
+                                            src=(format!(
+                                                "https://img.youtube.com/vi/{}/mqdefault.jpg",
+                                                cover.youtube_id
+                                            ))
+                                            alt=""
+                                            loading="lazy"
+                                            decoding="async"
+                                        >
+                                        <span class="log-cover-play" aria-hidden="true">
+                                            "▶"
+                                        </span>
+                                    </span>
+                                    <span class="log-cover-copy">
+                                        <span class="log-cover-kicker">
+                                            <span class="log-update-stamp">(format!("[{stamp}]"))</span>
+                                            " "
+                                            <span class="text-patina">(format!("{label} ·"))</span>
+                                            " "
+                                            (body)
+                                        </span>
+                                        <strong class="log-cover-title">(cover.title)</strong>
+                                        <span class="log-cover-artist">(cover.artist)</span>
+                                        <span class="log-cover-watch">
+                                            link_label(label: "watch on YouTube ↗")
+                                        </span>
+                                    </span>
                                 </a>
-                            </p>
-                        </article>
+                            </article>
+                        } else {
+                            <article class="log-row items-baseline" data-rail-item="">
+                                <span class="log-mark log-mark-update"></span>
+                                <p class="log-date">(entry.date())</p>
+                                <p class="log-update min-w-0">
+                                    <span class="log-update-stamp">(format!("[{stamp}]"))</span>
+                                    " "
+                                    <span class="text-patina">(format!("{label} ·"))</span>
+                                    " "
+                                    (body)
+                                    " "
+                                    <a class="log-update-link" href=(href) data-rail-enter="">
+                                        link_label(label: update_link_label)
+                                    </a>
+                                </p>
+                            </article>
+                        }
                     }
                 }
                 if let Some(run) = row.win() {
@@ -1072,6 +1115,24 @@ mod tests {
         assert!(item.matches(&terms("117wpm")));
         assert!(item.matches(&terms("pr keyboards")));
         assert!(!item.matches(&terms("planes")));
+    }
+
+    #[test]
+    fn drum_covers_match_song_and_artist_searches() {
+        let entry = LOG
+            .iter()
+            .find(|entry| {
+                entry
+                    .drum_cover()
+                    .is_some_and(|cover| cover.youtube_id == "HyPCqzi74nE")
+            })
+            .expect("new drum cover in log");
+        let item = Item::Log {
+            serial: "№ 0042".to_string(),
+            entry,
+        };
+        assert!(item.matches(&terms("dancefloor")));
+        assert!(item.matches(&terms("arctic monkeys")));
     }
 
     #[test]

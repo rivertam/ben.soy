@@ -9,7 +9,7 @@
 use std::sync::LazyLock;
 
 use crate::content::{
-    drum_covers::DRUM_COVERS,
+    drum_covers::{DRUM_COVERS, DrumCover},
     posts::{POSTS, PostKind, PostPhoto},
 };
 
@@ -78,6 +78,14 @@ impl Entry {
             Entry::Note { .. } => Kind::Note,
             Entry::Update { .. } => Kind::Update,
         }
+    }
+
+    /// The shared cover metadata for a YouTube update, if this entry is one.
+    pub fn drum_cover(&self) -> Option<&'static DrumCover> {
+        let Entry::Update { href, .. } = self else {
+            return None;
+        };
+        DRUM_COVERS.iter().find(|cover| cover.watch_url == *href)
     }
 }
 
@@ -268,6 +276,15 @@ mod tests {
                 })
                 .count();
             assert_eq!(matches, 1, "log entries for {}", cover.youtube_id);
+            let entry = LOG
+                .iter()
+                .find(|entry| {
+                    entry
+                        .drum_cover()
+                        .is_some_and(|found| found.youtube_id == cover.youtube_id)
+                })
+                .expect("cover log entry");
+            assert_eq!(entry.date(), cover.published);
         }
     }
 

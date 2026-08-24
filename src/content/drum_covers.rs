@@ -7,6 +7,8 @@ pub struct DrumCover {
     pub youtube_id: &'static str,
     pub watch_url: &'static str,
     pub published: &'static str,
+    pub title: &'static str,
+    pub artist: &'static str,
     pub card_label: &'static str,
     pub log_link_label: &'static str,
 }
@@ -16,6 +18,8 @@ pub static DRUM_COVERS: [DrumCover; 3] = [
         youtube_id: "HyPCqzi74nE",
         watch_url: "https://www.youtube.com/watch?v=HyPCqzi74nE",
         published: "2026-08-23",
+        title: "I Bet You Look Good on the Dancefloor",
+        artist: "Arctic Monkeys",
         card_label: "Arctic Monkeys cover →",
         log_link_label: "Arctic Monkeys ↗",
     },
@@ -23,6 +27,8 @@ pub static DRUM_COVERS: [DrumCover; 3] = [
         youtube_id: "8lrjsP1KWrY",
         watch_url: "https://www.youtube.com/watch?v=8lrjsP1KWrY",
         published: "2023-11-08",
+        title: "The Sunshine",
+        artist: "Manchester Orchestra",
         card_label: "Manchester Orchestra cover →",
         log_link_label: "Manchester Orchestra ↗",
     },
@@ -30,6 +36,8 @@ pub static DRUM_COVERS: [DrumCover; 3] = [
         youtube_id: "VaKI7J2M2Ms",
         watch_url: "https://www.youtube.com/watch?v=VaKI7J2M2Ms",
         published: "2023-08-17",
+        title: "I Knew You Were Trouble (Taylor's Version)",
+        artist: "Taylor Swift",
         card_label: "Taylor Swift cover →",
         log_link_label: "Taylor Swift ↗",
     },
@@ -53,6 +61,8 @@ mod tests {
         for cover in DRUM_COVERS.iter() {
             assert!(iso_date(cover.published), "bad date: {}", cover.published);
             assert!(!cover.youtube_id.is_empty());
+            assert!(!cover.title.is_empty());
+            assert!(!cover.artist.is_empty());
             assert!(!cover.card_label.is_empty());
             assert!(!cover.log_link_label.is_empty());
             assert_eq!(
