@@ -19,6 +19,7 @@ use topcoat::{
 use crate::eastern;
 use crate::entry::DiaryEntry;
 use crate::outbox::{LocalEntry, STATE_FAILED, STATE_SYNCED};
+use crate::search;
 use crate::store::PAGE_SIZE;
 
 pub const DIARY_PATH: &str = "/diary";
@@ -225,10 +226,42 @@ pub async fn bubble(item: Bubble) -> Result {
     }
 }
 
-/// The transcript room: bar, scrollback, history, the JS-owned queue
-/// section, the bubble template, and the compose form. `notice` is the
-/// host's slot for server-only inserts (form-POST notices); pass an empty
-/// view when there are none.
+const SEARCH_INPUT: &str = "w-full min-w-0 px-3 py-1.5 text-ink bg-card \
+     border border-hairline rounded-[0.2rem] font-body text-sm leading-normal outline-none \
+     placeholder:text-muted placeholder:opacity-100 \
+     hover:border-[color-mix(in_srgb,var(--color-ink2)_45%,var(--color-hairline))] \
+     focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-oxide \
+     focus-visible:outline-offset-2";
+
+/// One search hit for the hybrid room: stamp + truncated body, linking to
+/// the permalink. Built by hosts from [`search::RankedHit`].
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub id: String,
+    pub snippet: String,
+}
+
+impl SearchHit {
+    pub fn from_ranked(needle: &str, hit: &search::RankedHit) -> Self {
+        Self {
+            id: hit.entry.id.clone(),
+            snippet: search::snippet(needle, &hit.entry.body),
+        }
+    }
+}
+
+/// How the room's scrollback is filled. Transcript is the chat page;
+/// search replaces history with ranked hits while the compose form stays.
+#[derive(Clone, Debug)]
+pub enum RoomMode {
+    Transcript { entries: Vec<Bubble> },
+    Search { query: String, hits: Vec<SearchHit> },
+}
+
+/// The transcript room: bar, search field, scrollback, history-or-hits,
+/// the JS-owned queue section, the bubble template, and the compose form.
+/// `notice` is the host's slot for server-only inserts (form-POST notices);
+/// pass an empty view when there are none.
 #[component]
 #[allow(clippy::too_many_arguments)]
 pub async fn diary_room(
@@ -236,7 +269,7 @@ pub async fn diary_room(
     last_page: usize,
     total: usize,
     store_ok: bool,
-    entries: Vec<Bubble>,
+    mode: RoomMode,
     notice: View,
 ) -> Result {
     let template_seed = Bubble {
@@ -245,21 +278,72 @@ pub async fn diary_room(
         reply_to: None,
         state: BubbleState::Draft,
     };
+    let (searching, search_query, transcript_entries, search_hits) = match mode {
+        RoomMode::Transcript { entries } => (false, String::new(), entries, Vec::new()),
+        RoomMode::Search { query, hits } => (true, query, Vec::new(), hits),
+    };
+    let older_href = nav_url(&search_query, page_number + 1);
+    let newer_href = nav_url(&search_query, page_number.saturating_sub(1).max(1));
+    let match_label = match total {
+        0 => "no matches".to_string(),
+        1 => "1 match".to_string(),
+        n => format!("{n} matches"),
+    };
+    let older_label = if searching {
+        "↑ more matches"
+    } else {
+        "↑ older messages"
+    };
+    let newer_label = if searching {
+        "newer matches ↓"
+    } else {
+        "newer messages ↓"
+    };
     view! {
-        <div class="diary-room" data-page=(page_number)>
+        <div
+            class="diary-room"
+            data-page=(page_number)
+            data-search=(if searching { "1" } else { "" })
+        >
             <div class="diary-room-bar">
-                <span class=(META_LABEL)>"diary · just you"</span>
+                <div class="diary-room-bar-meta">
+                    <span class=(META_LABEL)>"diary · just you"</span>
+                    if searching {
+                        <a class="quiet-link font-meta text-xs" href=(DIARY_PATH)>"clear"</a>
+                    }
+                </div>
                 if total > PAGE_SIZE {
                     <span class="font-meta text-xs text-muted">
                         (format!("page {page_number} of {last_page}"))
                     </span>
+                } else if searching {
+                    <span class="font-meta text-xs text-muted">(match_label.as_str())</span>
                 }
+                <form class="diary-search" method="get" action=(DIARY_PATH)>
+                    <label class="min-w-0 flex-1" for="diary-q">
+                        <span class="sr-only">"Search diary"</span>
+                        <input
+                            class=(SEARCH_INPUT)
+                            id="diary-q"
+                            name="q"
+                            type="search"
+                            value=(search_query.as_str())
+                            placeholder="Search…"
+                            autocomplete="off"
+                            maxlength=(search::MAX_NEEDLE_CHARS.to_string())
+                        >
+                    </label>
+                    <button
+                        type="submit"
+                        class="oxlink shrink-0 cursor-pointer font-meta text-sm"
+                    >"search"</button>
+                </form>
             </div>
             <div id="diary-transcript" class="diary-transcript" tabindex="0">
                 if store_ok && page_number < last_page {
                     <p class="text-center font-meta text-xs">
-                        <a class="quiet-link" href=(page_url(page_number + 1))>
-                            "↑ older messages"
+                        <a class="quiet-link" href=(older_href.as_str())>
+                            (older_label)
                         </a>
                     </p>
                 }
@@ -274,16 +358,29 @@ pub async fn diary_room(
                 // diary.js hides this the moment any bubble renders — an
                 // optimistic first message must not sit under a placeholder
                 // that contradicts it.
-                if store_ok && total == 0 {
+                if store_ok && !searching && total == 0 {
                     <p id="diary-empty" class="my-auto text-center text-sm text-muted">
                         "No messages yet. Say something below."
                     </p>
                 }
-                <section class="diary-history" aria-label="Diary messages">
-                    for item in entries.iter() {
-                        bubble(item: item.clone())
-                    }
-                </section>
+                if store_ok && searching && total == 0 {
+                    <p class="my-auto text-center text-sm text-muted">
+                        "No matching entries."
+                    </p>
+                }
+                if searching {
+                    <section class="diary-hits" aria-label="Search results">
+                        for hit in search_hits.iter() {
+                            search_hit(hit: hit.clone())
+                        }
+                    </section>
+                } else {
+                    <section class="diary-history" aria-label="Diary messages">
+                        for item in transcript_entries.iter() {
+                            bubble(item: item.clone())
+                        }
+                    </section>
+                }
                 // diary.js appends bubbles here for rows the rendered HTML
                 // does not show, by cloning the template below.
                 <section id="diary-queue" class="diary-queue" hidden=""></section>
@@ -294,8 +391,8 @@ pub async fn diary_room(
                 </template>
                 if store_ok && page_number > 1 {
                     <p class="text-center font-meta text-xs">
-                        <a class="quiet-link" href=(page_url(page_number - 1))>
-                            "newer messages ↓"
+                        <a class="quiet-link" href=(newer_href.as_str())>
+                            (newer_label)
                         </a>
                     </p>
                 }
@@ -324,14 +421,15 @@ pub async fn diary_room(
                         // autofocus lands the cursor in the box on desktop;
                         // touch browsers ignore it rather than popping the
                         // keyboard. diary.js adds Enter-to-send for
-                        // keyboard environments.
+                        // keyboard environments. Skip autofocus while
+                        // searching so the query field keeps focus.
                         <textarea
                             class=(TEXTAREA)
                             id="diary-body"
                             name="body"
                             rows="2"
                             required=""
-                            autofocus=""
+                            autofocus=(!searching)
                             placeholder="Message yourself…"
                         ></textarea>
                     </label>
@@ -342,6 +440,20 @@ pub async fn diary_room(
                 </div>
             </form>
         </div>
+    }
+}
+
+#[component]
+async fn search_hit(hit: SearchHit) -> Result {
+    view! {
+        <a class="diary-hit quiet-link" href=(entry_url(&hit.id))>
+            <span class="diary-hit-stamp font-meta text-[0.6875rem] text-muted">
+                (entry_stamp(&hit.id))
+            </span>
+            <span class="diary-hit-body text-sm leading-relaxed text-ink2">
+                (hit.snippet.as_str())
+            </span>
+        </a>
     }
 }
 
@@ -425,11 +537,43 @@ pub fn entry_url(id: &str) -> String {
 }
 
 pub fn page_url(page_number: usize) -> String {
-    if page_number <= 1 {
-        DIARY_PATH.to_string()
-    } else {
-        format!("{DIARY_PATH}?page={page_number}")
+    nav_url("", page_number)
+}
+
+/// Transcript or search URL for the given 1-based page. Empty `q` is the
+/// ordinary room; a non-empty needle keeps `q` on every page link.
+pub fn nav_url(q: &str, page_number: usize) -> String {
+    let mut url = DIARY_PATH.to_string();
+    let mut sep = '?';
+    if !q.is_empty() {
+        url.push(sep);
+        url.push_str("q=");
+        url.push_str(&encode_query_component(q));
+        sep = '&';
     }
+    if page_number > 1 {
+        url.push(sep);
+        url.push_str("page=");
+        url.push_str(&page_number.to_string());
+    }
+    url
+}
+
+fn encode_query_component(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
 }
 
 /// "Jul 27, 2026 · 2:30 PM", from the id's Eastern wall clock. Stored ids
@@ -494,6 +638,9 @@ mod tests {
         );
         assert_eq!(page_url(1), "/diary");
         assert_eq!(page_url(3), "/diary?page=3");
+        assert_eq!(nav_url("coffee", 1), "/diary?q=coffee");
+        assert_eq!(nav_url("coffee", 2), "/diary?q=coffee&page=2");
+        assert_eq!(nav_url("a b", 1), "/diary?q=a+b");
         assert_eq!(
             display_parts("2026-01-05 00:07:00").unwrap(),
             ("Jan 5, 2026".to_string(), "12:07 AM".to_string())

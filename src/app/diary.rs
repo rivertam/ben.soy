@@ -14,8 +14,10 @@
 //! (`eastern::public_path`, the `/fitness/lift/{path}` permalink shape), so keys
 //! sort chronologically and the permalink IS the id. `/diary` fetches newest
 //! first but renders each `PAGE_SIZE` page oldest-to-newest in a bottom-pinned
-//! chat transcript; `/diary/{path}` is one entry's own page and the only place
-//! it can be deleted.
+//! chat transcript; `?q=` fuzzy-ranks bodies (score then newest) into a hit
+//! list in the same room — admin-only like every other diary route.
+//! `/diary/{path}` is one entry's own page and the only place it can be
+//! deleted.
 //!
 //! Both POSTs repeat the admin identity check, require positive same-origin
 //! evidence, and bound the body before parsing it — the forms are not an
@@ -33,8 +35,9 @@
 use diary_core::contract::{DirectTokenGrant, SnapshotWire, WireError, decode_push};
 use diary_core::eastern;
 use diary_core::entry::{ComposedEntry, DiaryEntry};
+use diary_core::search;
 use diary_core::store::{self, MAX_PAGE, PAGE_SIZE, SaveError, SavedWrite};
-use diary_core::views::{self, Bubble, diary_room, entry_detail};
+use diary_core::views::{self, Bubble, RoomMode, SearchHit, diary_room, entry_detail};
 use jiff::Timestamp;
 use topcoat::{
     Result,
@@ -78,6 +81,7 @@ pub(super) const DIARY_JS: Asset = asset!("./diary/diary.js");
 struct DiaryQuery {
     page: Option<String>,
     notice: Option<String>,
+    q: Option<String>,
 }
 
 #[page("/diary")]
@@ -92,8 +96,17 @@ async fn diary(cx: &Cx) -> Result {
         };
     }
     let query = query_params::<DiaryQuery>(cx)?;
+    let needle = query.q.as_deref().and_then(search::normalize_query);
+    // Whitespace-only or empty `q` collapses to the transcript URL.
+    if query.q.is_some() && needle.is_none() {
+        let target = match requested_page(query.page.as_deref()) {
+            Some(page) if page > 1 => views::page_url(page),
+            _ => PATH.to_string(),
+        };
+        return Err(redirect(&target).into());
+    }
     let Some(page_number) = requested_page(query.page.as_deref()) else {
-        return Err(redirect(PATH).into());
+        return Err(redirect(&views::nav_url(needle.as_deref().unwrap_or(""), 1)).into());
     };
     let notice = query.notice.as_deref().map(|code| match code {
         "saved" => "Saved.",
@@ -102,18 +115,53 @@ async fn diary(cx: &Cx) -> Result {
         "unavailable" => "The diary store didn't answer; nothing changed.",
         _ => "Nothing changed.",
     });
-    let (entries, total, store_ok) = match entry_page(app_context::<Data>(cx), page_number).await {
-        Ok((entries, total)) => {
-            // Past-the-end page numbers bounce to the last real page.
-            if page_number > last_page(total) {
-                return Err(redirect(&views::page_url(last_page(total))).into());
+    let data = app_context::<Data>(cx);
+    let (mode, total, store_ok) = match &needle {
+        Some(q) => match search_page(data, q, page_number).await {
+            Ok((hits, total)) => {
+                if page_number > last_page(total) {
+                    return Err(redirect(&views::nav_url(q, last_page(total))).into());
+                }
+                (
+                    RoomMode::Search {
+                        query: q.clone(),
+                        hits,
+                    },
+                    total,
+                    true,
+                )
             }
-            (entries, total, true)
-        }
-        Err(error) => {
-            log_failure("list", &error);
-            (Vec::new(), 0, false)
-        }
+            Err(error) => {
+                log_failure("search", &error);
+                (
+                    RoomMode::Search {
+                        query: q.clone(),
+                        hits: Vec::new(),
+                    },
+                    0,
+                    false,
+                )
+            }
+        },
+        None => match entry_page(data, page_number).await {
+            Ok((entries, total)) => {
+                if page_number > last_page(total) {
+                    return Err(redirect(&views::page_url(last_page(total))).into());
+                }
+                let bubbles: Vec<Bubble> = entries.iter().rev().map(Bubble::synced).collect();
+                (RoomMode::Transcript { entries: bubbles }, total, true)
+            }
+            Err(error) => {
+                log_failure("list", &error);
+                (
+                    RoomMode::Transcript {
+                        entries: Vec::new(),
+                    },
+                    0,
+                    false,
+                )
+            }
+        },
     };
     let last = last_page(total);
     // The transcript, bubbles, template, and compose form are the SHARED
@@ -127,7 +175,6 @@ async fn diary(cx: &Cx) -> Result {
             </p>
         }
     }?;
-    let bubbles: Vec<Bubble> = entries.iter().rev().map(Bubble::synced).collect();
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
         shell(
@@ -140,7 +187,7 @@ async fn diary(cx: &Cx) -> Result {
                 last_page: last,
                 total: total,
                 store_ok: store_ok,
-                entries: bubbles,
+                mode: mode,
                 notice: notice_view,
             )
             <script type="module" src=(DIARY_JS)></script>
@@ -543,6 +590,23 @@ async fn entry_page(
     store::entry_page(&open_db(data).await?, page_number).await
 }
 
+/// Fuzzy-rank every entry, then return one page of hit-list rows. A personal
+/// diary is small enough that scoring the full set beats a Surreal FTS index.
+async fn search_page(
+    data: &Data,
+    needle: &str,
+    page_number: usize,
+) -> std::result::Result<(Vec<SearchHit>, usize), String> {
+    let entries = store::all_entries(&open_db(data).await?).await?;
+    let ranked = search::rank(needle, entries);
+    let total = ranked.len();
+    let hits = search::page_hits(&ranked, page_number)
+        .into_iter()
+        .map(|hit| SearchHit::from_ranked(needle, hit))
+        .collect();
+    Ok((hits, total))
+}
+
 async fn entry_by_id(data: &Data, id: &str) -> std::result::Result<Option<DiaryEntry>, String> {
     store::entry_by_id(&open_db(data).await?, id).await
 }
@@ -804,6 +868,8 @@ mod tests {
         // pinned here because these routes' redirects embed them.
         assert_eq!(views::page_url(1), "/diary");
         assert_eq!(views::page_url(3), "/diary?page=3");
+        assert_eq!(views::nav_url("coffee", 1), "/diary?q=coffee");
+        assert_eq!(views::nav_url("a b", 2), "/diary?q=a+b&page=2");
         assert_eq!(
             views::entry_url("2026-07-27T10-00-00-04-00"),
             "/diary/2026-07-27T10-00-00-04-00"

@@ -293,9 +293,12 @@ fn json_error(error: serde_json::Error) -> JsError {
 mod ssr {
     use std::cell::Cell;
 
-    use diary_core::outbox::{self, LocalEntry};
+    use diary_core::outbox::{self, LocalEntry, STATE_SYNCED};
+    use diary_core::search;
     use diary_core::store::PAGE_SIZE;
-    use diary_core::views::{Bubble, diary_room, entry_date, entry_detail, offline_page};
+    use diary_core::views::{
+        Bubble, RoomMode, SearchHit, diary_room, entry_date, entry_detail, offline_page,
+    };
     use topcoat::{
         Result,
         context::{Cx, app_context},
@@ -400,42 +403,146 @@ mod ssr {
         rx.await.map_err(|_| "render read dropped".to_string())?
     }
 
-    /// `?page=N`, clamped — worker page fns NEVER redirect (the server's
-    /// bounce dance would loop straight back into the offline fallback).
+    /// `?page=N` / `?q=…`, clamped — worker page fns NEVER redirect (the
+    /// server's bounce dance would loop straight back into the offline
+    /// fallback).
+    fn query_value<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
+        let query = query?;
+        let prefix = format!("{key}=");
+        query.split('&').find_map(|pair| {
+            let value = pair.strip_prefix(&prefix)?;
+            Some(value)
+        })
+    }
+
     fn requested_page(query: Option<&str>) -> usize {
-        query
-            .and_then(|q| {
-                q.split('&')
-                    .find_map(|pair| pair.strip_prefix("page="))
-                    .and_then(|value| value.parse::<usize>().ok())
-            })
+        query_value(query, "page")
+            .and_then(|value| value.parse::<usize>().ok())
             .filter(|number| *number >= 1)
             .unwrap_or(1)
+    }
+
+    fn requested_query(query: Option<&str>) -> Option<String> {
+        let raw = query_value(query, "q")?;
+        // Manual decode for the few escapes a GET form emits; keep it
+        // local so the worker stays free of a url crate.
+        let decoded = decode_query_component(raw);
+        search::normalize_query(&decoded)
+    }
+
+    fn decode_query_component(raw: &str) -> String {
+        let bytes = raw.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'+' => {
+                    out.push(b' ');
+                    index += 1;
+                }
+                b'%' if index + 2 < bytes.len() => {
+                    let hi = from_hex(bytes[index + 1]);
+                    let lo = from_hex(bytes[index + 2]);
+                    if let (Some(hi), Some(lo)) = (hi, lo) {
+                        out.push((hi << 4) | lo);
+                        index += 3;
+                    } else {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+                byte => {
+                    out.push(byte);
+                    index += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn from_hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
     }
 
     #[page("/diary")]
     async fn offline_diary(cx: &Cx) -> Result {
         let store = app_context::<WorkerStore>(cx);
         let assets = app_context::<WorkerAssets>(cx);
-        let (bubbles, total, last, page_number, store_ok) = match all_rows(store).await {
+        let query = uri(cx).query();
+        let needle = requested_query(query);
+        let (mode, total, last, page_number, store_ok) = match all_rows(store).await {
             Ok(mut rows) => {
                 rows.sort_by(|a, b| {
                     (a.written_at, a.id.as_str()).cmp(&(b.written_at, b.id.as_str()))
                 });
-                let total = rows.len();
-                let last = total.div_ceil(PAGE_SIZE).max(1);
-                let page_number = requested_page(uri(cx).query()).min(last);
-                // Newest-first pages, each rendered oldest→newest — the
-                // ascending twin of the server's DESC LIMIT/START + rev().
-                let end = total.saturating_sub((page_number - 1) * PAGE_SIZE);
-                let start = end.saturating_sub(PAGE_SIZE);
-                let bubbles: Vec<Bubble> = rows[start..end]
-                    .iter()
-                    .map(|row| Bubble::from_local(row, true))
-                    .collect();
-                (bubbles, total, last, page_number, true)
+                if let Some(q) = needle.as_deref() {
+                    // Synced-only: pending/failed stay out of search so
+                    // offline results match what the server would return.
+                    let synced: Vec<_> = rows
+                        .into_iter()
+                        .filter(|row| row.state == STATE_SYNCED)
+                        .map(|row| row.entry)
+                        .collect();
+                    let ranked = search::rank(q, synced);
+                    let total = ranked.len();
+                    let last = total.div_ceil(PAGE_SIZE).max(1);
+                    let page_number = requested_page(query).min(last);
+                    let hits: Vec<SearchHit> = search::page_hits(&ranked, page_number)
+                        .into_iter()
+                        .map(|hit| SearchHit::from_ranked(q, hit))
+                        .collect();
+                    (
+                        RoomMode::Search {
+                            query: q.to_string(),
+                            hits,
+                        },
+                        total,
+                        last,
+                        page_number,
+                        true,
+                    )
+                } else {
+                    let total = rows.len();
+                    let last = total.div_ceil(PAGE_SIZE).max(1);
+                    let page_number = requested_page(query).min(last);
+                    // Newest-first pages, each rendered oldest→newest — the
+                    // ascending twin of the server's DESC LIMIT/START + rev().
+                    let end = total.saturating_sub((page_number - 1) * PAGE_SIZE);
+                    let start = end.saturating_sub(PAGE_SIZE);
+                    let bubbles: Vec<Bubble> = rows[start..end]
+                        .iter()
+                        .map(|row| Bubble::from_local(row, true))
+                        .collect();
+                    (
+                        RoomMode::Transcript { entries: bubbles },
+                        total,
+                        last,
+                        page_number,
+                        true,
+                    )
+                }
             }
-            Err(_) => (Vec::new(), 0, 1, 1, false),
+            Err(_) => (
+                if let Some(q) = needle {
+                    RoomMode::Search {
+                        query: q,
+                        hits: Vec::new(),
+                    }
+                } else {
+                    RoomMode::Transcript {
+                        entries: Vec::new(),
+                    }
+                },
+                0,
+                1,
+                1,
+                false,
+            ),
         };
         let empty_notice = view! {}?;
         let room = view! {
@@ -444,7 +551,7 @@ mod ssr {
                 last_page: last,
                 total: total,
                 store_ok: store_ok,
-                entries: bubbles,
+                mode: mode,
                 notice: empty_notice,
             )
         }?;

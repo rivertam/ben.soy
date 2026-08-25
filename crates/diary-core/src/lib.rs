@@ -19,6 +19,7 @@ pub mod entry;
 pub mod outbox;
 mod outbox_migrations;
 pub mod placement;
+pub mod search;
 pub mod store;
 pub mod sync;
 #[cfg(feature = "view")]
