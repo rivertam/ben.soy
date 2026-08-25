@@ -231,7 +231,8 @@ pub async fn shell(
     view! {
         // Default edge TTL for HTML that does not set Cache-Control itself.
         // First mention wins: pages that emit their own header before shell()
-        // keep it (spire/log/feed use s-maxage=60; lifting/API use no-store).
+        // keep it (home/spire/fitness-log/feed use s-maxage=60;
+        // fitness detail/API routes use no-store).
         // Cloudflare CDN honors s-maxage when the zone Cache Rule makes HTML
         // eligible; deploy CI purges the zone so RELEASE_ID-style busting is
         // not needed.

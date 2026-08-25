@@ -17,6 +17,11 @@ API/filter/import contracts are in this file under "API contract".
   `America/New_York` projection of the
   source instant; the explicit Eastern offset keeps same-date workouts and the
   repeated fall DST hour distinct without exposing importer IDs.
+  Anonymous `/fitness/log` HTML is browser-cold and edge-cacheable for 60
+  seconds (`max-age=0`, `s-maxage=60`); viewer-cookie requests are forced to
+  `private, no-store` by the site response layer and bypassed at Cloudflare.
+  The standalone `/fitness` page, detail pages, and fitness APIs remain
+  `no-store`.
   `/fitness/log` filter chrome is an always-visible search field, a compact tag
   bar (removable active filters), and a two-step “add filter” picker
   (category → value); on wide viewports it sits in the right gutter, otherwise

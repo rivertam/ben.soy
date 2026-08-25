@@ -19,6 +19,33 @@ are retired for production.
   The planes page bakes the Host header into its QR-code URL, so all public
   aliases must redirect before reaching the origin.
 
+## Cache Rules
+
+Cloudflare does not make extensionless HTML eligible for cache by default.
+Configure these rules under **ben.soy → Caching → Cache Rules**, in this order:
+
+1. **Origin-declared public content**
+   - Expression: `(http.host eq "ben.soy" and http.request.method in {"GET" "HEAD"})`
+   - Cache eligibility: **Eligible for cache**
+   - Edge TTL: **Use cache-control header if present, bypass cache if not**
+   - Browser TTL: **Respect origin TTL** (otherwise the zone's Browser Cache TTL
+     can extend `max-age=0` and make browsers retain HTML)
+2. **Viewer cookie bypass** (later, so it wins)
+   - Expression: `(http.host eq "ben.soy" and http.cookie contains "__Host-viewer")`
+   - Cache eligibility: **Bypass cache**
+
+Never select an edge TTL that ignores origin cache-control. Public pages opt in
+with `public` plus `s-maxage`; API, auth, admin, hidden, diary, and personalized
+responses remain `no-store`. The request-side viewer bypass prevents a signed-in
+visitor from receiving an anonymous cached shell, while
+`src/app/response_layer.rs` prevents their personalized render from being
+stored even if the Cloudflare rule drifts.
+
+After a deploy or purge, make two anonymous requests to a public HTML path. The
+first should report `CF-Cache-Status: MISS` and the second `HIT`; a request with
+any `__Host-viewer` cookie must report `BYPASS` or `DYNAMIC` and
+`Cache-Control: private, no-store`.
+
 ## Tunnel
 
 Tunnel name `benjisponge`; connector runs as the Railway `cloudflared`

@@ -4,6 +4,8 @@ use super::*;
 use crate::app::interests::running;
 use benjisponge::data::Data;
 
+const ANONYMOUS_LOG_CACHE: &str = "public, max-age=0, s-maxage=60";
+
 #[page("/fitness/log")]
 async fn lifting_log(cx: &Cx) -> Result {
     let raw = match parse_query_params::<Vec<(String, String)>>(cx) {
@@ -98,7 +100,10 @@ async fn lifting_log(cx: &Cx) -> Result {
         .map(|page| interruptions::merge_log_items(&page.activities, &page.interruptions));
 
     view! {
-        ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
+        // Anonymous archive reads can trail a sync by one minute at the CDN.
+        // Browser caches stay cold, and response_layer.rs replaces this with
+        // private, no-store whenever the viewer cookie is present.
+        ((header::CACHE_CONTROL, HeaderValue::from_static(ANONYMOUS_LOG_CACHE)))
         shell(
             page: meta.title,
             active: "",
@@ -226,4 +231,17 @@ async fn lifting_log(cx: &Cx) -> Result {
 #[route(GET "/lifting/log")]
 async fn legacy_lifting_log(cx: &Cx) -> Result {
     Err(redirect_permanent(&with_raw_query(cx, LOG_PATH)).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ANONYMOUS_LOG_CACHE;
+
+    #[test]
+    fn anonymous_log_cache_is_browser_cold_and_edge_short_lived() {
+        assert_eq!(
+            ANONYMOUS_LOG_CACHE.split(", ").collect::<Vec<_>>(),
+            ["public", "max-age=0", "s-maxage=60"]
+        );
+    }
 }
