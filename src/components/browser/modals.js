@@ -19,6 +19,8 @@
 //   [data-dont-obstruct]                  a hard exclusion for rail cards/traces
 //   [data-inline-popover-rail-side]       optional left/right art direction
 //   [data-inline-popover-slot="name"]     optional free-placement marker
+//   [data-inline-popover-auto-open]       opt-in to the ambient desktop rail
+//   [data-inline-popover-layout]          split body from trailing link footer
 // Native `popovertarget` only works on atomic form controls. The small driver
 // lets prose use a fragmenting anchor while retaining native light-dismiss,
 // Escape, and top-layer behavior on the popover itself.
@@ -42,6 +44,54 @@ const setPopoverExpanded = (popover) => {
     trigger.setAttribute("aria-expanded", expanded);
   }
 };
+
+// The component's child slot deliberately stays free-form: definitions can
+// be text, several paragraphs, a photo, or any mixture of those. Its one
+// stable convention is that footer links are trailing, direct children. Make
+// that convention structural before a panel is opened so the header and link
+// row remain still while one middle region owns all scrolling.
+const structureInlinePopover = (panel) => {
+  if (
+    !(panel instanceof HTMLElement) ||
+    panel.hasAttribute("data-inline-popover-structured")
+  ) {
+    return;
+  }
+  const close = panel.querySelector(
+    ":scope > [data-inline-popover-close]",
+  );
+  const kicker = panel.querySelector(
+    ":scope > [data-inline-popover-kicker]",
+  );
+  if (!close || !kicker) return;
+
+  const footerLinks = [];
+  for (
+    let candidate = panel.lastElementChild;
+    candidate instanceof HTMLAnchorElement;
+    candidate = candidate.previousElementSibling
+  ) {
+    footerLinks.unshift(candidate);
+  }
+  const fixed = new Set([close, kicker, ...footerLinks]);
+  const bodyNodes = [...panel.childNodes].filter((node) => !fixed.has(node));
+  const scroll = document.createElement("span");
+  scroll.setAttribute("data-inline-popover-scroll", "");
+  kicker.after(scroll);
+  scroll.append(...bodyNodes);
+
+  if (footerLinks.length) {
+    const footer = document.createElement("span");
+    footer.setAttribute("data-inline-popover-footer", "");
+    scroll.after(footer);
+    footer.append(...footerLinks);
+  }
+  panel.setAttribute("data-inline-popover-structured", "");
+};
+
+for (const panel of document.querySelectorAll("[data-inline-popover-layout]")) {
+  structureInlinePopover(panel);
+}
 
 // On a wide, precise-pointer viewport, inline notes become a live annotation
 // rail. The layout is deliberately geometry-driven: prose can use the shared
@@ -159,6 +209,7 @@ const createInlinePopoverRails = () => {
       preferredSlot: placementSlots.get(
         trigger.getAttribute("data-inline-popover-rail-slot"),
       ),
+      autoOpen: panel.hasAttribute("data-inline-popover-auto-open"),
       rail: false,
       previousSide: null,
       geometry: null,
@@ -821,7 +872,7 @@ const createInlinePopoverRails = () => {
       if (
         geometry &&
         !dismissed.has(entry) &&
-        (geometry.inBand || entry === interaction)
+        ((entry.autoOpen && geometry.inBand) || entry === interaction)
       ) {
         geometries.push(geometry);
       }

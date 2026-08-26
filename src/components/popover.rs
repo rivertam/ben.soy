@@ -13,6 +13,8 @@ use topcoat::{
 /// leave it empty for the automatic solver.
 /// `rail_slot` can name a page-owned `[data-inline-popover-slot]` marker for
 /// a free-floating composition; collision avoidance still has the final say.
+/// `auto_open` opts the note into the desktop rail's ambient constellation;
+/// otherwise it only opens in response to reader interaction.
 /// Keep the child phrasing content; use block-styled spans for multiple paragraphs.
 #[component]
 pub async fn inline_popover(
@@ -21,6 +23,7 @@ pub async fn inline_popover(
     #[default("")] heading: &str,
     #[default("")] rail_side: &str,
     #[default("")] rail_slot: &str,
+    #[default(false)] auto_open: bool,
     child: View,
 ) -> Result {
     let anchor_name = format!("anchor-name: --inline-popover-{};", id);
@@ -46,6 +49,8 @@ pub async fn inline_popover(
             id=(id)
             class="inline-popover-panel"
             data-inline-popover-panel=""
+            data-inline-popover-layout=""
+            data-inline-popover-auto-open=(auto_open)
             popover="auto"
             role="dialog"
             aria-label=(label)
@@ -88,9 +93,29 @@ mod tests {
         assert!(html.contains("data-inline-popover-trigger=\"test-source\""));
         assert!(html.contains("aria-controls=\"test-source\""));
         assert!(html.contains("id=\"test-source\" class=\"inline-popover-panel\""));
-        assert!(html.contains("data-inline-popover-panel=\"\" popover=\"auto\""));
+        assert!(html.contains("data-inline-popover-panel=\"\""));
+        assert!(html.contains("data-inline-popover-layout=\"\""));
+        assert!(html.contains("popover=\"auto\""));
+        assert!(!html.contains("data-inline-popover-auto-open"));
         assert!(html.contains("data-inline-popover-close=\"\""));
         assert!(!html.contains("popovertarget=\"test-source\">A long citation label"));
+    }
+
+    #[tokio::test]
+    async fn desktop_auto_open_is_explicitly_opted_in() {
+        let cx = Cx::default();
+        let __cx = &cx;
+        let result: Result = view! {
+            inline_popover(
+                id: "ambient-note",
+                label: "Ambient note",
+                auto_open: true,
+                <span>"Aside detail"</span>
+            )
+        };
+        let html = result.unwrap().render(__cx);
+
+        assert!(html.contains("data-inline-popover-auto-open=\"\""));
     }
 
     #[tokio::test]
@@ -155,6 +180,11 @@ mod tests {
         assert!(DRIVER.contains("[data-inline-popover-trigger]"));
         assert!(DRIVER.contains("showPopover({ source: popoverTrigger })"));
         assert!(DRIVER.contains("data-inline-popover-rail-active"));
+        assert!(DRIVER.contains("structureInlinePopover"));
+        assert!(DRIVER.contains("data-inline-popover-scroll"));
+        assert!(DRIVER.contains("data-inline-popover-footer"));
+        assert!(DRIVER.contains("autoOpen: panel.hasAttribute(\"data-inline-popover-auto-open\")"));
+        assert!(DRIVER.contains("entry.autoOpen && geometry.inBand"));
         assert!(DRIVER.contains("[data-dont-obstruct]"));
         assert!(DRIVER.contains("layoutRail"));
         assert!(DRIVER.contains("REVEAL_SCROLL_Y = 100"));

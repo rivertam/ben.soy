@@ -524,6 +524,48 @@ a.chip:focus-visible {
   display: block;
 }
 
+/* The browser driver groups the free-form child slot into one scroll region
+   and an optional trailing-link footer before first open. Keep the unenhanced
+   block layout untouched if that structure pass never runs. */
+.inline-popover-panel[data-inline-popover-structured] {
+  max-height: max(8rem, min(36rem, calc(100dvh - 10rem)));
+  overflow: hidden;
+}
+
+.inline-popover-panel[data-inline-popover-structured]:popover-open {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-inline-popover-scroll] {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--color-hairline) transparent;
+  scrollbar-width: thin;
+}
+
+[data-inline-popover-scroll] > :last-child {
+  margin-bottom: 0;
+}
+
+[data-inline-popover-footer] {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.65rem;
+  margin-top: 0.65rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-hairline);
+}
+
+[data-inline-popover-footer] > a.quiet-link + a.quiet-link {
+  margin-left: 0;
+}
+
 .inline-popover-panel::backdrop {
   background: transparent;
 }
@@ -717,7 +759,7 @@ a.chip:focus-visible {
     margin: 0 !important;
     padding: 0.8rem 0.95rem 0.9rem;
     overflow-x: hidden;
-    overflow-y: auto;
+    overflow-y: hidden;
     transform: translateX(0) !important;
     color: var(--color-ink2);
     background-color: color-mix(in srgb, var(--color-card) 93%, transparent);
@@ -728,9 +770,6 @@ a.chip:focus-visible {
       0 0.8rem 2rem color-mix(in srgb, var(--color-ink) 22%, transparent);
     opacity: 0.76;
     isolation: isolate;
-    overscroll-behavior: contain;
-    scrollbar-color: var(--color-hairline) transparent;
-    scrollbar-width: thin;
     backdrop-filter: blur(11px);
     transition:
       clip-path 220ms cubic-bezier(0.2, 0.78, 0.25, 1),

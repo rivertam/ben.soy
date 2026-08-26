@@ -298,7 +298,7 @@
     width: min(36rem, calc(100vw - 2.5rem));
     max-height: calc(100dvh - 8rem);
     margin: 0;
-    overflow-y: auto;
+    overflow-y: hidden;
     transform: translateX(-50%);
   }
 }
@@ -1027,7 +1027,7 @@
     width: min(22rem, calc(100vw - 2rem));
     max-height: calc(100dvh - 10rem);
     margin: 0;
-    overflow-y: auto;
+    overflow-y: hidden;
     transform: translateX(-50%);
   }
 

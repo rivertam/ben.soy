@@ -376,6 +376,7 @@ pub async fn cite(id: &str) -> Result {
             <span
                 id=(pid.as_str())
                 class="inline-popover-panel cite-panel"
+                data-inline-popover-layout=""
                 popover="auto"
                 style=(position_anchor.as_str())
             >
@@ -384,9 +385,10 @@ pub async fn cite(id: &str) -> Result {
                     class="inline-popover-close"
                     popovertarget=(pid.as_str())
                     popovertargetaction="hide"
+                    data-inline-popover-close=""
                     aria-label="Close popover"
                 >"×"</button>
-                <span class="inline-popover-kicker">(s.kicker)</span>
+                <span class="inline-popover-kicker" data-inline-popover-kicker="">(s.kicker)</span>
                 <span class="inline-popover-preview">(s.title)</span>
                 ext_link(class: "quiet-link", href: s.url, label: link_label.as_str())
             </span>
