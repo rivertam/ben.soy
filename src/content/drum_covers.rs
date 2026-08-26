@@ -13,7 +13,16 @@ pub struct DrumCover {
     pub log_link_label: &'static str,
 }
 
-pub static DRUM_COVERS: [DrumCover; 3] = [
+pub static DRUM_COVERS: [DrumCover; 4] = [
+    DrumCover {
+        youtube_id: "MdiiqG8hzOg",
+        watch_url: "https://www.youtube.com/watch?v=MdiiqG8hzOg",
+        published: "2026-08-25",
+        title: "Jolene",
+        artist: "Dolly Parton",
+        card_label: "Dolly Parton cover →",
+        log_link_label: "Dolly Parton ↗",
+    },
     DrumCover {
         youtube_id: "HyPCqzi74nE",
         watch_url: "https://www.youtube.com/watch?v=HyPCqzi74nE",
