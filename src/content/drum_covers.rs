@@ -13,7 +13,7 @@ pub struct DrumCover {
     pub log_link_label: &'static str,
 }
 
-pub static DRUM_COVERS: [DrumCover; 4] = [
+pub static DRUM_COVERS: [DrumCover; 5] = [
     DrumCover {
         youtube_id: "MdiiqG8hzOg",
         watch_url: "https://www.youtube.com/watch?v=MdiiqG8hzOg",
@@ -49,6 +49,15 @@ pub static DRUM_COVERS: [DrumCover; 4] = [
         artist: "Taylor Swift",
         card_label: "Taylor Swift cover →",
         log_link_label: "Taylor Swift ↗",
+    },
+    DrumCover {
+        youtube_id: "PdoRSPrHNGQ",
+        watch_url: "https://www.youtube.com/watch?v=PdoRSPrHNGQ",
+        published: "2023-06-12",
+        title: "The Recluse",
+        artist: "Cursive",
+        card_label: "Cursive cover →",
+        log_link_label: "Cursive ↗",
     },
 ];
 
