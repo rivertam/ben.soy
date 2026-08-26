@@ -120,12 +120,12 @@ pub static LOG: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     let mut entries = UPDATES.to_vec();
     entries.extend(DRUM_COVERS.iter().map(|cover| Entry::Update {
         date: cover.published,
-        stamp: "footage",
-        label: "drums",
+        stamp: "drums",
+        label: "drum cover",
         body: "New cover on tape:",
         href: cover.watch_url,
         link_label: cover.log_link_label,
-        tags: &["music"],
+        tags: &["drums"],
     }));
     entries.extend(POSTS.iter().map(|post| match post.kind {
         PostKind::Essay => Entry::Essay {
@@ -158,7 +158,7 @@ pub static FILTER_TAGS: [&str; 8] = [
     "rust",
     "ai",
     "climate",
-    "music",
+    "drums",
     "keyboards",
     "games",
     "spire",
@@ -267,8 +267,8 @@ mod tests {
                         entry,
                         Entry::Update {
                             date,
-                            stamp: "footage",
-                            label: "drums",
+                            stamp: "drums",
+                            label: "drum cover",
                             href,
                             ..
                         } if *date == cover.published && *href == cover.watch_url
