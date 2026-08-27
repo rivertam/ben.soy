@@ -13,6 +13,10 @@ use topcoat::asset::{Asset, asset};
 
 pub const DEFAULT_THEME_ID: &str = "tmux";
 pub const THEME_STORAGE_KEY: &str = "bens-theme";
+pub const THEME_DAY_OVERRIDE_KEY: &str = "bens-theme-day-override";
+pub const PLAID_THEME_ID: &str = "plaid";
+/// JavaScript's `Date::getDay()` index for Thursday.
+pub const PLAID_WEEKDAY: u8 = 4;
 
 pub struct Theme {
     pub id: &'static str,
@@ -28,11 +32,19 @@ pub struct Theme {
 }
 
 /// The default session leads, followed by increasingly optional finishes.
-pub static THEMES: [Theme; 5] = [
+pub static THEMES: [Theme; 6] = [
     Theme {
         id: DEFAULT_THEME_ID,
         label: "tmux",
         module: asset!("../components/browser/themes/tmux/index.js"),
+        music_asset: None,
+        image_asset: None,
+        whimsical: false,
+    },
+    Theme {
+        id: PLAID_THEME_ID,
+        label: "plaid thursday",
+        module: asset!("../components/browser/themes/plaid/index.js"),
         music_asset: None,
         image_asset: None,
         whimsical: false,
@@ -55,7 +67,7 @@ pub static THEMES: [Theme; 5] = [
     },
     Theme {
         id: "felix",
-        label: "felix mode",
+        label: "felix",
         module: asset!("../components/browser/themes/felix/index.js"),
         music_asset: None,
         image_asset: Some(asset!("../components/felix-chaser.webp")),
@@ -63,7 +75,7 @@ pub static THEMES: [Theme; 5] = [
     },
     Theme {
         id: "clown",
-        label: "clown mode",
+        label: "clown",
         module: asset!("../components/browser/themes/clown/index.js"),
         music_asset: Some(asset!("../components/circus.mp3")),
         image_asset: None,
@@ -71,10 +83,12 @@ pub static THEMES: [Theme; 5] = [
     },
 ];
 
-/// Runs before CSS so a remembered alternate finish never flashes the default
-/// session. Rust derives the allowlist from `THEMES`; the browser no longer
-/// carries a second hand-maintained registry. A stored `tmux` value from older
-/// builds is accepted and canonicalized to the attribute-less default.
+/// Runs before CSS so a remembered or scheduled finish never flashes the
+/// default session. Rust derives the allowlist from `THEMES`; the browser no
+/// longer carries a second hand-maintained registry. A stored `tmux` value
+/// from older builds is accepted and canonicalized to the attribute-less
+/// default. Plaid temporarily wins on local Thursdays without replacing that
+/// stored preference; a selector choice can opt out for the current date.
 ///
 /// Kept dependency-free and em-dash-free; `emdash.rs` skips `<script>` only
 /// inside `<main>`, while this trusted tag lives in `<head>`.
@@ -85,9 +99,12 @@ pub fn boot_script() -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "(function(){{try{{var r=document.documentElement,t=localStorage.getItem('{THEME_STORAGE_KEY}'),a=[{allowed}];\
+        "(function(){{var r=document.documentElement,t=null,o=null,n=new Date(),d=n.getFullYear()+'-'+(n.getMonth()+1)+'-'+n.getDate(),a=[{allowed}];\
+try{{t=localStorage.getItem('{THEME_STORAGE_KEY}');o=localStorage.getItem('{THEME_DAY_OVERRIDE_KEY}');\
 if(t&&!a.includes(t)){{localStorage.removeItem('{THEME_STORAGE_KEY}');t=null}}\
-if(!t||t==='{DEFAULT_THEME_ID}')delete r.dataset.theme;else r.dataset.theme=t}}catch(e){{}}}})()"
+if(o&&o!==d){{localStorage.removeItem('{THEME_DAY_OVERRIDE_KEY}');o=null}}}}catch(e){{}}\
+if(n.getDay()==={PLAID_WEEKDAY}&&o!==d)t='{PLAID_THEME_ID}';\
+if(!t||t==='{DEFAULT_THEME_ID}')delete r.dataset.theme;else r.dataset.theme=t}})()"
     )
 }
 
@@ -99,16 +116,22 @@ mod tests {
     const SESSION_CSS: &str = include_str!("../../styles/session.css");
     const ALL_CSS: &str = concat!(
         include_str!("../components/browser/themes/tmux/theme.css"),
+        include_str!("../components/browser/themes/plaid/theme.css"),
         include_str!("../components/browser/themes/oxide/theme.css"),
         include_str!("../components/browser/themes/dark/theme.css"),
         include_str!("../components/browser/themes/felix/theme.css"),
         include_str!("../components/browser/themes/clown/theme.css"),
     );
-    const PACKAGES: [(&str, &str, &str); 5] = [
+    const PACKAGES: [(&str, &str, &str); 6] = [
         (
             "tmux",
             include_str!("../components/browser/themes/tmux/theme.css"),
             include_str!("../components/browser/themes/tmux/index.js"),
+        ),
+        (
+            "plaid",
+            include_str!("../components/browser/themes/plaid/theme.css"),
+            include_str!("../components/browser/themes/plaid/index.js"),
         ),
         (
             "oxide",
@@ -281,6 +304,13 @@ mod tests {
     fn rust_owns_registration_and_the_runtime_is_theme_agnostic() {
         let boot = boot_script();
         assert!(boot.contains(THEME_STORAGE_KEY));
+        assert!(boot.contains(THEME_DAY_OVERRIDE_KEY));
+        assert!(boot.contains(&format!("getDay()==={PLAID_WEEKDAY}")));
+        assert!(boot.contains(&format!("t='{PLAID_THEME_ID}'")));
+        assert!(
+            !boot.contains(&format!("setItem('{THEME_STORAGE_KEY}'")),
+            "the scheduled theme must not replace the saved preference"
+        );
         for theme in THEMES.iter() {
             assert!(boot.contains(&format!("'{}'", theme.id)));
         }
@@ -297,6 +327,9 @@ mod tests {
         for hook in [
             "data-default-theme=(themes::DEFAULT_THEME_ID)",
             "data-theme-key=(themes::THEME_STORAGE_KEY)",
+            "data-theme-day-override-key=(themes::THEME_DAY_OVERRIDE_KEY)",
+            "data-weekly-theme=(themes::PLAID_THEME_ID)",
+            "data-weekly-theme-day=(themes::PLAID_WEEKDAY)",
             "data-theme-module=(theme.module)",
             "data-theme-music=(theme.music_asset)",
             "data-theme-image=(theme.image_asset)",
@@ -305,6 +338,10 @@ mod tests {
         }
         assert!(APPEARANCE_JS.contains("config.dataset.defaultTheme"));
         assert!(APPEARANCE_JS.contains("config.dataset.themeKey"));
+        assert!(APPEARANCE_JS.contains("config.dataset.themeDayOverrideKey"));
+        assert!(APPEARANCE_JS.contains("config.dataset.weeklyTheme"));
+        assert!(APPEARANCE_JS.contains("config.dataset.weeklyThemeDay"));
+        assert!(APPEARANCE_JS.contains("millisecondsUntilTomorrow"));
         assert!(APPEARANCE_JS.contains("import(registration.module)"));
         assert!(!APPEARANCE_JS.contains("clownModule"));
         assert!(!APPEARANCE_JS.contains("felixModule"));

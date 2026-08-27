@@ -1,0 +1,93 @@
+/* ── Plaid Thursday — Black Watch after one very good oxblood shirt ──────
+ * Broad forest and navy bands make the tartan; paired oxblood stripes and a
+ * narrow old-gold overcheck keep it recognizably woven rather than merely
+ * checked. Every band stays dark enough for the warm linen ink to remain
+ * readable, including where the translucent yarns cross. */
+[data-theme="plaid"] {
+  color-scheme: dark;
+  --color-page: #192b24;
+  --color-card: #263a31;
+  --color-ink: #f4eedf;
+  --color-ink2: #d5cfbe;
+  --color-muted: #a9ae9d;
+  --color-hairline: #4a6156;
+  --color-oxide: #e2c168;
+  --color-oxide-hot: #ffe39a;
+  --color-patina: #82bc96;
+  --color-steel: #93bac8;
+  --color-brass: #d7a94e;
+  --font-display: "Zilla Slab", "Rockwell", serif;
+  --font-body: "Fira Sans", "Segoe UI", sans-serif;
+  --font-meta: "Fira Mono", ui-monospace, monospace;
+}
+
+/* Two coarse thread layers sit over the tartan sett. The whole cloth is tipped
+   ten degrees, including its twill, like a shirt cut slightly off-grain. The
+   one-pixel highlights stay faint enough to never become noise behind copy. */
+[data-theme="plaid"] body {
+  background-color: var(--color-page);
+  background-image:
+    repeating-linear-gradient(
+      55deg,
+      rgb(255 255 255 / 2.2%) 0 1px,
+      transparent 1px 4px
+    ),
+    repeating-linear-gradient(
+      -35deg,
+      rgb(0 0 0 / 4.5%) 0 1px,
+      transparent 1px 4px
+    ),
+    repeating-linear-gradient(
+      10deg,
+      transparent 0 1.3rem,
+      rgb(7 20 38 / 58%) 1.3rem 2.65rem,
+      transparent 2.65rem 3.35rem,
+      rgb(126 37 45 / 58%) 3.35rem 3.67rem,
+      rgb(226 193 104 / 38%) 3.67rem 3.76rem,
+      rgb(126 37 45 / 58%) 3.76rem 4.08rem,
+      transparent 4.08rem 5.65rem
+    ),
+    repeating-linear-gradient(
+      100deg,
+      transparent 0 1.3rem,
+      rgb(7 20 38 / 58%) 1.3rem 2.65rem,
+      transparent 2.65rem 3.35rem,
+      rgb(126 37 45 / 58%) 3.35rem 3.67rem,
+      rgb(226 193 104 / 38%) 3.67rem 3.76rem,
+      rgb(126 37 45 / 58%) 3.76rem 4.08rem,
+      transparent 4.08rem 5.65rem
+    );
+  text-shadow: 0 1px 0 rgb(0 0 0 / 30%);
+}
+
+/* The menu preview is a tiny cutting from the same cloth. The first selector
+   paints the isolated option swatch; the second paints the live summary chip
+   without repainting every other option nested inside the plaid page. */
+[data-theme="plaid"].theme-dot,
+:root[data-theme="plaid"] .theme-dd > summary > .theme-dot {
+  background-color: #192b24;
+  background-image:
+    repeating-linear-gradient(
+      10deg,
+      transparent 0 3px,
+      rgb(7 20 38 / 78%) 3px 7px,
+      transparent 7px 8px,
+      rgb(145 42 50 / 82%) 8px 10px,
+      #d8b75e 10px 11px,
+      transparent 11px 14px
+    ),
+    repeating-linear-gradient(
+      100deg,
+      transparent 0 3px,
+      rgb(7 20 38 / 78%) 3px 7px,
+      transparent 7px 8px,
+      rgb(145 42 50 / 82%) 8px 10px,
+      #d8b75e 10px 11px,
+      transparent 11px 14px
+    );
+}
+
+[data-theme="plaid"] ::selection {
+  color: #192b24;
+  background: var(--color-oxide-hot);
+}

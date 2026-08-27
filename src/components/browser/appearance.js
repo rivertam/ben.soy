@@ -11,9 +11,12 @@
 const config = document.querySelector("[data-appearance-runtime]");
 const root = document.documentElement;
 const KEY = config.dataset.themeKey;
+const DAY_OVERRIDE_KEY = config.dataset.themeDayOverrideKey;
 const MUSIC_KEY = "bens-theme-music";
 const VOLUME_KEY = "bens-theme-volume";
 const DEFAULT_ID = config.dataset.defaultTheme;
+const WEEKLY_ID = config.dataset.weeklyTheme;
+const WEEKLY_DAY = Number(config.dataset.weeklyThemeDay);
 const themeButtons = [
   ...document.querySelectorAll("[data-set-theme][data-theme-module]"),
 ];
@@ -36,6 +39,59 @@ const registrations = new Map(
     ];
   })
 );
+
+const calendarStamp = (date = new Date()) =>
+  `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+const isWeeklyDay = (date = new Date()) =>
+  registrations.has(WEEKLY_ID) &&
+  Number.isInteger(WEEKLY_DAY) &&
+  date.getDay() === WEEKLY_DAY;
+const storedPreference = () => {
+  try {
+    const stored = localStorage.getItem(KEY);
+    return registrations.has(stored) ? stored : DEFAULT_ID;
+  } catch {
+    return DEFAULT_ID;
+  }
+};
+const automaticTheme = (date = new Date()) => {
+  if (!isWeeklyDay(date)) return null;
+  try {
+    if (localStorage.getItem(DAY_OVERRIDE_KEY) === calendarStamp(date)) {
+      return null;
+    }
+  } catch {
+    // Without storage, the weekly tradition still applies.
+  }
+  return WEEKLY_ID;
+};
+const effectiveTheme = (date = new Date()) =>
+  automaticTheme(date) || storedPreference();
+const rememberSelection = (id, date = new Date()) => {
+  try {
+    // A deliberate Thursday choice wins for the rest of the local date and
+    // survives navigation, while tomorrow still starts from the preference.
+    if (isWeeklyDay(date)) {
+      localStorage.setItem(DAY_OVERRIDE_KEY, calendarStamp(date));
+    } else {
+      localStorage.removeItem(DAY_OVERRIDE_KEY);
+    }
+    if (id === DEFAULT_ID) localStorage.removeItem(KEY);
+    else localStorage.setItem(KEY, id);
+  } catch {
+    // Private-mode storage failure: the choice still applies to this page.
+  }
+};
+const expireDayOverride = (date = new Date()) => {
+  try {
+    const override = localStorage.getItem(DAY_OVERRIDE_KEY);
+    if (override && override !== calendarStamp(date)) {
+      localStorage.removeItem(DAY_OVERRIDE_KEY);
+    }
+  } catch {
+    // No storage: there is nothing durable to expire.
+  }
+};
 
 const wornId = () => root.dataset.theme || DEFAULT_ID;
 const reducedMotion = () =>
@@ -374,7 +430,10 @@ const setMusic = (on, { fromGesture = true } = {}) => {
   syncMusic();
 };
 
-document.addEventListener("visibilitychange", syncMusic);
+document.addEventListener("visibilitychange", () => {
+  syncMusic();
+  if (!document.hidden) syncCalendarAppearance();
+});
 
 /* ── lifecycle and switching ────────────────────────────────────────── */
 
@@ -429,6 +488,36 @@ const apply = (requested, options) => {
   );
 };
 
+const millisecondsUntilTomorrow = (now = new Date()) => {
+  const tomorrow = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 1
+  );
+  return Math.max(1000, tomorrow.getTime() - now.getTime() + 100);
+};
+
+let calendarDay = calendarStamp();
+let calendarTimer = null;
+const scheduleCalendarSync = () => {
+  if (calendarTimer) clearTimeout(calendarTimer);
+  calendarTimer = setTimeout(
+    syncCalendarAppearance,
+    millisecondsUntilTomorrow()
+  );
+};
+const syncCalendarAppearance = () => {
+  const now = new Date();
+  const today = calendarStamp(now);
+  if (today !== calendarDay) {
+    calendarDay = today;
+    expireDayOverride(now);
+    const effective = effectiveTheme(now);
+    if (effective !== wornId()) apply(effective);
+  }
+  scheduleCalendarSync();
+};
+
 document.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
@@ -449,12 +538,7 @@ document.addEventListener("click", (event) => {
     const id = button.dataset.setTheme;
     const audioReady = !!audio();
     apply(id, { selected: true, audioReady });
-    try {
-      if (id === DEFAULT_ID) localStorage.removeItem(KEY);
-      else localStorage.setItem(KEY, id);
-    } catch {
-      // Private-mode storage failure: the choice still applies to this page.
-    }
+    rememberSelection(id);
     button.closest("details")?.removeAttribute("open");
     return;
   }
@@ -477,7 +561,9 @@ document.addEventListener("input", (event) => {
 });
 
 addEventListener("storage", (event) => {
-  if (event.key === KEY) apply(event.newValue || DEFAULT_ID);
+  if (event.key === KEY || event.key === DAY_OVERRIDE_KEY) {
+    apply(effectiveTheme());
+  }
   if (event.key === MUSIC_KEY) {
     setMusic(event.newValue !== "off", { fromGesture: false });
   }
@@ -495,7 +581,8 @@ if (bootSlider) bootSlider.value = String(Math.round(vol * 100));
   }
 }
 
-apply(wornId());
+apply(effectiveTheme());
+scheduleCalendarSync();
 let wantsMusic = true;
 try {
   wantsMusic = localStorage.getItem(MUSIC_KEY) !== "off";

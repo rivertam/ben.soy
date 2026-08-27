@@ -263,6 +263,9 @@ pub async fn shell(
                     data-appearance-runtime=""
                     data-default-theme=(themes::DEFAULT_THEME_ID)
                     data-theme-key=(themes::THEME_STORAGE_KEY)
+                    data-theme-day-override-key=(themes::THEME_DAY_OVERRIDE_KEY)
+                    data-weekly-theme=(themes::PLAID_THEME_ID)
+                    data-weekly-theme-day=(themes::PLAID_WEEKDAY)
                 ></script>
                 // The account dialog's companion loads before the generic
                 // modal driver so its `modal:open` listener is attached when
@@ -284,7 +287,7 @@ pub async fn shell(
                     data-vimium-module=(SESSION_VIMIUM_JS)
                 ></script>
                 <link rel="stylesheet" href=(SITE_CSS)>
-                // These faces belong to oxide/night-shift, not the default
+                // These faces belong to alternate finishes, not the default
                 // session. Keep their @font-face rules available for a live
                 // switch without preloading their bytes on every visit.
                 topcoat::font::link(font: ZILLA_SLAB, preload: false)
@@ -577,7 +580,7 @@ async fn corner_rack() -> Result {
 /// swatch dot wearing its own theme via `data-theme` (the appearance
 /// stylesheets resolve tokens against the dot itself). Rust marks tmux pressed
 /// because it is the attribute-less default; appearance.js adjusts that cached
-/// markup only for a stored alternate.
+/// markup for the stored or Thursday-scheduled finish.
 #[component]
 async fn theme_switcher() -> Result {
     view! {

@@ -9,6 +9,7 @@
  * Tailwind's defaults and section-specific styles.
  */
 @import "../src/components/browser/themes/tmux/theme.css";
+@import "../src/components/browser/themes/plaid/theme.css";
 @import "../src/components/browser/themes/oxide/theme.css";
 @import "../src/components/browser/themes/dark/theme.css";
 @import "../src/components/browser/themes/felix/theme.css";
