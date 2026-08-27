@@ -13,7 +13,16 @@ pub struct DrumCover {
     pub log_link_label: &'static str,
 }
 
-pub static DRUM_COVERS: [DrumCover; 5] = [
+pub static DRUM_COVERS: [DrumCover; 6] = [
+    DrumCover {
+        youtube_id: "yVRKA-4YbTo",
+        watch_url: "https://www.youtube.com/watch?v=yVRKA-4YbTo",
+        published: "2026-08-27",
+        title: "Lighterless",
+        artist: "Microwave",
+        card_label: "Microwave cover →",
+        log_link_label: "Microwave ↗",
+    },
     DrumCover {
         youtube_id: "MdiiqG8hzOg",
         watch_url: "https://www.youtube.com/watch?v=MdiiqG8hzOg",
