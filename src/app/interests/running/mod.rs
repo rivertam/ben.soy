@@ -15,9 +15,14 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, HeaderValue, IntoResponse, Response, StatusCode, error::not_found,
-        error::redirect, error::redirect_permanent, header, headers, page, parse_query_params,
-        path_param, route, to_bytes, uri,
+        Body, HeaderMap, HeaderValue, StatusCode,
+        error::not_found,
+        error::redirect,
+        error::redirect_permanent,
+        header, page, parse_query_params, path_param,
+        request::{headers, uri},
+        response::{IntoResponse, Response},
+        route, to_bytes,
     },
     view::{component, view},
 };
@@ -501,11 +506,9 @@ fn empty_activity() -> RunningActivity {
     }
 }
 
-#[path_param]
-struct RunPath(str);
+path_param!(run_path);
 
-#[path_param]
-struct RunId(str);
+path_param!(run_id);
 
 #[page("/fitness/run/{run_path}/{run_id}")]
 async fn run_detail(cx: &Cx) -> Result {
@@ -888,7 +891,7 @@ async fn review_shared_run(cx: &Cx) -> Result {
             .as_deref()
             .map(|activity_id| format!("{SHARE_PATH}?garmin={activity_id}"))
             .unwrap_or_else(|_| FITNESS_PATH.to_string());
-        return Err(redirect(&format!("/login?next={}", urlencode(&next))).into());
+        return Err(redirect(format!("/login?next={}", urlencode(&next))).into());
     };
     if !is_admin(&current.email) {
         return view! {
@@ -922,7 +925,7 @@ async fn review_shared_run(cx: &Cx) -> Result {
         // descriptive text in any of three query fields. Once the one safe
         // identifier is known, shed that payload from the address bar before
         // contacting Garmin.
-        return Err(redirect(&format!("{SHARE_PATH}?garmin={activity_id}")).into());
+        return Err(redirect(format!("{SHARE_PATH}?garmin={activity_id}")).into());
     }
     let database = match app_context::<Data>(cx).db().await {
         Ok(database) => database,

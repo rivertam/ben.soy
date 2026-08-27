@@ -15,7 +15,7 @@ use super::interests::spire::runs::{self as spire_runs, Run};
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{error::redirect_permanent, query_params, route, uri},
+    router::{error::redirect_permanent, query_params, request::uri, route},
     view::{component, view},
 };
 

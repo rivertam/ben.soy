@@ -6,7 +6,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    router::{StatusCode, page, uri},
+    router::{StatusCode, page, request::uri},
     view::{component, view},
 };
 

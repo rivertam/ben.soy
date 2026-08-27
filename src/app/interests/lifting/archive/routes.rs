@@ -11,7 +11,11 @@ use serde::Serialize;
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{Bytes, StatusCode, headers, path_param, route, uri},
+    router::{
+        StatusCode, path_param,
+        request::{Bytes, headers, uri},
+        route,
+    },
 };
 
 use benjisponge::auth::bearer_authorized;
@@ -152,8 +156,7 @@ async fn latest_workout(cx: &Cx) -> Result<PublicResponse> {
     })
 }
 
-#[path_param]
-struct PublicWorkoutPath(str);
+path_param!(public_workout_path);
 
 #[route(GET "/api/fitness/workouts/by-path/{public_workout_path}")]
 async fn workout_by_path(cx: &Cx) -> Result<PublicResponse> {

@@ -7,7 +7,7 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     font::{Font, fontsource::fontsource_font},
-    router::{HeaderValue, header, uri},
+    router::{HeaderValue, header, request::uri},
     view::{Unescaped, View, component, view},
 };
 
@@ -345,7 +345,7 @@ pub async fn shell(
                                     class="pane-tab"
                                     data-pane-tab=(*tab)
                                     aria-current=((active_pane == Some(*tab)).then_some("page"))
-                                    href=(pane_href(at_home, tab).as_str())
+                                    href=(pane_href(at_home, tab))
                                 >(*tab)</a>
                             }
                         </div>

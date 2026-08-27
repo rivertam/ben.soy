@@ -30,7 +30,7 @@ crate::register_post!(
 use topcoat::{
     Result,
     context::Cx,
-    router::{page, query_params, uri},
+    router::{page, query_params, request::uri},
     view::view,
 };
 

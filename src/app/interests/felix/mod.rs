@@ -22,8 +22,7 @@ struct Photo {
     height: u16,
 }
 
-#[path_param]
-struct PhotoSlug(str);
+path_param!(photo_slug);
 
 const STUDIO_PORTRAIT: Asset = asset!("./photos/2023-portrait.webp");
 const FELIX_HOME_JS: Asset = asset!("./felix-home.js");

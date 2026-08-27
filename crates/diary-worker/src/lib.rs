@@ -285,7 +285,8 @@ fn json_error(error: serde_json::Error) -> JsError {
 // --------------------------------------------------------------------------
 // Offline SSR: the same topcoat router machinery the server runs — pages
 // discovered by inventory, dispatched by `Router::handle`, no sockets, no
-// hyper (the 0.5.0 `serve` split) — rendering the SAME diary_core::views the
+// hyper (the serve-less split introduced in 0.5.0) — rendering the SAME
+// diary_core::views the
 // server page renders. sw.js calls `diary_render` when a navigation's
 // network fetch fails; anything unmatched or errored returns None and the
 // worker falls back to its offline stub.
@@ -303,8 +304,9 @@ mod ssr {
         Result,
         context::{Cx, app_context},
         router::{
-            Body, Request, Router, RouterBuilderDiscoverExt, StatusCode, page, path_param,
-            to_bytes, uri,
+            Body, Router, RouterBuilderDiscoverExt, StatusCode, page, path_param,
+            request::{Request, uri},
+            to_bytes,
         },
         view::view,
     };
@@ -565,8 +567,7 @@ mod ssr {
         }
     }
 
-    #[topcoat::router::path_param]
-    struct EntryPath(str);
+    topcoat::router::path_param!(entry_path);
 
     #[page("/diary/{entry_path}")]
     async fn offline_entry(cx: &Cx) -> Result {

@@ -6,7 +6,8 @@ a topcoat + SurrealDB app — is BUILT: one local table is both outbox and
 mirror; Entry Keys are predicted at enqueue with the same probe
 the server runs; the transcript markup is ONE set of pure components
 rendered by the server page, by the service worker's offline SSR
-(`Router::handle` inside the worker, the topcoat 0.5.0 serve split), and
+(`Router::handle` inside the worker, the Topcoat serve split introduced in
+0.5.0), and
 cloned by the page JS from a served `<template>`; sync is flush-then-pull
 through a two-method transport trait whose direct implementation wraps
 another `Surreal<Any>` handle plus the remote server's validation clock. The
@@ -296,7 +297,9 @@ This is the unresolved half of upstream issue #6711; the official
 The fix here is deliberately shaped like the upstream PR it should become:
 `deploy/surrealdb-core-wasm-time.patch` swaps those three files onto the
 crate's own established `wasmtimer` pattern (see its `sleep` call sites),
-behind `cfg(target_family = "wasm")` — native code is byte-identical.
+behind `cfg(target_family = "wasm")` — native code is byte-identical. It also
+allows the browser-only dead-code warning on `key::root::all::Kv::new`, matching
+the target-specific allowances already used by adjacent key types.
 (`dbs/executor.rs` has two more `tokio::time::timeout` calls, but both are
 gated on a datastore `transaction_timeout` this build never configures;
 they belong in the upstream PR, not in this minimal patch.)
@@ -308,7 +311,7 @@ site always builds pristine crates.io code, and no root-workspace command
 touches the vendor dir. `scripts/vendor-surrealdb-core.sh` (run by
 `just wasm` and the Dockerfile) materializes `vendor/surrealdb-core`
 (gitignored) from the sha256-verified crates.io tarball plus the patch; the
-repo commits only the ~40-line patch file. When a surrealdb release fixes
+repo commits only the small patch file. When a surrealdb release fixes
 #6711 fully: bump the workspace pin, delete the `[patch]` block, the
 script, the patch file, and this section.
 

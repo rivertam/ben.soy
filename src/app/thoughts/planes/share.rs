@@ -7,7 +7,7 @@ use topcoat::{
     Result,
     asset::{Asset, asset},
     context::Cx,
-    router::{header, headers},
+    router::{header, request::headers},
     view::{component, view},
 };
 

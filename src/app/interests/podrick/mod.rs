@@ -17,7 +17,7 @@ use topcoat::{
     Result,
     asset::{Asset, asset},
     context::{Cx, app_context},
-    router::{HeaderValue, error::redirect, header, page, query_params, uri},
+    router::{HeaderValue, error::redirect, header, page, query_params, request::uri},
     runtime::{Event, shard},
     view::view,
 };
@@ -74,7 +74,7 @@ async fn podrick(cx: &Cx) -> Result {
     let selected_year = selected_year(query.year, earliest_year, current_year);
     let canonical_query = canonical_year_query(selected_year, current_year);
     if uri(cx).query() != canonical_query.as_deref() {
-        return Err(redirect(&heatmap::year_path(selected_year, current_year)).into());
+        return Err(redirect(heatmap::year_path(selected_year, current_year)).into());
     }
 
     view! {

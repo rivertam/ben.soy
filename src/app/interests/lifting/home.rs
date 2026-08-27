@@ -9,7 +9,7 @@ async fn lifting(cx: &Cx) -> Result {
     // Filtered archive links remain useful; the archive itself now lives at
     // `/fitness/log`.
     if let Some(query) = uri(cx).query() {
-        return Err(redirect(&format!("{LOG_PATH}?{query}")).into());
+        return Err(redirect(format!("{LOG_PATH}?{query}")).into());
     }
 
     let meta = interest("fitness");

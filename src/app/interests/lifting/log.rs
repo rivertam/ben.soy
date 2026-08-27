@@ -17,7 +17,7 @@ async fn lifting_log(cx: &Cx) -> Result {
     };
     let canonical = filters.query();
     if uri(cx).query().is_some_and(|query| query != canonical) {
-        return Err(redirect(&filters.url(false)).into());
+        return Err(redirect(filters.url(false)).into());
     }
 
     let meta = interest("fitness");
@@ -50,7 +50,7 @@ async fn lifting_log(cx: &Cx) -> Result {
     if let Ok(page) = &activities {
         let last_page = total_pages(page);
         if page.page > last_page {
-            return Err(redirect(&filters.page_url(last_page)).into());
+            return Err(redirect(filters.page_url(last_page)).into());
         }
     }
 
@@ -230,7 +230,7 @@ async fn lifting_log(cx: &Cx) -> Result {
 
 #[route(GET "/lifting/log")]
 async fn legacy_lifting_log(cx: &Cx) -> Result {
-    Err(redirect_permanent(&with_raw_query(cx, LOG_PATH)).into())
+    Err(redirect_permanent(with_raw_query(cx, LOG_PATH)).into())
 }
 
 #[cfg(test)]

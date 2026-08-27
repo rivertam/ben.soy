@@ -9,7 +9,7 @@ use serde::Serialize;
 use topcoat::{
     Result,
     context::{Cx, app_context},
-    router::{StatusCode, headers, route},
+    router::{StatusCode, request::headers, route},
 };
 
 use benjisponge::auth::bearer_authorized;

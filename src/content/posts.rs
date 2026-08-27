@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use topcoat::{
     asset::Asset,
     context::Cx,
-    router::{Body, IntoResponse, RouteFuture, error::redirect_permanent, uri},
+    router::{Body, RouteFuture, error::redirect_permanent, request::uri, response::IntoResponse},
 };
 
 #[derive(Clone, Copy)]
@@ -73,16 +73,40 @@ macro_rules! register_post {
     };
     (@shortlink_route) => {};
     (@shortlink_route $shortlink:literal) => {
-        const __POST_SHORTLINK: ::topcoat::router::RouteFn =
-            ::topcoat::router::RouteFn::const_new(
-                ::topcoat::router::OwnedMethods::One(::topcoat::router::Method::GET),
-                ::std::borrow::Cow::Borrowed(::topcoat::router::Path::new(concat!(
-                    "/",
-                    $shortlink
-                ))),
-                $crate::content::posts::shortlink_handler,
-            );
-        inventory::submit! { __POST_SHORTLINK }
+        #[allow(non_camel_case_types)]
+        struct __POST_SHORTLINK;
+
+        impl ::topcoat::router::Route for __POST_SHORTLINK {
+            fn id(&self) -> ::topcoat::router::RouteId {
+                static ID: ::std::sync::LazyLock<::topcoat::router::RouteId> =
+                    ::std::sync::LazyLock::new(::topcoat::router::RouteId::new);
+                *ID
+            }
+
+            fn methods(&self) -> ::topcoat::router::Methods<'_> {
+                const METHODS: ::topcoat::router::Methods<'static> =
+                    ::topcoat::router::Methods::Only(&[::topcoat::router::Method::GET]);
+                METHODS
+            }
+
+            fn path(&self) -> &::topcoat::router::Path {
+                const PATH: &::topcoat::router::Path =
+                    ::topcoat::router::Path::new(concat!("/", $shortlink));
+                PATH
+            }
+
+            fn handle<'cx>(
+                &'cx self,
+                cx: &'cx ::topcoat::context::Cx,
+                body: ::topcoat::router::Body,
+            ) -> ::topcoat::router::RouteFuture<'cx> {
+                $crate::content::posts::shortlink_handler(cx, body)
+            }
+        }
+
+        inventory::submit! {
+            &__POST_SHORTLINK as &'static dyn ::topcoat::router::Route
+        }
     };
     (
         essay,
@@ -305,7 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn shortlinks_redirect_permanently_and_preserve_the_query() {
-        use topcoat::router::{Body, Request, Router, RouterBuilderDiscoverExt, header};
+        use topcoat::router::{Body, Router, RouterBuilderDiscoverExt, header, request::Request};
 
         let router = Router::builder().discover().build();
         for (source, target) in [

@@ -30,6 +30,7 @@ pub fn router() -> Router {
     Router::builder()
         .assets(AssetBundle::load().unwrap())
         .discover()
+        .layer(response_layer::layer())
         .cookies()
         .app_context(data.clone())
         .app_context(FitnessStore::new(data))

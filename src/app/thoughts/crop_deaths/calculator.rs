@@ -874,7 +874,7 @@ pub async fn calculator(state: State) -> Result {
                         step="1"
                         value=(range_slider_value.as_str())
                         aria-label="Death rate within the illustrated range"
-                        aria-valuetext=(format!("{} deaths per hectare per crop year", rate).as_str())
+                        aria-valuetext=(format!("{} deaths per hectare per crop year", rate))
                         data-crop-rate-slider=""
                     >
                     <div class="crop-rate-scale" aria-hidden="true">
@@ -995,7 +995,7 @@ pub async fn calculator(state: State) -> Result {
                         result_meals,
                         meal_label,
                         scenario.animal_singular,
-                    ).as_str())
+                    ))
                     data-crop-equation=""
                 >
                     <div class="crop-recipe-panels" data-crop-recipe-panels="">

@@ -19,8 +19,8 @@ crate-type = ["cdylib"]
 # exactly — the glue and the binary are a matched pair.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 diary-core = { path = "../diary-core", features = ["view"] }
-# Offline SSR: the serve-less topcoat router + the shared views. This is the
-# 0.5.0 feature split working as designed — hyper/tokio never enter this
+# Offline SSR: the serve-less topcoat router + the shared views. The serve-less
+# feature split works as designed — hyper/tokio never enter this
 # graph. The oneshot channel is the Send bridge: page render futures must be
 # Send (topcoat bounds), indxdb query futures are not, so reads run in
 # spawn_local and hand results back through a receiver (which IS Send).
@@ -38,7 +38,7 @@ surrealdb = { version = "=3.2.3", default-features = false, features = [
     "kv-indxdb",
     "protocol-ws",
 ] }
-topcoat = { version = "0.5.0", default-features = false, features = [
+topcoat = { version = "0.6.2", default-features = false, features = [
     "router",
     "view",
     "discover",
@@ -54,14 +54,13 @@ web-sys = { version = "0.3", features = [
     "Response",
 ] }
 
-# surrealdb-core 3.2.3 panics on wasm32-unknown-unknown: `kvs/ds.rs` and the
-# TIMEOUT operator still call `tokio::time::Instant::now()`, which reaches
-# std's unimplemented monotonic clock (the unresolved half of upstream
-# issue #6711 — the rest of the crate already migrated to web_time). The
-# vendored copy is the crates.io tarball (sha256-verified) plus
-# deploy/surrealdb-core-wasm-time.patch, which swaps those two files to the
-# crate's own established wasmtimer pattern. Drop this whole [patch] when a
-# release lands with the fix.
+# surrealdb-core 3.2.3 still has three wasm timer call sites that reach std's
+# unimplemented monotonic clock (the unresolved half of upstream issue #6711;
+# the rest of the crate already migrated to web_time). The vendored copy is the
+# sha256-verified crates.io tarball plus deploy/surrealdb-core-wasm-time.patch,
+# which moves those sites to the crate's established wasmtimer pattern and
+# suppresses one wasm-only dead-code warning. Drop this whole [patch] when a
+# release lands with the fixes.
 [patch.crates-io]
 surrealdb-core = { path = "../../vendor/surrealdb-core" }
 

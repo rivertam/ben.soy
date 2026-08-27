@@ -4,7 +4,7 @@ FROM rust:1.97-slim AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates pkg-config \
     && rm -rf /var/lib/apt/lists/*
-RUN cargo install topcoat-cli --version 0.5.0 --locked
+RUN cargo install topcoat-cli --version 0.6.2 --locked
 # topcoat-cli strips CARGO_HOME before its internal `cargo build`, so the
 # inner build falls back to /root/.cargo. Point the outer build there too or
 # `topcoat asset bundle` recompiles every dependency from scratch.
@@ -56,8 +56,8 @@ COPY --from=builder /build/target/release/benjisponge /app/benjisponge
 # service with `/app/podrick run` as its start command (docs/podrick.md). It
 # serves no HTTP and needs no assets.
 COPY --from=builder /build/target/release/podrick /app/podrick
-# AssetBundle::load() walks up from the exe looking for assets/manifest.toml
-COPY --from=builder /build/target/assets /app/assets
+# AssetBundle::load() looks beside the executable for assets/manifest.toml.
+COPY --from=builder /build/target/release/assets /app/assets
 # diary_sync.rs reads the wasm pair from ./wasm-dist relative to the working
 # directory; missing files would quietly disable the diary's offline queue.
 COPY --from=wasm-builder /build/wasm-dist /app/wasm-dist

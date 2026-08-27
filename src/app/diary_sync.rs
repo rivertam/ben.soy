@@ -35,7 +35,7 @@ use topcoat::{
     Result,
     asset::asset_config,
     context::Cx,
-    router::{Body, Response, StatusCode, header, route, uri},
+    router::{Body, StatusCode, header, request::uri, response::Response, route},
 };
 
 // The worker's offline SSR links the site stylesheet and the diary page

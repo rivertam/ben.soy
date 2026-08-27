@@ -44,8 +44,12 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, HeaderValue, Response, StatusCode, error::redirect, header, headers, page,
-        path_param, query_params, route, to_bytes, uri,
+        Body, HeaderMap, HeaderValue, StatusCode,
+        error::redirect,
+        header, page, path_param, query_params,
+        request::{headers, uri},
+        response::Response,
+        route, to_bytes,
     },
     view::view,
 };
@@ -106,7 +110,7 @@ async fn diary(cx: &Cx) -> Result {
         return Err(redirect(&target).into());
     }
     let Some(page_number) = requested_page(query.page.as_deref()) else {
-        return Err(redirect(&views::nav_url(needle.as_deref().unwrap_or(""), 1)).into());
+        return Err(redirect(views::nav_url(needle.as_deref().unwrap_or(""), 1)).into());
     };
     let notice = query.notice.as_deref().map(|code| match code {
         "saved" => "Saved.",
@@ -120,7 +124,7 @@ async fn diary(cx: &Cx) -> Result {
         Some(q) => match search_page(data, q, page_number).await {
             Ok((hits, total)) => {
                 if page_number > last_page(total) {
-                    return Err(redirect(&views::nav_url(q, last_page(total))).into());
+                    return Err(redirect(views::nav_url(q, last_page(total))).into());
                 }
                 (
                     RoomMode::Search {
@@ -146,7 +150,7 @@ async fn diary(cx: &Cx) -> Result {
         None => match entry_page(data, page_number).await {
             Ok((entries, total)) => {
                 if page_number > last_page(total) {
-                    return Err(redirect(&views::page_url(last_page(total))).into());
+                    return Err(redirect(views::page_url(last_page(total))).into());
                 }
                 let bubbles: Vec<Bubble> = entries.iter().rev().map(Bubble::synced).collect();
                 (RoomMode::Transcript { entries: bubbles }, total, true)
@@ -195,13 +199,12 @@ async fn diary(cx: &Cx) -> Result {
     }
 }
 
-#[path_param]
-struct EntryPath(str);
+path_param!(entry_path);
 
 #[page("/diary/{entry_path}")]
 async fn diary_entry(cx: &Cx) -> Result {
     let Some(current) = viewer(cx) else {
-        return Err(redirect(&format!("/login?next={}", urlencode(uri(cx).path()))).into());
+        return Err(redirect(format!("/login?next={}", urlencode(uri(cx).path()))).into());
     };
     if !is_admin(&current.email) {
         return view! {
@@ -222,7 +225,7 @@ async fn diary_entry(cx: &Cx) -> Result {
         };
     }
     if uri(cx).query().is_some() {
-        return Err(redirect(&views::entry_url(entry_path)).into());
+        return Err(redirect(views::entry_url(entry_path)).into());
     }
     let loaded = entry_by_id(app_context::<Data>(cx), entry_path).await;
     let entry = match &loaded {

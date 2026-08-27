@@ -245,15 +245,15 @@ response layer
 on any request carrying a `__Host-viewer` cookie — keyed on presence,
 not validity, so a garbage cookie fails closed; framework error
 responses (404/405/redirects/500s) are converted inside the layer so
-they can't escape the stamp. The one exemption is by response, never
+they can't escape the stamp. The response layer is deliberately pathless and
+manually registered so Topcoat 0.6 runs it for bare unmatched 404/405 responses
+too. The one exemption is by response, never
 request path: hashed assets declare `immutable` and stay cacheable
 (`/_topcoat/junk` falls through to the catch-all 404, which renders the
 personalized shell — a path-based exemption would leak it). Pages keep
 declaring the cache headers their anonymous renders want; the layer
-overrides only for cookie-bearing requests. Topcoat allows ONE discovered `#[layer]` per
-path (a second `#[layer("/")]` panics at router build, which `just
-check` does not catch) — new site-wide response behavior goes in that
-file, never a sibling layer.
+overrides only for cookie-bearing requests. New site-wide response behavior
+goes in that file, never a sibling layer.
 
 Cloudflare serves cached HTML without consulting request cookies, so a
 signed-in visitor would get the anonymous copy until it expires — never

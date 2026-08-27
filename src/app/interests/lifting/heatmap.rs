@@ -371,7 +371,7 @@ async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result 
 
     if activities.is_empty() {
         return view! {
-            <span class="inline-popover-kicker">(format_long(parsed).as_str())</span>
+            <span class="inline-popover-kicker">(format_long(parsed))</span>
             if let Some(copy) = &interrupted_copy {
                 <p class=(PREVIEW_INTERRUPTION)>(copy.as_str())</p>
             }

@@ -27,7 +27,7 @@ use topcoat::{
     context::{Cx, app_context},
     router::{
         HeaderValue, error::not_found, error::redirect, error::redirect_permanent, header, page,
-        parse_query_params, path_param, route, uri,
+        parse_query_params, path_param, request::uri, route,
     },
     view::{class, component, view},
 };
@@ -198,14 +198,13 @@ async fn workout_upload_form(textarea_id: &str) -> Result {
     }
 }
 
-#[path_param]
-struct WorkoutPath(str);
+path_param!(workout_path);
 
 #[page("/fitness/lift/{workout_path}")]
 async fn lift_detail(cx: &Cx) -> Result {
     let workout_path = path_param::<WorkoutPath>(cx);
     if uri(cx).query().is_some() {
-        return Err(redirect(&workout_url(workout_path)).into());
+        return Err(redirect(workout_url(workout_path)).into());
     }
 
     let loaded = fitness::load_workout_by_path(app_context::<FitnessStore>(cx), workout_path).await;
@@ -422,6 +421,7 @@ async fn lift_detail_head(workout: &fitness::Workout, share_text: &str) -> Resul
 
 #[component]
 pub(super) async fn workout_sheet(workout: &fitness::Workout, permalink: bool) -> Result {
+    let source_workout = workout;
     let workout = WorkoutCard::from(workout);
     let workout_link_label = format!("Open {} workout", workout.title);
     debug_assert!(permalink, "workout cards are only used in archive listings");
@@ -475,7 +475,7 @@ pub(super) async fn workout_sheet(workout: &fitness::Workout, permalink: bool) -
                         }
                     </p>
                 </header>
-                workout_body(workout: workout)
+                workout_body(workout: source_workout)
             </div>
         </article>
     }
@@ -538,7 +538,8 @@ async fn workout_detail_block(block: &results::ExerciseBlock<'_>) -> Result {
 }
 
 #[component]
-async fn workout_body(workout: WorkoutCard<'_>) -> Result {
+async fn workout_body(workout: &fitness::Workout) -> Result {
+    let workout = WorkoutCard::from(workout);
     view! {
         if let Some(description) = workout.description {
             <p class=(WORKOUT_NOTE)>(description)</p>

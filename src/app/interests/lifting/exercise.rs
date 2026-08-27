@@ -16,8 +16,8 @@ use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, HeaderValue, Response, StatusCode, error::not_found,
-        error::redirect_permanent, header, headers, page, path_param, query_params, route,
+        Body, HeaderMap, HeaderValue, StatusCode, error::not_found, error::redirect_permanent,
+        header, page, path_param, query_params, request::headers, response::Response, route,
         to_bytes,
     },
     view::{class, component, view},
@@ -47,8 +47,7 @@ pub(super) fn page_url(name: &str) -> String {
     format!("/fitness/exercise/{}", urlencode(name))
 }
 
-#[path_param]
-struct ExerciseName(str);
+path_param!(exercise_name);
 
 #[query_params(error = redirect("?"))]
 struct ExerciseQuery {

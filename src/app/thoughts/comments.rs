@@ -20,7 +20,10 @@ use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, Response, StatusCode, header, headers, path_param, route, to_bytes, uri,
+        Body, HeaderMap, StatusCode, header, path_param,
+        request::{headers, uri},
+        response::Response,
+        route, to_bytes,
     },
     view::{component, view},
 };
@@ -336,11 +339,9 @@ async fn comment_form(
     }
 }
 
-#[path_param]
-struct ThoughtSlug(str);
+path_param!(thought_slug);
 
-#[path_param]
-struct CommentId(str);
+path_param!(comment_id);
 
 #[route(POST "/thoughts/{thought_slug}/comments")]
 async fn create_comment(cx: &Cx, body: Body) -> Result<Response> {

@@ -25,8 +25,10 @@ use topcoat::{
     context::Cx,
     cookie::{Cookie, Cookies, SameSite, private_cookies, time},
     router::{
-        Body, HeaderMap, HeaderValue, Response, StatusCode, header, headers, page, query_params,
-        route, uri,
+        Body, HeaderMap, HeaderValue, StatusCode, header, page, query_params,
+        request::{headers, uri},
+        response::Response,
+        route,
     },
     view::view,
 };

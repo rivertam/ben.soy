@@ -112,8 +112,7 @@ const MEDIA: &[Media] = &[
     },
 ];
 
-#[path_param]
-struct MediaSlug(str);
+path_param!(media_slug);
 
 #[page("/swing")]
 async fn swing() -> Result {

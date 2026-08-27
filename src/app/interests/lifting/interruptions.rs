@@ -14,7 +14,9 @@ use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        Body, Bytes, HeaderMap, HeaderValue, Response, StatusCode, header, headers, path_param,
+        Body, HeaderMap, HeaderValue, StatusCode, header, path_param,
+        request::{Bytes, headers},
+        response::Response,
         route, to_bytes,
     },
     view::{class, component, view},
@@ -68,8 +70,7 @@ const BUTTON: &str = "px-3 py-[0.45rem] font-meta text-[0.7rem] text-card bg-oxi
      focus-visible:border-oxide-hot";
 const QUIET: &str = "quiet-link cursor-pointer font-meta text-xs";
 
-#[path_param]
-struct InterruptionId(str);
+path_param!(interruption_id);
 
 #[route(POST "/fitness/interruptions")]
 async fn create_interruption(cx: &Cx, body: Body) -> Result<Response> {

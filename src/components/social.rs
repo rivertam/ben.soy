@@ -10,7 +10,7 @@ use topcoat::{
     Result,
     asset::{Asset, asset, asset_config},
     context::Cx,
-    router::uri,
+    router::request::uri,
     view::{View, view},
 };
 use url::Url;

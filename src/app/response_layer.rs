@@ -1,7 +1,7 @@
-//! The site-wide response layer. Topcoat's discovery allows exactly one
-//! `#[layer]` per path — a second `#[layer("/")]` panics at router build —
-//! so every whole-site response behavior lives in this one fn: add here,
-//! never as a sibling layer.
+//! The site-wide response layer. It is pathless and manually registered so
+//! Topcoat 0.6 also runs it for requests that match no route (including bare
+//! 404/405 responses). Every whole-site response behavior lives in this one
+//! fn: add here, never as a sibling layer.
 //!
 //! Current behaviors, in order:
 //!
@@ -30,65 +30,67 @@
 //!    (`crate::emdash`).
 
 use topcoat::{
-    Result,
-    context::CxBuilder,
-    router::{Body, HeaderMap, HeaderValue, IntoResponse, Next, Response, header, layer, to_bytes},
+    context::Cx,
+    router::{
+        Body, HeaderMap, HeaderValue, LayerFn, LayerFuture, Next, Path, header,
+        request::{headers, uri},
+        response::{IntoResponse, Response},
+        to_bytes,
+    },
 };
 
 use super::login::VIEWER_COOKIE_BROWSER_NAME;
 use crate::emdash::link_em_dashes;
 
-#[layer("/")]
-async fn site_responses(cx: &mut CxBuilder, body: Body, next: Next<'_>) -> Result<Response> {
-    let (personalized, native_share) = cx
-        .get::<http::request::Parts>()
-        .map(|parts| {
-            (
-                names_viewer_cookie(&parts.headers),
-                is_native_share_path(parts.uri.path()),
-            )
-        })
-        .unwrap_or((false, false));
-    let (mut response, from_error) = match next.run(cx, body).await {
-        Ok(response) => (response, false),
-        // Framework error responses (404/405 terminals, query-param
-        // redirects, handler 500s) normally render OUTSIDE every layer and
-        // would escape the stamp below; convert personalized ones here.
-        Err(error) if personalized || native_share => {
-            (IntoResponse::into_response(error, cx)?, true)
-        }
-        Err(error) => return Err(error),
-    };
-    if personalized && !immutable(response.headers().get(header::CACHE_CONTROL)) {
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("private, no-store"),
-        );
-    } else if native_share {
-        response
-            .headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    }
-    if native_share {
-        response.headers_mut().insert(
-            header::REFERRER_POLICY,
-            HeaderValue::from_static("no-referrer"),
-        );
-    }
+pub(super) fn layer() -> LayerFn {
+    LayerFn::new(None::<&Path>, site_responses)
+}
 
-    // Error responses never met the em-dash rewrite when the framework
-    // rendered them, so converted ones skip it too.
-    if from_error || !is_html(response.headers().get(header::CONTENT_TYPE)) {
-        return Ok(response);
-    }
-    let (mut parts, body) = response.into_parts();
-    let bytes = to_bytes(body, usize::MAX).await.map_err(|err| {
-        std::io::Error::other(format!("response layer: failed to read body: {err}"))
-    })?;
-    let html = String::from_utf8_lossy(&bytes);
-    let rewritten = link_em_dashes(&html);
-    parts.headers.remove(header::CONTENT_LENGTH);
-    Ok(Response::from_parts(parts, Body::from(rewritten)))
+fn site_responses<'a>(cx: &'a Cx, body: Body, next: Next<'a>) -> LayerFuture<'a> {
+    Box::pin(async move {
+        let personalized = names_viewer_cookie(headers(cx));
+        let native_share = is_native_share_path(uri(cx).path());
+        let (mut response, from_error) = match next.run(cx, body).await {
+            Ok(response) => (response, false),
+            // Framework error responses (404/405 terminals, query-param
+            // redirects, handler 500s) would escape the stamp below unless
+            // converted here.
+            Err(error) if personalized || native_share => {
+                (IntoResponse::into_response(error, cx)?, true)
+            }
+            Err(error) => return Err(error),
+        };
+        if personalized && !immutable(response.headers().get(header::CACHE_CONTROL)) {
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            );
+        } else if native_share {
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        }
+        if native_share {
+            response.headers_mut().insert(
+                header::REFERRER_POLICY,
+                HeaderValue::from_static("no-referrer"),
+            );
+        }
+
+        // Error responses never met the em-dash rewrite when the framework
+        // rendered them, so converted ones skip it too.
+        if from_error || !is_html(response.headers().get(header::CONTENT_TYPE)) {
+            return Ok(response);
+        }
+        let (mut parts, body) = response.into_parts();
+        let bytes = to_bytes(body, usize::MAX).await.map_err(|err| {
+            std::io::Error::other(format!("response layer: failed to read body: {err}"))
+        })?;
+        let html = String::from_utf8_lossy(&bytes);
+        let rewritten = link_em_dashes(&html);
+        parts.headers.remove(header::CONTENT_LENGTH);
+        Ok(Response::from_parts(parts, Body::from(rewritten)))
+    })
 }
 
 fn is_native_share_path(path: &str) -> bool {
