@@ -70,6 +70,13 @@ and, for sign-in ([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
 and `GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows
 managed at `/admin/permissions`, not environment variables.
 
+The optional private fitness MCP runs inside this same web process at `/mcp`.
+Set `FITNESS_MCP_OAUTH_ISSUER` and `FITNESS_MCP_ALLOWED_SUBJECTS` together to
+enable it; setting neither leaves its routes absent. Its audience is derived
+from `SITE_ORIGIN` as `https://ben.soy/mcp`. There is no second Railway service,
+database credential set, or internal signing key; see
+[fitness-mcp.md](fitness-mcp.md) for the Auth0 and verification steps.
+
 Diary direct sync ([diary-sync.md](diary-sync.md)) is OFF until all three of
 its variables are set on the web service — set none of them until flipping
 the flag deliberately:

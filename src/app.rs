@@ -22,16 +22,21 @@ use self::interests::lifting::archive::store::FitnessStore;
 use topcoat::{
     asset::{AssetBundle, RouterBuilderAssetExt},
     cookie::{Key, RouterBuilderCookieExt},
-    router::{Router, RouterBuilderDiscoverExt},
+    router::{OriginPolicy, Router, RouterBuilderDiscoverExt},
 };
 
 pub fn router() -> Router {
     let data = Data::from_env();
-    Router::builder()
+    let builder = Router::builder()
         .assets(AssetBundle::load().unwrap())
         .discover()
         .layer(response_layer::layer())
         .cookies()
+        // Streamable HTTP MCP clients legitimately POST cross-origin. The
+        // mounted MCP service applies its own narrow Origin allowlist; every
+        // other site route retains Topcoat's same-origin policy.
+        .origin_policy(OriginPolicy::new().exempt_paths(["/mcp"]));
+    benjisponge::fitness_mcp::mount(builder, data.clone())
         .app_context(data.clone())
         .app_context(FitnessStore::new(data))
         .app_context(cookie_key())

@@ -43,6 +43,7 @@ path = "src/app/interests/podrick/podrick.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+axum = "0.8.9"
 base64 = "0.22"
 csv = "1.3.1"
 diary-core = { workspace = true, features = ["view"] }
@@ -60,13 +61,26 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-webpki-roots",
     "json",
 ] }
+rmcp = { version = "=3.1.4", features = [
+    "macros",
+    "schemars",
+    "server",
+    "transport-streamable-http-server",
+] }
+schemars = "1.2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 subtle = "2.6.1"
 surrealdb = { workspace = true, features = ["protocol-ws", "protocol-http", "rustls"] }
-tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
-topcoat = { version = "0.6.2", features = ["tailwind", "font-fontsource"] }
+tokio = { version = "1.53.0", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+] }
+topcoat = { version = "0.6.2", features = ["tailwind", "font-fontsource", "tower"] }
+tracing = "0.1.41"
 url = "2.5.8"
 uuid = { version = "1.19.0", features = ["v4"] }
 

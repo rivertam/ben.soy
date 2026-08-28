@@ -35,9 +35,9 @@ Configure these rules under **ben.soy → Caching → Cache Rules**, in this ord
    - Cache eligibility: **Bypass cache**
 
 Never select an edge TTL that ignores origin cache-control. Public pages opt in
-with `public` plus `s-maxage`; API, auth, admin, hidden, diary, and personalized
-responses remain `no-store`. The request-side viewer bypass prevents a signed-in
-visitor from receiving an anonymous cached shell, while
+with `public` plus `s-maxage`; API, auth, admin, hidden, diary, MCP, and
+personalized responses remain `no-store`. The request-side viewer bypass
+prevents a signed-in visitor from receiving an anonymous cached shell, while
 `src/app/response_layer.rs` prevents their personalized render from being
 stored even if the Cloudflare rule drifts.
 
@@ -63,6 +63,11 @@ service with `TUNNEL_TOKEN`. Ingress hostnames:
   every table is `PERMISSIONS NONE` except the diary grant, and the access
   method itself only exists while `DIARY_SYNC_JWT_PUBLIC_KEY` is set.
   Remove the ingress and DNS record when the flag is off.
+
+The private fitness MCP uses `https://ben.soy/mcp` through the first ingress;
+it needs no additional hostname or Tunnel service. OAuth protects the MCP
+endpoint, its discovery metadata is public, and both emit `private, no-store`
+([fitness-mcp.md](fitness-mcp.md)).
 
 DNS: CNAME each public host to `<tunnel-id>.cfargotunnel.com` (proxied).
 The apex and `www` records in the three public zones are needed even for

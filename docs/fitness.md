@@ -4,6 +4,10 @@ Read this before changing `/fitness`, workout/run import, fitness API/schema,
 tags, or local fitness startup. The exact lifting
 API/filter/import contracts are in this file under "API contract".
 
+The private, OAuth-protected agent interface is documented separately in
+[fitness-mcp.md](fitness-mcp.md). It shares these data invariants but does not
+reuse the local sync token or expose unrestricted SurrealQL.
+
 ## Data flow
 
 - Page, filter/query handling, API reader, and HTML rendering compose the
