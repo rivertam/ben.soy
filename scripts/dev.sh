@@ -148,6 +148,7 @@ SURREALDB_ENDPOINT="${surreal_endpoint}" \
     SURREALDB_PASSWORD=dev \
     SPIRE_SYNC_TOKEN=local-development \
     FITNESS_SYNC_TOKEN=local-development \
+    STEPS_SYNC_TOKEN=local-development \
     COOKIE_KEY=local-development-cookie-key-not-a-secret \
     SITE_ORIGIN="http://localhost:${site_port}" \
     GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}" \

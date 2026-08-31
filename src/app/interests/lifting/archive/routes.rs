@@ -1,6 +1,7 @@
 //! `/api/fitness/*` — the public fitness archive and private bounded
-//! import path, ported from the old Worker's `fitness.ts` (since
-//! deleted). Bodies, error
+//! import paths. The lifting routes were ported from the old Worker's
+//! `fitness.ts` (since deleted); the Health Connect step resource is native to
+//! this service. Bodies, error
 //! messages, status codes, and headers are contract (golden fixtures in
 //! `tests/fixtures/api`). Public GET reads carry `Access-Control-Allow-
 //! Origin: *`; import responses never did and still don't.
@@ -29,9 +30,11 @@ use super::db;
 use super::eastern;
 use super::filters::parse_filters;
 use super::import::{BODY_LIMIT_BYTES, parse_import_payload};
+use super::steps;
 use super::store::FitnessStore;
 
 pub const FITNESS_SYNC_TOKEN_VAR: &str = "FITNESS_SYNC_TOKEN";
+pub const STEPS_SYNC_TOKEN_VAR: &str = "STEPS_SYNC_TOKEN";
 
 type PublicResponse = (StatusCode, [(&'static str, &'static str); 3], String);
 type PrivateResponse = (StatusCode, [(&'static str, &'static str); 2], String);
@@ -137,6 +140,28 @@ async fn list_calendar(cx: &Cx) -> Result<PublicResponse> {
             public_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
     })
+}
+
+/// Recent daily totals are a direct small-table read rather than part of the
+/// lifting snapshot: step rows change independently and never affect records,
+/// filters, volume, or the fitness version.
+#[route(GET "/api/fitness/steps")]
+async fn list_steps(cx: &Cx) -> Result<PublicResponse> {
+    if has_query(cx) {
+        return Ok(public_error(
+            StatusCode::BAD_REQUEST,
+            "steps does not accept filters",
+        ));
+    }
+    Ok(
+        match steps::load(app_context::<Data>(cx), steps::RECENT_DAYS_LIMIT).await {
+            Ok(days) => public(StatusCode::OK, to_body(&steps::StepSeries { days })),
+            Err(error) => {
+                log_failure("/api/fitness/steps", error);
+                public_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            }
+        },
+    )
 }
 
 #[route(GET "/api/fitness/workouts/latest")]
@@ -321,7 +346,7 @@ async fn list_ids(cx: &Cx) -> Result<PublicResponse> {
 /// The Worker's `readJson` Content-Length handling: `Number(header)` must
 /// be a non-negative integer, and anything over the limit is a 413 before
 /// the body is even considered.
-fn content_length_error(cx: &Cx) -> Option<PrivateResponse> {
+fn content_length_error(cx: &Cx, limit: usize) -> Option<PrivateResponse> {
     let declared = headers(cx)
         .get("content-length")
         .and_then(|value| value.to_str().ok())?;
@@ -336,10 +361,10 @@ fn content_length_error(cx: &Cx) -> Option<PrivateResponse> {
     let Some(length) = parsed.filter(|n| n.is_finite() && n.fract() == 0.0 && *n >= 0.0) else {
         return Some(private_error(StatusCode::BAD_REQUEST, "bad Content-Length"));
     };
-    if length > BODY_LIMIT_BYTES as f64 {
+    if length > limit as f64 {
         return Some(private_error(
             StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("body exceeds {BODY_LIMIT_BYTES} bytes"),
+            &format!("body exceeds {limit} bytes"),
         ));
     }
     None
@@ -367,7 +392,7 @@ async fn import_chunk(cx: &Cx, body: Bytes) -> Result<PrivateResponse> {
         ));
     }
 
-    if let Some(response) = content_length_error(cx) {
+    if let Some(response) = content_length_error(cx, BODY_LIMIT_BYTES) {
         return Ok(response);
     }
     if body.len() > BODY_LIMIT_BYTES {
@@ -418,6 +443,68 @@ async fn import_chunk(cx: &Cx, body: Bytes) -> Result<PrivateResponse> {
         }
         Err(error) => {
             log_failure("/api/fitness/import", error);
+            private_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    })
+}
+
+/// Health.md compatibility exports. This token is deliberately narrower than
+/// `FITNESS_SYNC_TOKEN`: a secret stored on the phone can update only one
+/// bounded daily step total, never lifts, runs, taxonomy, or deletions.
+#[route(POST "/api/fitness/steps")]
+async fn import_steps(cx: &Cx, body: Bytes) -> Result<PrivateResponse> {
+    let authorization = headers(cx)
+        .get("authorization")
+        .and_then(|value| value.to_str().ok());
+    let expected = std::env::var(STEPS_SYNC_TOKEN_VAR).ok();
+    if !bearer_authorized(authorization, expected.as_deref()) {
+        return Ok(private_error(StatusCode::UNAUTHORIZED, "unauthorized"));
+    }
+
+    let media_type = headers(cx)
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(|value| value.trim().to_ascii_lowercase());
+    if media_type.as_deref() != Some("application/json") {
+        return Ok(private_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type must be application/json",
+        ));
+    }
+    if let Some(response) = content_length_error(cx, steps::BODY_LIMIT_BYTES) {
+        return Ok(response);
+    }
+    if body.len() > steps::BODY_LIMIT_BYTES {
+        return Ok(private_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!("body exceeds {} bytes", steps::BODY_LIMIT_BYTES),
+        ));
+    }
+    let Ok(decoded) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return Ok(private_error(StatusCode::BAD_REQUEST, "body must be JSON"));
+    };
+    let payload = match steps::parse_healthmd_payload(&decoded) {
+        Ok(payload) => payload,
+        Err(message) => return Ok(private_error(StatusCode::BAD_REQUEST, &message)),
+    };
+
+    let imported_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+    let outcome = async {
+        let handle = app_context::<Data>(cx).db().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+            steps::apply_import(&handle, &payload, imported_at).await?,
+        )
+    }
+    .await;
+
+    Ok(match outcome {
+        Ok(outcome) => private(StatusCode::OK, to_body(&outcome.receipt)),
+        Err(error) => {
+            log_failure("/api/fitness/steps", error);
             private_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
     })

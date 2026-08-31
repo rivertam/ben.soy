@@ -64,7 +64,9 @@ credential references keep the web and database services aligned without
 duplicating the secret.
 
 Also set on the web service: `SPIRE_SYNC_TOKEN`, `FITNESS_SYNC_TOKEN`,
-`PODRICK_SYNC_TOKEN` (Bearer for `GET /api/podrick/seed`, used by local
+`STEPS_SYNC_TOKEN` (the phone-held, steps-only Health.md credential described
+in [steps-sync.md](steps-sync.md)), `PODRICK_SYNC_TOKEN` (Bearer for
+`GET /api/podrick/seed`, used by local
 Podrick reset — [podrick.md](podrick.md)), `SITE_ORIGIN=https://ben.soy`,
 and, for sign-in ([auth.md](auth.md)), `COOKIE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`,
 and `GOOGLE_OAUTH_CLIENT_SECRET`. Hidden-page allowlists are database rows

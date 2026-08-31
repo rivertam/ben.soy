@@ -120,6 +120,25 @@ DEFINE FIELD OVERWRITE ascent_millimeters ON running_activities TYPE option<int>
 DEFINE FIELD OVERWRITE imported_at ON running_activities TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799;
 
+-- Health Connect's authoritative daily step aggregate, delivered by Health.md.
+-- A day's deterministic record key makes retries idempotent; unlike immutable
+-- workouts/runs, the total is intentionally replaced when a later export sees
+-- a watch sync or source-priority correction. The source export watermark is
+-- milliseconds since Unix epoch so a delayed older request cannot regress it.
+DEFINE TABLE OVERWRITE daily_steps SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON daily_steps TYPE string
+    ASSERT string::matches(record::id($value), '^\\d{4}-\\d{2}-\\d{2}$');
+DEFINE FIELD OVERWRITE date ON daily_steps TYPE string
+    ASSERT string::matches($value, '^\\d{4}-\\d{2}-\\d{2}$');
+DEFINE FIELD OVERWRITE steps ON daily_steps TYPE int
+    ASSERT $value >= 0 AND $value <= 1000000;
+DEFINE FIELD OVERWRITE calendar_timezone ON daily_steps TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 100;
+DEFINE FIELD OVERWRITE exported_at_ms ON daily_steps TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799999;
+DEFINE FIELD OVERWRITE imported_at ON daily_steps TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
 -- The granular muscle vocabulary as data. Rust's
 -- lifting::muscle_taxonomy::MUSCLE_GROUPS stays the rendering source of
 -- truth (order, labels, grouping); these rows mirror it so weighted

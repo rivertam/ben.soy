@@ -1,7 +1,6 @@
-//! The lifting archive engine — everything behind `/fitness` and
-//! `/api/fitness/*` that isn't a view: the Eastern projection, the
-//! derived-records spec, import validation and its write path, the filter
-//! grammar, and the in-memory snapshot that serves every read.
+//! The lifting archive engine and the small Health Connect step ledger — the
+//! Eastern projection, derived-records spec, import validation/write paths,
+//! filter grammar, and the in-memory snapshot that serves lifting reads.
 //!
 //! Reads come from a [`snapshot`] of the whole archive rather than
 //! per-request SQL: records are derived-not-stored (a `has_record` filter
@@ -31,5 +30,6 @@ pub(crate) mod records;
 pub(crate) mod routes;
 pub(crate) mod scoring;
 pub(crate) mod snapshot;
+pub(crate) mod steps;
 pub(crate) mod store;
 mod validate;

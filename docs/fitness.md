@@ -1,7 +1,8 @@
 # Fitness archive
 
-Read this before changing `/fitness`, workout/run import, fitness API/schema,
-tags, or local fitness startup. The exact lifting
+Read this before changing `/fitness`, workout/run/step import, fitness API/schema,
+tags, or local fitness startup. Health Connect setup and the step wire contract
+are in [steps-sync.md](steps-sync.md). The exact lifting
 API/filter/import contracts are in this file under "API contract".
 
 The private, OAuth-protected agent interface is documented separately in
@@ -11,9 +12,9 @@ reuse the local sync token or expose unrestricted SurrealQL.
 ## Data flow
 
 - Page, filter/query handling, API reader, and HTML rendering compose the
-  independently stored lifting and running models under one public surface.
-  `/fitness` is the landing view (combined training heatmap plus the newest
-  lift and run), `/fitness/log` is the filterable, UTC-interleaved activity
+  independently stored lifting, running, and daily-step models under one public surface.
+  `/fitness` is the landing view (combined training heatmap, recent step chart,
+  and the newest lift and run), `/fitness/log` is the filterable, UTC-interleaved activity
   archive, `/fitness/lift/YYYY-MM-DDTHH-MM-SS-04-00` (or `-05-00`) is a
   complete workout page, and `/fitness/run/{Eastern-start}/{sha256-id}` is a
   run summary. Legacy `/lifting` and `/running` reads permanently redirect to
@@ -55,6 +56,11 @@ reuse the local sync token or expose unrestricted SurrealQL.
   cell, and never widen the lifting calendar JSON. The activity log paginates
   lifts and runs together; interruptions consume no slots and render after all
   primary activities on their ending date.
+- `/fitness` also reads the 35 newest `daily_steps` rows directly and renders a
+  14-day step chart. Steps remain deliberately outside the training heatmap,
+  activity log, lifting snapshot/version, scoring, records, muscle load, feeds,
+  and Podrick. Their Android ingestion and setup are in
+  [steps-sync.md](steps-sync.md).
 - Muscle involvement is driven by stored weighted connections, not tags:
   `exercise_muscles` rows carry `(exercise_name, granular muscle,
   ratio_hundredths 1..=100)`; absence of a row means no credit. The
@@ -97,7 +103,7 @@ reuse the local sync token or expose unrestricted SurrealQL.
   (SurrealDB). Records are derived in `archive/records.rs` at snapshot build —
   there is deliberately no records table and no records field in the import
   payload.
-- Schema: `src/schema.surql` — nine fitness tables: `workouts`,
+- Schema: `src/schema.surql` — ten fitness tables: `workouts`,
   `exercises`, `exercise_tags`, `sets`, `fitness_meta`, `muscles` (the
   granular vocabulary as data), `exercise_muscles` (weighted
   connections, deterministic record key = sha-256 of `exercise\nmuscle`),
@@ -107,7 +113,8 @@ reuse the local sync token or expose unrestricted SurrealQL.
   points, records, calendar JSON, or training-focus pace), and
   `running_activities` (small, route-free summaries from Garmin or the manual
   distance-and-time form; kept entirely outside lifting's set snapshot and
-  scoring).
+  scoring), and `daily_steps` (date-keyed, intentionally mutable Health Connect
+  aggregates with a source-export watermark).
 - CSV parsing, stable IDs, taxonomy, chunking:
   `src/app/interests/lifting/fitness_sync.rs`; taxonomy shared by that binary
   and browser uploads lives in `src/app/interests/lifting/taxonomy.rs`.
@@ -218,18 +225,19 @@ reuse the local sync token or expose unrestricted SurrealQL.
   `/api/fitness/*`). Bumps the fitness version and rebuilds the snapshot so
   every page reflects the change immediately.
 - `just dev [port]` delegates to `scripts/dev.sh`: it starts the local
-  SurrealDB container, then runs Topcoat with local-only sync tokens. The app
+  SurrealDB container, then runs Topcoat with local-only sync tokens, including
+  `STEPS_SYNC_TOKEN=local-development`. The app
   applies the committed schema on its first data-backed connection. It never
   imports data. It also starts the Podrick Discord bot when `.env.dev`
   configures one (`docs/podrick.md`), which reads fitness tables but never
   writes them; `just dev --no-podrick` skips it.
 - `just reset-fitness-local [csv]` runs while `just dev` is active. It
-  truncates only the local fitness tables (including
-  `fitness_interruptions` and locally imported `running_activities`), resets
-  the fitness version, and imports the CSV; local Spire tables in the shared
+  truncates only the local fitness tables (including `fitness_interruptions`,
+  locally imported `running_activities`, and `daily_steps`), resets the
+  fitness version, and imports the CSV; local Spire tables in the shared
   database remain untouched.
   This intentionally deletes locally pasted manual workouts, manual and
-  Garmin runs, and interruption notes too.
+  Garmin runs, step totals, and interruption notes too.
 
 ## Source invariants
 
@@ -284,15 +292,20 @@ reuse the local sync token or expose unrestricted SurrealQL.
   through the same `America/New_York` DST rules as lifts, and that projection
   supplies the public date/path. Manual distance accepts miles and manual
   elapsed time accepts total minutes plus seconds before exact integer scaling.
+- Steps are Health Connect calendar-day aggregates, not activity samples and
+  not an Eastern projection performed by this site. The record's ISO date and
+  source calendar timezone come from Health.md. A later source export may
+  authoritatively replace the same date; its millisecond watermark prevents an
+  older delayed request from reverting the total.
 
 ## API contract
 
-Read endpoints are served from an immutable in-memory snapshot
+Lifting read endpoints are served from an immutable in-memory snapshot
 (`src/app/interests/lifting/archive/snapshot.rs`), rebuilt when the fitness
-version changes. Filter
-semantics deliberately mirror the original Worker SQL (ASCII-only case
-folding, byte-order sorts, NULL-excluding comparisons); the golden fixtures
-under `tests/fixtures/api` are the contract.
+version changes. The small steps endpoint reads its independent table
+directly. Filter semantics deliberately mirror the original Worker SQL
+(ASCII-only case folding, byte-order sorts, NULL-excluding comparisons); the
+golden fixtures under `tests/fixtures/api` are the contract.
 
 Public reads are `Cache-Control: no-store` and include
 `Access-Control-Allow-Origin: *`:
@@ -316,6 +329,9 @@ Public reads are `Cache-Control: no-store` and include
   with at least one set, in ascending date order. `volume_points` follows the
   site set-log score exactly: warm-up = 0, failure = 6, RPE 10/9/8 = 5/4/3,
   and any other or missing effort = 2.
+- `GET /api/fitness/steps` accepts no query parameters and returns the 35 newest
+  daily totals, newest first, as `{days:[{date,steps}]}`. It exposes no import
+  timestamp, source timezone, or Health.md failure detail.
 - `GET /api/fitness/workouts/latest` accepts no query parameters and returns
   `{version,workout,newer_workout_path,older_workout_path}` for the newest
   workout by source instant. `workout` has the same shape as a
@@ -356,6 +372,17 @@ Public reads are `Cache-Control: no-store` and include
 Unknown, duplicated singular, malformed, out-of-range, or contradictory
 filters return 400. Repeated facets are capped at eight values each. Search
 patterns keep the original 50-byte escaped-LIKE limit as contract.
+
+The mutable step write is `POST /api/fitness/steps`, protected only by the
+dedicated `STEPS_SYNC_TOKEN`. It accepts Health.md compatibility API envelope
+v1 / daily-record v4, caps the body at 256 KiB and 400 dates, and upserts one
+validated `0..=1,000,000` integer total per ISO date. Replays are idempotent;
+newer exports may correct a total, while an equal or older source watermark
+cannot overwrite it. The receipt is
+`{received,accepted,added,updated,unchanged,stale,omitted,failed_dates}`.
+Missing/failed dates never erase stored data. This path does not reuse
+`FITNESS_SYNC_TOKEN`, bump the lifting version, or rebuild the lifting snapshot.
+The exact envelope and phone setup are in [steps-sync.md](steps-sync.md).
 
 The write path is `POST /api/fitness/import`, protected by the
 `FITNESS_SYNC_TOKEN` secret. The body is capped at 1,000,000 bytes, 50 sets,
@@ -522,9 +549,9 @@ exercise. The JSON sync endpoint continues to accept only
 
 - For a new archive, rollout order is: provision the clean database as
   described in `docs/railway-deploy.md`, configure all five connection
-  variables and `FITNESS_SYNC_TOKEN`, deploy committed HEAD, exercise a
-  data-backed route so the app installs `src/schema.surql`, then run
-  `just sync-fitness`.
+  variables, `FITNESS_SYNC_TOKEN`, and `STEPS_SYNC_TOKEN`, deploy committed
+  HEAD, exercise a data-backed route so the app installs `src/schema.surql`,
+  then run `just sync-fitness`.
 - The CSV corpus uses reset-and-resync rather than an in-place upgrade. Manual
   workouts are not present in that CSV and must survive replacement. Run this
   transaction as one line against the production database (see "Running SQL
@@ -556,8 +583,10 @@ exercise. The JSON sync endpoint continues to accept only
   publishing it again, never editing set history or derived records in
   place. A delete leaves any Podrick announcement row behind, so a
   delete-and-repaste does not re-announce to Discord (`docs/podrick.md`).
-  Interruptions are the other write exception: admin form POSTs may create,
-  edit, and delete annotate-only date-range notes without touching sets.
+  Daily step upserts are the separate source-authoritative exception described
+  in `docs/steps-sync.md`. Interruptions are the other admin write exception:
+  form POSTs may create, edit, and delete annotate-only date-range notes
+  without touching sets.
 
 ## Running SQL against production
 
