@@ -77,6 +77,48 @@ fn log_failure(path: &str, error: impl std::fmt::Display) {
     );
 }
 
+fn is_healthmd_client(cx: &Cx) -> bool {
+    headers(cx)
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == "Health.md Android API Export")
+}
+
+fn log_steps_rejection(
+    stage: &str,
+    status: StatusCode,
+    body_bytes: usize,
+    healthmd_client: bool,
+    detail: &str,
+) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "message": "fitness steps import rejected",
+            "path": "/api/fitness/steps",
+            "stage": stage,
+            "status": status.as_u16(),
+            "body_bytes": body_bytes,
+            "healthmd_client": healthmd_client,
+            "detail": detail,
+        })
+    );
+}
+
+fn log_steps_success(body_bytes: usize, healthmd_client: bool, receipt: &steps::StepImportReceipt) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "message": "fitness steps import accepted",
+            "path": "/api/fitness/steps",
+            "status": StatusCode::OK.as_u16(),
+            "body_bytes": body_bytes,
+            "healthmd_client": healthmd_client,
+            "receipt": receipt,
+        })
+    );
+}
+
 fn to_body<T: Serialize>(payload: &T) -> String {
     serde_json::to_string(payload).expect("api payloads are plain data")
 }
@@ -453,11 +495,25 @@ async fn import_chunk(cx: &Cx, body: Bytes) -> Result<PrivateResponse> {
 /// bounded daily step total, never lifts, runs, taxonomy, or deletions.
 #[route(POST "/api/fitness/steps")]
 async fn import_steps(cx: &Cx, body: Bytes) -> Result<PrivateResponse> {
+    let body_bytes = body.len();
+    let healthmd_client = is_healthmd_client(cx);
     let authorization = headers(cx)
         .get("authorization")
         .and_then(|value| value.to_str().ok());
     let expected = std::env::var(STEPS_SYNC_TOKEN_VAR).ok();
     if !bearer_authorized(authorization, expected.as_deref()) {
+        let detail = if expected.is_some() {
+            "bearer token missing or mismatched"
+        } else {
+            "STEPS_SYNC_TOKEN is not configured"
+        };
+        log_steps_rejection(
+            "authorization",
+            StatusCode::UNAUTHORIZED,
+            body_bytes,
+            healthmd_client,
+            detail,
+        );
         return Ok(private_error(StatusCode::UNAUTHORIZED, "unauthorized"));
     }
 
@@ -467,26 +523,70 @@ async fn import_steps(cx: &Cx, body: Bytes) -> Result<PrivateResponse> {
         .and_then(|value| value.split(';').next())
         .map(|value| value.trim().to_ascii_lowercase());
     if media_type.as_deref() != Some("application/json") {
+        log_steps_rejection(
+            "content-type",
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            body_bytes,
+            healthmd_client,
+            media_type
+                .as_deref()
+                .unwrap_or("missing or invalid Content-Type"),
+        );
         return Ok(private_error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Content-Type must be application/json",
         ));
     }
     if let Some(response) = content_length_error(cx, steps::BODY_LIMIT_BYTES) {
+        let detail = if response.0 == StatusCode::PAYLOAD_TOO_LARGE {
+            "declared Content-Length exceeds the steps body limit"
+        } else {
+            "invalid Content-Length"
+        };
+        log_steps_rejection(
+            "content-length",
+            response.0,
+            body_bytes,
+            healthmd_client,
+            detail,
+        );
         return Ok(response);
     }
-    if body.len() > steps::BODY_LIMIT_BYTES {
+    if body_bytes > steps::BODY_LIMIT_BYTES {
+        log_steps_rejection(
+            "body-size",
+            StatusCode::PAYLOAD_TOO_LARGE,
+            body_bytes,
+            healthmd_client,
+            "received body exceeds the steps body limit",
+        );
         return Ok(private_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             &format!("body exceeds {} bytes", steps::BODY_LIMIT_BYTES),
         ));
     }
     let Ok(decoded) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        log_steps_rejection(
+            "json",
+            StatusCode::BAD_REQUEST,
+            body_bytes,
+            healthmd_client,
+            "body must be JSON",
+        );
         return Ok(private_error(StatusCode::BAD_REQUEST, "body must be JSON"));
     };
     let payload = match steps::parse_healthmd_payload(&decoded) {
         Ok(payload) => payload,
-        Err(message) => return Ok(private_error(StatusCode::BAD_REQUEST, &message)),
+        Err(message) => {
+            log_steps_rejection(
+                "payload",
+                StatusCode::BAD_REQUEST,
+                body_bytes,
+                healthmd_client,
+                &message,
+            );
+            return Ok(private_error(StatusCode::BAD_REQUEST, &message));
+        }
     };
 
     let imported_at = SystemTime::now()
@@ -502,8 +602,18 @@ async fn import_steps(cx: &Cx, body: Bytes) -> Result<PrivateResponse> {
     .await;
 
     Ok(match outcome {
-        Ok(outcome) => private(StatusCode::OK, to_body(&outcome.receipt)),
+        Ok(outcome) => {
+            log_steps_success(body_bytes, healthmd_client, &outcome.receipt);
+            private(StatusCode::OK, to_body(&outcome.receipt))
+        }
         Err(error) => {
+            log_steps_rejection(
+                "database",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                body_bytes,
+                healthmd_client,
+                "internal error",
+            );
             log_failure("/api/fitness/steps", error);
             private_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
