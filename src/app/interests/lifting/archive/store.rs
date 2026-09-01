@@ -160,12 +160,21 @@ impl FitnessStore {
         db::reconcile_muscle_weights(&handle, now)
             .await
             .map_err(|error| StoreError(error.to_string()))?;
-        let (version, workouts, sets, tags, weights, interruptions) = db::load_archive(&handle)
-            .await
-            .map_err(|error| StoreError(error.to_string()))?;
-        snapshot::build(version, workouts, sets, tags, weights, interruptions)
-            .map(Arc::new)
-            .map_err(|error| StoreError(error.to_string()))
+        let (version, workouts, sets, aliases, tags, weights, interruptions) =
+            db::load_archive(&handle)
+                .await
+                .map_err(|error| StoreError(error.to_string()))?;
+        snapshot::build(
+            version,
+            workouts,
+            sets,
+            aliases,
+            tags,
+            weights,
+            interruptions,
+        )
+        .map(Arc::new)
+        .map_err(|error| StoreError(error.to_string()))
     }
 }
 

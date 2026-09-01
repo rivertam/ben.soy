@@ -53,6 +53,11 @@ Any lifting change requires the version just read from
 successful batch bumps it exactly once so the site's in-memory snapshot
 refreshes. Deleting a workout deletes only its sets, preserving the existing
 orphan-taxonomy invariant. Running mutations do not touch the lifting version.
+`exercise_aliases` is readable/writable through the catalog, but rows must stay
+one-hop (the alias is neither a canonical exercise nor another alias). Use the
+exercise page's identity form for a canonical rename or merge because it shows
+the exact affected identities for confirmation, then moves sets, taxonomy, and
+deterministic muscle rows atomically while retaining every old source name.
 
 There is deliberately no `submit_surrealql` tool. Raw SurrealQL would expose
 database functions and unbounded server-side work without being necessary for

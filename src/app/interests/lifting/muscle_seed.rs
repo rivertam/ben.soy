@@ -117,7 +117,7 @@ const SEED_WEIGHTS: &[(&str, &[(&str, u8)])] = &[
         &[("triceps", 100), ("forearm-flexors", 10)],
     ),
     (
-        "Barbell Pullover Crunches",
+        "Barbell Resurrection Lifts",
         &[
             ("lats", 60),
             ("mid-chest", 20),

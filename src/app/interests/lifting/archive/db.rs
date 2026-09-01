@@ -2,21 +2,24 @@
 //! import write path.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     time::Duration,
 };
 
 use anyhow::Context;
 use benjisponge::data::{
     Db,
-    fitness_models::{Exercise, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout},
+    fitness_models::{
+        Exercise, ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout,
+    },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use surrealdb::types::SurrealValue;
 
 use super::super::{muscle_seed, muscle_taxonomy};
-use super::import::{IncomingTag, Payload, tag_signature};
+use super::aliases::AliasMap;
+use super::import::{IncomingExercise, IncomingTag, Payload, tag_signature};
 
 /// The data version; 0 when the row does not exist yet.
 pub async fn current_version(db: &Db) -> surrealdb::Result<i64> {
@@ -33,6 +36,7 @@ struct ArchiveRows {
     version: i64,
     workouts: Vec<Workout>,
     sets: Vec<LiftSet>,
+    aliases: Vec<ExerciseAlias>,
     tags: Vec<ExerciseTag>,
     weights: Vec<ExerciseMuscle>,
     interruptions: Vec<Interruption>,
@@ -46,6 +50,7 @@ pub async fn load_archive(
     i64,
     Vec<Workout>,
     Vec<LiftSet>,
+    Vec<ExerciseAlias>,
     Vec<ExerciseTag>,
     Vec<ExerciseMuscle>,
     Vec<Interruption>,
@@ -56,6 +61,9 @@ pub async fn load_archive(
                  version: (SELECT VALUE v FROM fitness_meta:version)[0] ?? 0,
                  workouts: (SELECT *, record::id(id) AS id FROM workouts),
                  sets: (SELECT *, record::id(id) AS id FROM sets),
+                 aliases: (
+                     SELECT alias_name, canonical_name FROM exercise_aliases
+                 ),
                  tags: (
                      SELECT exercise_name, kind, value FROM exercise_tags
                  ),
@@ -83,10 +91,124 @@ pub async fn load_archive(
         rows.version,
         rows.workouts,
         rows.sets,
+        rows.aliases,
         rows.tags,
         rows.weights,
         rows.interruptions,
     ))
+}
+
+/// All configured aliases. The table is intentionally small and alias
+/// chains are forbidden by the admin write, so both snapshot and import code
+/// can resolve it in memory without datastore-specific joins.
+pub async fn exercise_aliases(db: &Db) -> surrealdb::Result<Vec<ExerciseAlias>> {
+    let mut response = db
+        .query("SELECT alias_name, canonical_name FROM exercise_aliases;")
+        .await?
+        .check()?;
+    response.take(0)
+}
+
+/// Resolve every incoming exercise/set name before any idempotency or
+/// taxonomy decision. `raw_exercise_name` remains untouched as provenance.
+///
+/// If a chunk contains both a canonical name and one of its aliases, the
+/// canonical exercise's taxonomy wins. If it contains aliases only for an
+/// already-known canonical exercise, stored taxonomy wins so an old source
+/// spelling cannot silently retag the renamed movement. A clean database has
+/// no target row yet, so the alias's shared classifier output seeds it.
+async fn canonicalize_payload(db: &Db, payload: &Payload) -> surrealdb::Result<Payload> {
+    let aliases = AliasMap::new(exercise_aliases(db).await?);
+    if aliases.is_empty() {
+        return Ok(payload.clone());
+    }
+
+    struct GroupedExercise {
+        exercise: IncomingExercise,
+        included_canonical_name: bool,
+    }
+
+    let mut grouped: BTreeMap<String, GroupedExercise> = BTreeMap::new();
+    for incoming in &payload.exercises {
+        let canonical_name = aliases.resolve(&incoming.name);
+        let is_canonical = canonical_name == incoming.name;
+        let replacement = IncomingExercise {
+            name: canonical_name.clone(),
+            tags: incoming.tags.clone(),
+        };
+        match grouped.entry(canonical_name) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(GroupedExercise {
+                    exercise: replacement,
+                    included_canonical_name: is_canonical,
+                });
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) if is_canonical => {
+                entry.get_mut().exercise = replacement;
+                entry.get_mut().included_canonical_name = true;
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+
+    let alias_only_targets: Vec<String> = grouped
+        .iter()
+        .filter(|(_, grouped)| !grouped.included_canonical_name)
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !alias_only_targets.is_empty() {
+        #[derive(Deserialize, SurrealValue)]
+        struct ExistingCanonicalRows {
+            exercises: Vec<String>,
+            tags: Vec<ExerciseTag>,
+        }
+        let mut response = db
+            .query(
+                "RETURN {
+                     exercises: (
+                         SELECT VALUE name FROM exercises WHERE name IN $names
+                     ),
+                     tags: (
+                         SELECT exercise_name, kind, value FROM exercise_tags
+                         WHERE exercise_name IN $names
+                     )
+                 };",
+            )
+            .bind(("names", alias_only_targets))
+            .await?
+            .check()?;
+        let existing: Option<ExistingCanonicalRows> = response.take(0)?;
+        let existing = existing.expect("RETURN always yields one canonical exercise scan");
+        let existing_names: HashSet<String> = existing.exercises.into_iter().collect();
+        let mut tags_by_exercise: HashMap<String, Vec<IncomingTag>> = HashMap::new();
+        for tag in existing.tags {
+            tags_by_exercise
+                .entry(tag.exercise_name)
+                .or_default()
+                .push(IncomingTag {
+                    kind: tag.kind,
+                    value: tag.value,
+                });
+        }
+        for (name, grouped) in &mut grouped {
+            if !grouped.included_canonical_name && existing_names.contains(name) {
+                grouped.exercise.tags = tags_by_exercise.remove(name).unwrap_or_default();
+            }
+        }
+    }
+
+    let mut sets = payload.sets.clone();
+    for set in &mut sets {
+        set.exercise_name = aliases.resolve(&set.exercise_name);
+    }
+    Ok(Payload {
+        workouts: payload.workouts.clone(),
+        exercises: grouped
+            .into_values()
+            .map(|grouped| grouped.exercise)
+            .collect(),
+        sets,
+    })
 }
 
 /// The deterministic record key for an (exercise, muscle) pair: sha-256 of
@@ -110,7 +232,7 @@ struct MuscleRow {
 }
 
 /// One `exercise_muscles` row as written (reads drop `source`/`updated_at`).
-#[derive(Clone, Debug, Serialize, SurrealValue)]
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 struct WeightWrite {
     id: String,
     exercise_name: String,
@@ -118,6 +240,12 @@ struct WeightWrite {
     ratio_hundredths: i64,
     source: String,
     updated_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, SurrealValue)]
+struct WeightPair {
+    exercise_name: String,
+    muscle: String,
 }
 
 /// Reconcile the muscle vocabulary and seed default weights, insert-only at
@@ -283,15 +411,10 @@ pub async fn replace_exercise_weights(
         .check()?;
     let stored: Vec<String> = response.take(0)?;
     let kept: HashSet<&str> = weights.iter().map(|(muscle, _)| muscle.as_str()).collect();
-    #[derive(Serialize, SurrealValue)]
-    struct RemovedPair {
-        exercise_name: String,
-        muscle: String,
-    }
-    let removed: Vec<RemovedPair> = stored
+    let removed: Vec<WeightPair> = stored
         .into_iter()
         .filter(|muscle| !kept.contains(muscle.as_str()))
-        .map(|muscle| RemovedPair {
+        .map(|muscle| WeightPair {
             exercise_name: exercise_name.to_string(),
             muscle,
         })
@@ -329,6 +452,385 @@ pub async fn replace_exercise_weights(
     current_version(db).await
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExerciseIdentityOutcome {
+    Saved {
+        canonical_name: String,
+        version: i64,
+        mutated: bool,
+    },
+    NotFound,
+    Stale,
+}
+
+/// The exact identity change shown on the confirmation page. `merge_names`
+/// includes the exercise being edited; any additional name owns stored
+/// history that will be folded into `canonical_name` on confirmation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExerciseIdentityPlan {
+    pub current_name: String,
+    pub canonical_name: String,
+    pub aliases: Vec<String>,
+    pub merge_names: Vec<String>,
+    pub added_aliases: Vec<String>,
+    pub removed_aliases: Vec<String>,
+    pub version: i64,
+    pub mutated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, SurrealValue)]
+struct AliasWrite {
+    alias_name: String,
+    canonical_name: String,
+    updated_at: i64,
+}
+
+/// Build the non-mutating preview used for both the warning page and the
+/// eventual write. Naming another stored exercise — directly, through one of
+/// its aliases, or as the new canonical name — deliberately pulls that
+/// exercise into the merge. Its own aliases are carried forward so no old
+/// importer spelling is stranded.
+pub async fn plan_exercise_identity(
+    db: &Db,
+    current_name: &str,
+    new_name: &str,
+    requested_aliases: &[String],
+) -> surrealdb::Result<Option<ExerciseIdentityPlan>> {
+    #[derive(Deserialize, SurrealValue)]
+    struct IdentityScan {
+        version: i64,
+        exercises: Vec<String>,
+        aliases: Vec<ExerciseAlias>,
+    }
+    let mut response = db
+        .query(
+            "RETURN {
+                 version: (SELECT VALUE v FROM fitness_meta:version)[0] ?? 0,
+                 exercises: (SELECT VALUE name FROM exercises),
+                 aliases: (
+                     SELECT alias_name, canonical_name FROM exercise_aliases
+                 )
+             };",
+        )
+        .await?
+        .check()?;
+    let Some(scan) = response.take::<Option<IdentityScan>>(0)? else {
+        return Ok(None);
+    };
+    let exercise_names: HashSet<String> = scan.exercises.into_iter().collect();
+    let alias_map = AliasMap::new(scan.aliases.clone());
+    let current_sources: HashSet<String> = exercise_names
+        .iter()
+        .filter(|name| alias_map.resolve(name) == current_name)
+        .cloned()
+        .collect();
+    // A database-managed alias can make the snapshot's displayed canonical
+    // name differ from every physical `exercises` row. The editor must begin
+    // from those resolved source rows, not require a redundant target row.
+    if current_sources.is_empty() {
+        return Ok(None);
+    }
+
+    let alias_targets: HashMap<String, String> = scan
+        .aliases
+        .iter()
+        .map(|row| (row.alias_name.clone(), row.canonical_name.clone()))
+        .collect();
+    let current_aliases: HashSet<String> = scan
+        .aliases
+        .iter()
+        .filter(|row| row.canonical_name == current_name)
+        .map(|row| row.alias_name.clone())
+        .collect();
+
+    let mut aliases: HashSet<String> = requested_aliases.iter().cloned().collect();
+    aliases.remove(new_name);
+    if new_name != current_name {
+        aliases.insert(current_name.to_string());
+    }
+
+    let mut merge_names = current_sources;
+    // Grow both sets to a fixed point. An explicit name may be a canonical
+    // exercise or an alias owned by one; aliases belonging to newly merged
+    // exercises are retained, and a retained alias that is itself a stale
+    // canonical row pulls that row in too.
+    loop {
+        let before_merges = merge_names.len();
+        let before_aliases = aliases.len();
+        let candidates: Vec<String> = aliases
+            .iter()
+            .cloned()
+            .chain(std::iter::once(new_name.to_string()))
+            .collect();
+        for candidate in candidates {
+            if exercise_names.contains(&candidate) {
+                merge_names.insert(candidate.clone());
+            }
+            if let Some(owner) = alias_targets.get(&candidate)
+                && exercise_names.contains(owner)
+            {
+                merge_names.insert(owner.clone());
+            }
+        }
+        for name in merge_names.clone() {
+            if name != new_name {
+                aliases.insert(name.clone());
+            }
+            if name != current_name {
+                for row in scan.aliases.iter().filter(|row| row.canonical_name == name) {
+                    aliases.insert(row.alias_name.clone());
+                }
+            }
+        }
+        aliases.remove(new_name);
+        if before_merges == merge_names.len() && before_aliases == aliases.len() {
+            break;
+        }
+    }
+
+    let mut aliases: Vec<String> = aliases.into_iter().collect();
+    aliases.sort_unstable_by(|a, b| {
+        a.to_ascii_lowercase()
+            .cmp(&b.to_ascii_lowercase())
+            .then_with(|| a.cmp(b))
+    });
+    let final_aliases: HashSet<&str> = aliases.iter().map(String::as_str).collect();
+    let mut added_aliases: Vec<String> = aliases
+        .iter()
+        .filter(|alias| !current_aliases.contains(alias.as_str()))
+        .cloned()
+        .collect();
+    let mut removed_aliases: Vec<String> = current_aliases
+        .iter()
+        .filter(|alias| !final_aliases.contains(alias.as_str()))
+        .cloned()
+        .collect();
+    added_aliases.sort_unstable();
+    removed_aliases.sort_unstable();
+    let mut merge_names: Vec<String> = merge_names.into_iter().collect();
+    merge_names.sort_unstable();
+    let mutated = new_name != current_name
+        || merge_names.iter().any(|name| name != new_name)
+        || !added_aliases.is_empty()
+        || !removed_aliases.is_empty();
+
+    Ok(Some(ExerciseIdentityPlan {
+        current_name: current_name.to_string(),
+        canonical_name: new_name.to_string(),
+        aliases,
+        merge_names,
+        added_aliases,
+        removed_aliases,
+        version: scan.version,
+        mutated,
+    }))
+}
+
+/// Apply one previously reviewed identity plan atomically. Every normalized
+/// set name moves to the selected canonical identity; raw source spelling is
+/// deliberately untouched. The exercise being edited supplies taxonomy and
+/// muscle weights when it has them, with the selected target and then another
+/// merged exercise as fallbacks. Records are derived again from the combined
+/// set history.
+pub async fn replace_exercise_identity(
+    db: &Db,
+    reviewed: &ExerciseIdentityPlan,
+    updated_at: i64,
+) -> surrealdb::Result<ExerciseIdentityOutcome> {
+    let Some(fresh) = plan_exercise_identity(
+        db,
+        &reviewed.current_name,
+        &reviewed.canonical_name,
+        &reviewed.aliases,
+    )
+    .await?
+    else {
+        return Ok(ExerciseIdentityOutcome::NotFound);
+    };
+    if fresh != *reviewed {
+        return Ok(ExerciseIdentityOutcome::Stale);
+    }
+    if !reviewed.mutated {
+        return Ok(ExerciseIdentityOutcome::Saved {
+            canonical_name: reviewed.canonical_name.clone(),
+            version: reviewed.version,
+            mutated: false,
+        });
+    }
+
+    #[derive(Deserialize, SurrealValue)]
+    struct IdentityRows {
+        tags: Vec<ExerciseTag>,
+        weights: Vec<WeightWrite>,
+    }
+    let mut response = db
+        .query(
+            "RETURN {
+                 tags: (
+                     SELECT exercise_name, kind, value FROM exercise_tags
+                     WHERE exercise_name IN $names
+                 ),
+                 weights: (
+                     SELECT
+                         crypto::sha256(string::concat(exercise_name, '\n', muscle)) AS id,
+                         exercise_name,
+                         muscle,
+                         ratio_hundredths,
+                         source,
+                         updated_at
+                     FROM exercise_muscles WHERE exercise_name IN $names
+                 )
+             };",
+        )
+        .bind(("names", reviewed.merge_names.clone()))
+        .await?
+        .check()?;
+    let Some(rows) = response.take::<Option<IdentityRows>>(0)? else {
+        return Ok(ExerciseIdentityOutcome::Stale);
+    };
+
+    let authority_order: Vec<&str> = std::iter::once(reviewed.current_name.as_str())
+        .chain(
+            (reviewed.canonical_name != reviewed.current_name)
+                .then_some(reviewed.canonical_name.as_str()),
+        )
+        .chain(reviewed.merge_names.iter().map(String::as_str))
+        .collect();
+    let tag_authority = authority_order
+        .iter()
+        .find(|name| rows.tags.iter().any(|tag| tag.exercise_name == **name));
+    let mut tags: Vec<ExerciseTag> = tag_authority
+        .into_iter()
+        .flat_map(|name| {
+            rows.tags
+                .iter()
+                .filter(move |tag| tag.exercise_name == **name)
+        })
+        .map(|tag| ExerciseTag {
+            exercise_name: reviewed.canonical_name.clone(),
+            kind: tag.kind.clone(),
+            value: tag.value.clone(),
+        })
+        .collect();
+    tags.sort_unstable_by(|a, b| (&a.kind, &a.value).cmp(&(&b.kind, &b.value)));
+    tags.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
+
+    let weight_authority = authority_order.iter().find(|name| {
+        rows.weights
+            .iter()
+            .any(|weight| weight.exercise_name == **name)
+    });
+    let weights: Vec<WeightWrite> = weight_authority
+        .into_iter()
+        .flat_map(|name| {
+            rows.weights
+                .iter()
+                .filter(move |weight| weight.exercise_name == **name)
+        })
+        .map(|weight| WeightWrite {
+            id: exercise_muscle_id(&reviewed.canonical_name, &weight.muscle),
+            exercise_name: reviewed.canonical_name.clone(),
+            muscle: weight.muscle.clone(),
+            ratio_hundredths: weight.ratio_hundredths,
+            source: weight.source.clone(),
+            updated_at: weight.updated_at,
+        })
+        .collect();
+    let kept_muscles: HashSet<&str> = weights
+        .iter()
+        .map(|weight| weight.muscle.as_str())
+        .collect();
+    let removed_weights: Vec<WeightPair> = rows
+        .weights
+        .iter()
+        .filter(|weight| {
+            weight.exercise_name != reviewed.canonical_name
+                || !kept_muscles.contains(weight.muscle.as_str())
+        })
+        .map(|weight| WeightPair {
+            exercise_name: weight.exercise_name.clone(),
+            muscle: weight.muscle.clone(),
+        })
+        .collect();
+    let aliases: Vec<AliasWrite> = reviewed
+        .aliases
+        .iter()
+        .map(|alias_name| AliasWrite {
+            alias_name: alias_name.clone(),
+            canonical_name: reviewed.canonical_name.clone(),
+            updated_at,
+        })
+        .collect();
+    let new_exercise = Exercise {
+        name: reviewed.canonical_name.clone(),
+    };
+
+    let mut response = db
+        .query(
+            "BEGIN TRANSACTION;
+         FOR $source IN $merge_names {
+             DELETE exercise_aliases WHERE canonical_name = $source RETURN NONE;
+         };
+         FOR $alias IN $aliases {
+             DELETE exercise_aliases WHERE alias_name = $alias.alias_name RETURN NONE;
+         };
+         DELETE exercise_aliases WHERE alias_name = $new_name RETURN NONE;
+         FOR $source IN $merge_names {
+             UPDATE sets SET exercise_name = $new_name
+                 WHERE exercise_name = $source RETURN NONE;
+             DELETE exercise_tags WHERE exercise_name = $source RETURN NONE;
+             IF $source != $new_name {
+                 DELETE type::record('exercises', $source) RETURN NONE;
+             };
+         };
+         UPSERT ONLY type::record('exercises', $new_name)
+             CONTENT $new_exercise RETURN NONE;
+         FOR $tag IN $tags {
+             CREATE exercise_tags CONTENT $tag RETURN NONE;
+         };
+         FOR $pair IN $removed_weights {
+             DELETE exercise_muscles
+                 WHERE exercise_name = $pair.exercise_name
+                     AND muscle = $pair.muscle RETURN NONE;
+         };
+         FOR $weight IN $weights {
+             UPSERT ONLY type::record('exercise_muscles', $weight.id)
+                 CONTENT $weight RETURN NONE;
+         };
+         FOR $alias IN $aliases {
+             CREATE exercise_aliases CONTENT $alias RETURN NONE;
+         };
+         UPSERT fitness_meta:version SET k = 'version', v = (v ?? 0) + 1 RETURN NONE;
+             COMMIT TRANSACTION;",
+        )
+        .bind(("merge_names", reviewed.merge_names.clone()))
+        .bind(("new_name", reviewed.canonical_name.clone()))
+        .bind(("new_exercise", new_exercise))
+        .bind(("tags", tags))
+        .bind(("removed_weights", removed_weights))
+        .bind(("weights", weights))
+        .bind(("aliases", aliases))
+        .await?;
+    let mut errors: Vec<(usize, surrealdb::Error)> = response.take_errors().into_iter().collect();
+    errors.sort_unstable_by_key(|(index, _)| *index);
+    if !errors.is_empty() {
+        for (index, error) in &errors {
+            eprintln!("exercise identity transaction statement {index} failed: {error}");
+        }
+        let root_index = errors
+            .iter()
+            .position(|(_, error)| !error.to_string().contains("not executed"))
+            .unwrap_or(0);
+        return Err(errors.swap_remove(root_index).1);
+    }
+
+    Ok(ExerciseIdentityOutcome::Saved {
+        canonical_name: reviewed.canonical_name.clone(),
+        version: current_version(db).await?,
+        mutated: true,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImportOutcome {
     pub received: usize,
@@ -364,6 +866,8 @@ pub async fn create_manual_workout(
     if payload.workouts.len() != 1 || incoming_workout.source != "manual" {
         return Ok(ManualImportOutcome::Conflict);
     }
+    let payload = canonicalize_payload(db, payload).await?;
+    let payload = &payload;
 
     // Preflight reads deliberately stay outside the write transaction so the
     // common path remains small. CREATE ONLY and the unique indexes close the
@@ -815,6 +1319,8 @@ pub async fn apply_import(
     payload: &Payload,
     imported_at: i64,
 ) -> surrealdb::Result<ImportOutcome> {
+    let payload = canonicalize_payload(db, payload).await?;
+    let payload = &payload;
     let set_ids: Vec<String> = payload.sets.iter().map(|set| set.id.clone()).collect();
     let mut response = db
         .query(
@@ -1042,10 +1548,35 @@ pub async fn apply_import(
 
 #[cfg(test)]
 mod tests {
+    use surrealdb::engine::any;
+
     use super::*;
     use crate::app::interests::lifting::archive::import::{
         IncomingExercise, IncomingSet, IncomingWorkout,
     };
+
+    const TEST_SCHEMA: &str = include_str!("../../../../schema.surql");
+
+    async fn database() -> Db {
+        let db = any::connect("mem://").await.unwrap();
+        db.use_ns("fitness").use_db("fitness").await.unwrap();
+        db.query(TEST_SCHEMA).await.unwrap().check().unwrap();
+        db.query(
+            "DEFINE INDEX exercise_aliases_alias_name
+                 ON exercise_aliases FIELDS alias_name UNIQUE;
+             DEFINE INDEX exercise_aliases_canonical_name
+                 ON exercise_aliases FIELDS canonical_name;
+             DEFINE INDEX exercise_tags_identity
+                 ON exercise_tags FIELDS exercise_name, kind, value UNIQUE;
+             DEFINE INDEX exercise_muscles_identity
+                 ON exercise_muscles FIELDS exercise_name, muscle UNIQUE;",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        db
+    }
 
     fn payload() -> Payload {
         Payload {
@@ -1141,5 +1672,351 @@ mod tests {
         let (mut workout, sets) = stored(&payload);
         workout.source = "workout-data-csv".into();
         assert!(!same_manual_workout(&workout, &sets, &payload));
+    }
+
+    #[tokio::test]
+    async fn manual_import_resolves_alias_before_write_and_duplicate_check() {
+        let db = database().await;
+        db.query(
+            "CREATE exercise_aliases CONTENT {
+                 alias_name: 'Old Incline Press',
+                 canonical_name: 'Incline Bench Press',
+                 updated_at: 1
+             };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let mut payload = payload();
+        payload.exercises[0].name = "Old Incline Press".into();
+        payload.sets[0].exercise_name = "Old Incline Press".into();
+        payload.sets[0].raw_exercise_name = "Old Incline Press".into();
+
+        assert_eq!(
+            create_manual_workout(&db, &payload, 123).await.unwrap(),
+            ManualImportOutcome::Added
+        );
+        assert_eq!(
+            create_manual_workout(&db, &payload, 456).await.unwrap(),
+            ManualImportOutcome::Duplicate
+        );
+
+        let mut response = db
+            .query(
+                "RETURN {
+                     stored: (SELECT VALUE exercise_name FROM sets)[0],
+                     raw: (SELECT VALUE raw_exercise_name FROM sets)[0],
+                     exercises: (SELECT VALUE name FROM exercises)
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let result: Option<serde_json::Value> = response.take(0).unwrap();
+        let result = result.unwrap();
+        assert_eq!(result["stored"], "Incline Bench Press");
+        assert_eq!(result["raw"], "Old Incline Press");
+        assert_eq!(
+            result["exercises"],
+            serde_json::json!(["Incline Bench Press"])
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_save_renames_all_keys_and_keeps_old_name_as_alias() {
+        let db = database().await;
+        create_manual_workout(&db, &payload(), 123).await.unwrap();
+        replace_exercise_weights(&db, "Incline Bench Press", &[("mid-chest".into(), 100)], 8)
+            .await
+            .unwrap();
+        db.query(
+            "CREATE exercise_aliases CONTENT {
+                 alias_name: 'Old Incline Press',
+                 canonical_name: 'Incline Bench Press',
+                 updated_at: 1
+             };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let plan = plan_exercise_identity(
+            &db,
+            "Incline Bench Press",
+            "Incline Resurrection Press",
+            &["Old Incline Press".into(), "Incline Press".into()],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(plan.mutated);
+        assert_eq!(plan.merge_names, vec!["Incline Bench Press"]);
+        let outcome = replace_exercise_identity(&db, &plan, 9).await.unwrap();
+        assert!(matches!(
+            outcome,
+            ExerciseIdentityOutcome::Saved {
+                canonical_name,
+                mutated: true,
+                ..
+            } if canonical_name == "Incline Resurrection Press"
+        ));
+
+        let mut response = db
+            .query(
+                "RETURN {
+                     exercises: (SELECT VALUE name FROM exercises),
+                     stored: (SELECT VALUE exercise_name FROM sets)[0],
+                     raw: (SELECT VALUE raw_exercise_name FROM sets)[0],
+                     tag_names: (SELECT VALUE exercise_name FROM exercise_tags),
+                     weight_names: (SELECT VALUE exercise_name FROM exercise_muscles),
+                     aliases: (
+                         SELECT alias_name, canonical_name FROM exercise_aliases
+                         ORDER BY alias_name ASC
+                     )
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let result: Option<serde_json::Value> = response.take(0).unwrap();
+        let result = result.unwrap();
+        assert_eq!(
+            result["exercises"],
+            serde_json::json!(["Incline Resurrection Press"])
+        );
+        assert_eq!(result["stored"], "Incline Resurrection Press");
+        assert_eq!(result["raw"], "Incline Bench Press");
+        assert_eq!(
+            result["weight_names"],
+            serde_json::json!(["Incline Resurrection Press"])
+        );
+        assert_eq!(result["aliases"].as_array().unwrap().len(), 3);
+        assert!(
+            result["aliases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| { row["canonical_name"] == "Incline Resurrection Press" })
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_editor_accepts_a_logical_canonical_without_a_physical_row() {
+        let db = database().await;
+        create_manual_workout(&db, &payload(), 123).await.unwrap();
+        db.query(
+            "CREATE exercise_aliases CONTENT {
+                 alias_name: 'Incline Bench Press',
+                 canonical_name: 'Incline Resurrection Press',
+                 updated_at: 1
+             };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let plan = plan_exercise_identity(
+            &db,
+            "Incline Resurrection Press",
+            "Incline Resurrection Lift",
+            &["Incline Bench Press".into()],
+        )
+        .await
+        .unwrap()
+        .expect("the displayed canonical resolves through its physical alias row");
+        assert_eq!(plan.merge_names, vec!["Incline Bench Press"]);
+        assert!(plan.mutated);
+
+        assert!(matches!(
+            replace_exercise_identity(&db, &plan, 9).await.unwrap(),
+            ExerciseIdentityOutcome::Saved {
+                canonical_name,
+                mutated: true,
+                ..
+            } if canonical_name == "Incline Resurrection Lift"
+        ));
+        let mut response = db
+            .query(
+                "RETURN {
+                     exercise: (SELECT VALUE name FROM exercises)[0],
+                     stored: (SELECT VALUE exercise_name FROM sets)[0],
+                     raw: (SELECT VALUE raw_exercise_name FROM sets)[0],
+                     aliases: (SELECT VALUE alias_name FROM exercise_aliases ORDER BY alias_name)
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let result: Option<serde_json::Value> = response.take(0).unwrap();
+        let result = result.unwrap();
+        assert_eq!(result["exercise"], "Incline Resurrection Lift");
+        assert_eq!(result["stored"], "Incline Resurrection Lift");
+        assert_eq!(result["raw"], "Incline Bench Press");
+        assert_eq!(
+            result["aliases"],
+            serde_json::json!(["Incline Bench Press", "Incline Resurrection Press"])
+        );
+    }
+
+    #[tokio::test]
+    async fn reviewed_alias_can_merge_another_exercises_history() {
+        let db = database().await;
+        create_manual_workout(&db, &payload(), 123).await.unwrap();
+
+        let mut overhead = payload();
+        overhead.workouts[0].id = "fitness:2026-07-25T14:38:00".into();
+        overhead.workouts[0].started_at_utc = "2026-07-25 14:38:00".into();
+        overhead.workouts[0].started_at_local = "2026-07-25 10:38:00".into();
+        overhead.exercises[0].name = "Barbell Overhead Press".into();
+        overhead.sets[0].id = "fitness:2026-07-25T14:38:00:0001".into();
+        overhead.sets[0].workout_id = overhead.workouts[0].id.clone();
+        overhead.sets[0].exercise_name = "Barbell Overhead Press".into();
+        overhead.sets[0].raw_exercise_name = "Barbell Overhead Press".into();
+        create_manual_workout(&db, &overhead, 124).await.unwrap();
+
+        db.query(
+            "CREATE exercise_tags CONTENT {
+                 exercise_name: 'Incline Bench Press', kind: 'muscle', value: 'chest'
+             };
+             CREATE exercise_tags CONTENT {
+                 exercise_name: 'Barbell Overhead Press', kind: 'muscle', value: 'shoulders'
+             };
+             CREATE exercise_aliases CONTENT {
+                 alias_name: 'Strict Press',
+                 canonical_name: 'Barbell Overhead Press',
+                 updated_at: 1
+             };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        replace_exercise_weights(&db, "Incline Bench Press", &[("mid-chest".into(), 100)], 8)
+            .await
+            .unwrap();
+        replace_exercise_weights(
+            &db,
+            "Barbell Overhead Press",
+            &[("anterior-delts".into(), 100)],
+            8,
+        )
+        .await
+        .unwrap();
+
+        let plan = plan_exercise_identity(
+            &db,
+            "Incline Bench Press",
+            "Incline Bench Press",
+            &["Barbell Overhead Press".into()],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            plan.merge_names,
+            vec!["Barbell Overhead Press", "Incline Bench Press"]
+        );
+        assert_eq!(
+            plan.added_aliases,
+            vec!["Barbell Overhead Press", "Strict Press"]
+        );
+        assert!(plan.mutated);
+
+        assert!(matches!(
+            replace_exercise_identity(&db, &plan, 9).await.unwrap(),
+            ExerciseIdentityOutcome::Saved { mutated: true, .. }
+        ));
+        let mut response = db
+            .query(
+                "RETURN {
+                     exercises: (SELECT VALUE name FROM exercises),
+                     stored: (SELECT VALUE exercise_name FROM sets ORDER BY id ASC),
+                     raw: (SELECT VALUE raw_exercise_name FROM sets ORDER BY id ASC),
+                     tags: (SELECT VALUE value FROM exercise_tags),
+                     weights: (
+                         SELECT muscle, ratio_hundredths FROM exercise_muscles
+                     ),
+                     aliases: (
+                         SELECT alias_name, canonical_name FROM exercise_aliases
+                         ORDER BY alias_name ASC
+                     )
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let result: Option<serde_json::Value> = response.take(0).unwrap();
+        let result = result.unwrap();
+        assert_eq!(
+            result["exercises"],
+            serde_json::json!(["Incline Bench Press"])
+        );
+        assert_eq!(
+            result["stored"],
+            serde_json::json!(["Incline Bench Press", "Incline Bench Press"])
+        );
+        assert_eq!(
+            result["raw"],
+            serde_json::json!(["Incline Bench Press", "Barbell Overhead Press"])
+        );
+        assert_eq!(result["tags"], serde_json::json!(["chest"]));
+        assert_eq!(result["weights"].as_array().unwrap().len(), 1);
+        assert_eq!(result["weights"][0]["muscle"], "mid-chest");
+        assert_eq!(
+            result["aliases"],
+            serde_json::json!([
+                {
+                    "alias_name": "Barbell Overhead Press",
+                    "canonical_name": "Incline Bench Press"
+                },
+                {
+                    "alias_name": "Strict Press",
+                    "canonical_name": "Incline Bench Press"
+                }
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn reviewed_identity_plan_goes_stale_when_fitness_version_changes() {
+        let db = database().await;
+        create_manual_workout(&db, &payload(), 123).await.unwrap();
+        let plan = plan_exercise_identity(
+            &db,
+            "Incline Bench Press",
+            "Incline Press",
+            &["Incline Bench Press".into()],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        db.query("UPDATE fitness_meta:version SET v += 1;")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert_eq!(
+            replace_exercise_identity(&db, &plan, 9).await.unwrap(),
+            ExerciseIdentityOutcome::Stale
+        );
+
+        let mut response = db
+            .query("SELECT VALUE name FROM exercises;")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert_eq!(
+            response.take::<Vec<String>>(0).unwrap(),
+            vec!["Incline Bench Press"]
+        );
     }
 }

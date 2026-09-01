@@ -73,6 +73,7 @@ const JWKS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 pub enum FitnessTable {
     Workouts,
     Exercises,
+    ExerciseAliases,
     ExerciseTags,
     Sets,
     FitnessMeta,
@@ -107,6 +108,12 @@ const WORKOUT_FIELDS: &[(&str, &str)] = &[
     ("imported_at", "int unix seconds"),
 ];
 const EXERCISE_FIELDS: &[(&str, &str)] = &[("id", "string record key"), ("name", "string")];
+const EXERCISE_ALIAS_FIELDS: &[(&str, &str)] = &[
+    ("id", "string record key"),
+    ("alias_name", "alternate imported exercise name"),
+    ("canonical_name", "canonical exercise name"),
+    ("updated_at", "int unix seconds"),
+];
 const TAG_FIELDS: &[(&str, &str)] = &[
     ("id", "string record key"),
     ("exercise_name", "string"),
@@ -185,6 +192,14 @@ const TABLES: &[TableSpec] = &[
         name: "exercises",
         description: "Canonical lifting exercise names.",
         fields: EXERCISE_FIELDS,
+        mutable: true,
+        bumps_version: true,
+    },
+    TableSpec {
+        table: FitnessTable::ExerciseAliases,
+        name: "exercise_aliases",
+        description: "Alternate source names resolving to canonical lifting exercises.",
+        fields: EXERCISE_ALIAS_FIELDS,
         mutable: true,
         bumps_version: true,
     },
@@ -271,6 +286,7 @@ fn catalog() -> Value {
             "All stored quantities use the raw integer units documented on fields.",
             "Records are derived from set history and are never stored.",
             "Deleting a workout also deletes its sets, but deliberately leaves exercise taxonomy and muscle rows.",
+            "Exercise aliases are one-hop: an alias is not a canonical name or another alias; use the exercise page for an atomic canonical rename.",
             "A lifting mutation requires the current fitness_meta:version and bumps it exactly once.",
             "Use paginated reads plus client-side code for complex analysis; raw SurrealQL is not exposed.",
         ],

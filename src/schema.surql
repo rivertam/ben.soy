@@ -54,6 +54,20 @@ DEFINE TABLE OVERWRITE exercises SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON exercises TYPE string;
 DEFINE FIELD OVERWRITE name ON exercises TYPE string;
 
+-- Alternate source names for one canonical exercise. Imports resolve these
+-- before writing sets or taxonomy; the public snapshot also resolves them so
+-- a row added directly in the database takes effect on existing history.
+-- Application writes keep aliases direct: an alias may not itself be a
+-- canonical exercise or point at another alias.
+DEFINE TABLE OVERWRITE exercise_aliases SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON exercise_aliases TYPE string;
+DEFINE FIELD OVERWRITE alias_name ON exercise_aliases TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 200;
+DEFINE FIELD OVERWRITE canonical_name ON exercise_aliases TYPE string
+    ASSERT string::len($value) >= 1 AND string::len($value) <= 200;
+DEFINE FIELD OVERWRITE updated_at ON exercise_aliases TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
 DEFINE TABLE OVERWRITE exercise_tags SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON exercise_tags TYPE string;
 DEFINE FIELD OVERWRITE exercise_name ON exercise_tags TYPE string;

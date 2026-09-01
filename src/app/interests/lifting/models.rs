@@ -31,6 +31,15 @@ pub struct Exercise {
     pub name: String,
 }
 
+/// An alternate imported/display name that resolves to one canonical
+/// exercise. Alias rows are direct (never chained) and survive fitness-data
+/// resets so an old export keeps landing on the renamed exercise.
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue, PartialEq, Eq)]
+pub struct ExerciseAlias {
+    pub alias_name: String,
+    pub canonical_name: String,
+}
+
 /// One taxonomy tag on an exercise; an exercise carries several per facet.
 #[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct ExerciseTag {

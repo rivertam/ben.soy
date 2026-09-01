@@ -7,7 +7,7 @@
 
 use super::Db;
 
-const CURRENT_SCHEMA_EPOCH: u16 = 6;
+const CURRENT_SCHEMA_EPOCH: u16 = 7;
 
 struct Migration {
     epoch: u16,
@@ -38,6 +38,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         epoch: 6,
         sql: include_str!("schema_migrations/0006_running_activities.surql"),
+    },
+    Migration {
+        epoch: 7,
+        sql: include_str!("schema_migrations/0007_exercise_aliases.surql"),
     },
 ];
 
@@ -93,14 +97,25 @@ async fn apply_one(db: &Db, migration: &Migration) -> Result<(), String> {
          COMMIT TRANSACTION;",
         migration.sql
     );
-    db.query(statement)
+    let mut response = db
+        .query(statement)
         .bind(("prior", prior))
         .bind(("id", format!("{:04}", migration.epoch)))
         .bind(("epoch", i64::from(migration.epoch)))
         .await
-        .map_err(migration_error)?
-        .check()
         .map_err(migration_error)?;
+    let mut errors: Vec<(usize, String)> = response
+        .take_errors()
+        .into_iter()
+        .map(|(index, error)| (index, error.to_string()))
+        .collect();
+    errors.sort_unstable_by_key(|(index, _)| *index);
+    if !errors.is_empty() {
+        return Err(format!(
+            "site schema migration epoch {} statement errors: {errors:?}",
+            migration.epoch
+        ));
+    }
     Ok(())
 }
 
@@ -165,7 +180,10 @@ mod tests {
         apply(&db).await.unwrap();
         apply(&db).await.unwrap();
 
-        assert_eq!(applied_epochs(&db).await.unwrap(), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            applied_epochs(&db).await.unwrap(),
+            vec![1, 2, 3, 4, 5, 6, 7]
+        );
         db.query("INFO FOR INDEX workouts_started_at_utc ON workouts")
             .await
             .unwrap()
@@ -181,6 +199,124 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
+        db.query("INFO FOR INDEX exercise_aliases_alias_name ON exercise_aliases")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn exercise_alias_migration_renames_existing_rows() {
+        let db = db().await;
+        db.query(SCHEMA).await.unwrap().check().unwrap();
+        db.query(
+            "CREATE ONLY type::record('exercises', $old) CONTENT { name: $old };
+             CREATE exercise_tags CONTENT {
+                 exercise_name: $old, kind: 'muscle', value: 'core'
+             };
+             LET $weight_id = crypto::sha256(string::concat($old, '\n', 'abs'));
+             CREATE ONLY type::record('exercise_muscles', $weight_id) CONTENT {
+                 id: $weight_id,
+                 exercise_name: $old,
+                 muscle: 'abs',
+                 ratio_hundredths: 100,
+                 source: 'admin',
+                 updated_at: 123
+             };
+             CREATE ONLY type::record('sets', 'migration-test') CONTENT {
+                 id: 'migration-test',
+                 workout_id: 'workout',
+                 exercise_name: $old,
+                 raw_exercise_name: $old,
+                 ordinal: 1,
+                 exercise_note: NONE,
+                 superset_id: NONE,
+                 weight_milli: 50000,
+                 weight_unit: 'lbs',
+                 reps: 8,
+                 effort_hundredths: NONE,
+                 distance_milli: NONE,
+                 set_time_seconds: NONE,
+                 set_type: 'NORMAL_SET',
+                 incomplete: false
+             };",
+        )
+        .bind(("old", "Barbell Pullover Crunches".to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        apply(&db).await.unwrap();
+
+        let mut response = db
+            .query(
+                "RETURN {
+                     exercises: (SELECT VALUE name FROM exercises),
+                     set_name: (
+                         SELECT VALUE exercise_name
+                         FROM type::record('sets', 'migration-test')
+                     )[0],
+                     raw_name: (
+                         SELECT VALUE raw_exercise_name
+                         FROM type::record('sets', 'migration-test')
+                     )[0],
+                     tag_names: (SELECT VALUE exercise_name FROM exercise_tags),
+                     weight_names: (SELECT VALUE exercise_name FROM exercise_muscles),
+                     aliases: (SELECT alias_name, canonical_name FROM exercise_aliases),
+                     version: (SELECT VALUE v FROM fitness_meta:version)[0]
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let value: Option<serde_json::Value> = response.take(0).unwrap();
+        let value = value.unwrap();
+        assert_eq!(
+            value["exercises"],
+            serde_json::json!(["Barbell Resurrection Lifts"])
+        );
+        assert_eq!(value["set_name"], "Barbell Resurrection Lifts");
+        assert_eq!(value["raw_name"], "Barbell Pullover Crunches");
+        assert_eq!(
+            value["tag_names"],
+            serde_json::json!(["Barbell Resurrection Lifts"])
+        );
+        assert_eq!(
+            value["weight_names"],
+            serde_json::json!(["Barbell Resurrection Lifts"])
+        );
+        assert_eq!(value["aliases"].as_array().unwrap().len(), 3);
+        assert_eq!(value["version"], 1);
+    }
+
+    #[tokio::test]
+    async fn exercise_alias_migration_does_not_silently_merge_existing_press_history() {
+        let db = db().await;
+        db.query(SCHEMA).await.unwrap().check().unwrap();
+        db.query(
+            "CREATE ONLY type::record('exercises', 'Barbell Overhead Press')
+                 CONTENT { name: 'Barbell Overhead Press' };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        apply(&db).await.unwrap();
+
+        let mut response = db
+            .query(
+                "SELECT VALUE alias_name FROM exercise_aliases
+                 WHERE alias_name = 'Barbell Overhead Press';",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(response.take::<Vec<String>>(0).unwrap().is_empty());
     }
 
     #[test]
@@ -194,7 +330,7 @@ mod tests {
             .iter()
             .map(|migration| migration.sql.matches("DEFINE INDEX IF NOT EXISTS").count())
             .sum::<usize>();
-        assert_eq!(indexes, 16);
+        assert_eq!(indexes, 18);
         assert!(MIGRATIONS.iter().all(|migration| {
             !migration
                 .sql

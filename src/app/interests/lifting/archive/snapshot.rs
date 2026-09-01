@@ -8,12 +8,13 @@
 //! visibility (a set is only readable through its workout), and counts
 //! that include every matching set while pages step over whole workouts.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use benjisponge::data::fitness_models::{
-    ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout,
+    ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout,
 };
 
+use super::aliases::AliasMap;
 use super::api;
 use super::eastern::{self, EasternInstant, InvalidTimestamp};
 use super::filters::Filters;
@@ -27,6 +28,7 @@ const PUBLISHED_WORKOUT_SOURCE: &str = "manual";
 pub struct Snapshot {
     pub version: i64,
     workouts: Vec<SnapWorkout>,
+    aliases: AliasMap,
     tags_by_exercise: HashMap<String, Vec<(String, String)>>,
     /// Weighted muscle credit per exercise: `(granular muscle id,
     /// ratio_hundredths)` in canonical muscle order, ratios clamped 1..=100.
@@ -113,11 +115,20 @@ struct SnapSet {
 pub fn build(
     version: i64,
     workout_rows: Vec<Workout>,
-    set_rows: Vec<LiftSet>,
+    mut set_rows: Vec<LiftSet>,
+    alias_rows: Vec<ExerciseAlias>,
     tag_rows: Vec<ExerciseTag>,
     weight_rows: Vec<ExerciseMuscle>,
     mut interruption_rows: Vec<Interruption>,
 ) -> Result<Snapshot, InvalidTimestamp> {
+    let aliases = AliasMap::new(alias_rows);
+    // Historical rows may predate an alias or may have been inserted through
+    // direct database management. Canonicalizing the owned snapshot copy
+    // merges them immediately without erasing raw source spelling.
+    for set in &mut set_rows {
+        set.exercise_name = aliases.resolve(&set.exercise_name);
+    }
+
     // `/api/fitness/ids` is the one read with no workout join: it sees
     // every stored set, sorted by id (byte order).
     let mut all_ids: Vec<String> = set_rows.iter().map(|row| row.id.clone()).collect();
@@ -241,24 +252,54 @@ pub fn build(
         });
     }
 
+    // Canonical rows win. Alias-keyed taxonomy is only a fallback for a
+    // database-managed alias whose target has no rows yet.
+    let canonical_tag_sources: HashSet<String> = tag_rows
+        .iter()
+        .filter_map(|tag| {
+            let canonical = aliases.resolve(&tag.exercise_name);
+            (canonical == tag.exercise_name).then_some(canonical)
+        })
+        .collect();
     let mut tags_by_exercise: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for tag in tag_rows {
+        let canonical = aliases.resolve(&tag.exercise_name);
+        if canonical != tag.exercise_name && canonical_tag_sources.contains(&canonical) {
+            continue;
+        }
         tags_by_exercise
-            .entry(tag.exercise_name)
+            .entry(canonical)
             .or_default()
             .push((tag.kind, tag.value));
+    }
+    for tags in tags_by_exercise.values_mut() {
+        tags.sort_unstable();
+        tags.dedup();
     }
 
     // Canonicalize weights defensively: strangers are dropped, ratios clamp
     // to 1..=100, and each exercise's list lands in canonical muscle order.
+    // As with tags, explicitly canonical rows take precedence over an old
+    // alias-keyed fallback.
+    let canonical_weight_sources: HashSet<String> = weight_rows
+        .iter()
+        .filter_map(|weight| {
+            let canonical = aliases.resolve(&weight.exercise_name);
+            (canonical == weight.exercise_name).then_some(canonical)
+        })
+        .collect();
     let mut weights_by_exercise: HashMap<String, Vec<(&'static str, u32)>> = HashMap::new();
     for weight in weight_rows {
+        let canonical = aliases.resolve(&weight.exercise_name);
+        if canonical != weight.exercise_name && canonical_weight_sources.contains(&canonical) {
+            continue;
+        }
         let Some(muscle) = muscle_taxonomy::canonical_muscle(&weight.muscle) else {
             continue;
         };
         let ratio = u32::try_from(weight.ratio_hundredths.clamp(1, 100)).unwrap_or(1);
         weights_by_exercise
-            .entry(weight.exercise_name)
+            .entry(canonical)
             .or_default()
             .push((muscle, ratio));
     }
@@ -286,6 +327,7 @@ pub fn build(
     Ok(Snapshot {
         version,
         workouts,
+        aliases,
         tags_by_exercise,
         weights_by_exercise,
         interruptions: interruption_rows,
@@ -555,6 +597,17 @@ impl Snapshot {
         &self.weights_by_exercise
     }
 
+    /// Resolve a route/filter name to its canonical exercise, but only when
+    /// that canonical name has visible set history.
+    pub fn canonical_exercise_name(&self, name: &str) -> Option<String> {
+        let canonical = self.aliases.resolve(name);
+        self.exercise_profile(&canonical).map(|_| canonical)
+    }
+
+    pub fn exercise_aliases(&self, canonical_name: &str) -> Vec<String> {
+        self.aliases.aliases_for(canonical_name)
+    }
+
     /// The exercise page's history line: how often and how recently one
     /// exercise (exact name) was performed. `None` when the archive has no
     /// sets for it.
@@ -775,7 +828,10 @@ impl Snapshot {
             return false;
         }
         if let Some(exercise) = &filters.exercise
-            && !set.wire.exercise_name.eq_ignore_ascii_case(exercise)
+            && !set
+                .wire
+                .exercise_name
+                .eq_ignore_ascii_case(&self.aliases.resolve_filter(exercise))
         {
             return false;
         }
@@ -999,13 +1055,14 @@ mod tests {
                 ratio_hundredths: 100,
             },
         ];
-        build(7, workouts, sets, tags, weights, Vec::new()).unwrap()
+        build(7, workouts, sets, Vec::new(), tags, weights, Vec::new()).unwrap()
     }
 
     #[test]
     fn interruptions_sort_open_first_then_newest_to_date() {
         let snap = build(
             1,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1071,6 +1128,91 @@ mod tests {
     }
 
     #[test]
+    fn aliases_merge_history_facets_filters_and_weight_fallbacks() {
+        let workout = workout_row(
+            "2026-07-21T14:39:04",
+            "2026-07-21 14:39:04",
+            "2026-07-21 10:39:04",
+            -240,
+        );
+        let snap = build(
+            9,
+            vec![workout],
+            vec![
+                set_row(
+                    "2026-07-21T14:39:04",
+                    1,
+                    "Barbell Pullover Crunches",
+                    Some(50_000),
+                    Some(8),
+                ),
+                set_row(
+                    "2026-07-21T14:39:04",
+                    2,
+                    "Barbell Resurrection Lifts",
+                    Some(50_000),
+                    Some(9),
+                ),
+            ],
+            vec![ExerciseAlias {
+                alias_name: "Barbell Pullover Crunches".into(),
+                canonical_name: "Barbell Resurrection Lifts".into(),
+            }],
+            vec![ExerciseTag {
+                exercise_name: "Barbell Pullover Crunches".into(),
+                kind: "muscle".into(),
+                value: "core".into(),
+            }],
+            vec![ExerciseMuscle {
+                exercise_name: "Barbell Pullover Crunches".into(),
+                muscle: "abs".into(),
+                ratio_hundredths: 100,
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let page = snap.sets_page(&parse_filters(&[]).unwrap());
+        assert!(
+            page.workouts[0]
+                .sets
+                .iter()
+                .all(|set| set.exercise_name == "Barbell Resurrection Lifts")
+        );
+        assert_eq!(
+            page.workouts[0].sets[0].raw_exercise_name,
+            "Barbell Pullover Crunches"
+        );
+        assert_eq!(snap.facets().exercises.len(), 1);
+        assert_eq!(snap.facets().exercises[0].count, 2);
+        assert_eq!(
+            snap.canonical_exercise_name("Barbell Pullover Crunches")
+                .as_deref(),
+            Some("Barbell Resurrection Lifts")
+        );
+        assert_eq!(
+            snap.exercise_aliases("Barbell Resurrection Lifts"),
+            vec!["Barbell Pullover Crunches"]
+        );
+        assert_eq!(
+            snap.exercise_profile("Barbell Resurrection Lifts")
+                .unwrap()
+                .set_count,
+            2
+        );
+        assert_eq!(
+            snap.exercise_weight_map()["Barbell Resurrection Lifts"],
+            vec![("abs", 100)]
+        );
+
+        let old_link =
+            parse_filters(&[("exercise".into(), "barbell pullover crunches".into())]).unwrap();
+        assert_eq!(snap.sets_page(&old_link).total_sets, 2);
+        let tag = parse_filters(&[("muscle".into(), "core".into())]).unwrap();
+        assert_eq!(snap.sets_page(&tag).total_sets, 2);
+    }
+
+    #[test]
     fn negative_assistance_survives_the_public_snapshot() {
         let snap = build(
             1,
@@ -1087,6 +1229,7 @@ mod tests {
                 Some(-45_500),
                 Some(8),
             )],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1324,6 +1467,7 @@ mod tests {
             8,
             vec![csv, manual],
             sets,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),

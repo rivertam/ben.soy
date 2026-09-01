@@ -72,14 +72,28 @@ reuse the local sync token or expose unrestricted SurrealQL.
   stored ratio secondary. No rank is stored — like records, the split is
   derived, and weights reach pages through `Snapshot::exercise_weight_map`,
   never JSON.
-- `/fitness/exercise/{urlencoded-name}` shows one exercise's ratios, tags,
-  and history; the signed-in `ADMIN_EMAIL` sees the same page with editable
-  0–100 inputs. `POST /fitness/exercise/{name}` repeats the admin check,
+- `/fitness/exercise/{urlencoded-name}` shows one canonical exercise's
+  aliases, ratios, tags, and merged history. Alias-valued URLs permanently
+  redirect to the canonical page, and old alias-valued `exercise` filters
+  continue to match. The signed-in `ADMIN_EMAIL` sees the same page with
+  editable canonical name, one-alias-per-line input, and 0–100 muscle inputs.
+  `POST /fitness/exercise/{name}` repeats the admin check,
   requires same-origin evidence, bounds and strictly decodes the form
   (exactly one field per canonical muscle), rejects all-zero saves (they
   would re-open the exercise to reseeding), replaces the exercise's rows
   with `source='admin'` in one transaction, bumps the fitness version, and
   rebuilds the snapshot — every page reflects an edit immediately.
+  `POST /fitness/exercise/{name}/identity` applies the same authorization and
+  body discipline to the name/alias form. Every identity mutation is two
+  step: the first POST renders a no-store warning naming the canonical result,
+  aliases, and any existing exercises whose histories will merge; a digest
+  binds the confirmation POST to that exact plan and fitness version. A
+  confirmed rename/merge atomically rewrites normalized set names, taxonomy
+  keys, the canonical exercise record, and deterministic muscle-weight rows
+  while leaving `raw_exercise_name` untouched. The former canonical name and
+  every merged exercise's aliases are retained. The exercise whose page began
+  the edit supplies taxonomy and muscle weights when present; records derive
+  again from the combined history.
 - `/fitness` derives its lifting-only muscle-load and next-focus panel from those same
   weights; it is page-only, not a stored record or public API field. Credit
   accumulates in exact integer centi-points (`set volume points ×
@@ -103,8 +117,9 @@ reuse the local sync token or expose unrestricted SurrealQL.
   (SurrealDB). Records are derived in `archive/records.rs` at snapshot build —
   there is deliberately no records table and no records field in the import
   payload.
-- Schema: `src/schema.surql` — ten fitness tables: `workouts`,
-  `exercises`, `exercise_tags`, `sets`, `fitness_meta`, `muscles` (the
+- Schema: `src/schema.surql` — eleven fitness tables: `workouts`,
+  `exercises`, `exercise_aliases` (alternate source name → canonical name),
+  `exercise_tags`, `sets`, `fitness_meta`, `muscles` (the
   granular vocabulary as data), `exercise_muscles` (weighted
   connections, deterministic record key = sha-256 of `exercise\nmuscle`),
   and `fitness_interruptions` (annotate-only Eastern date ranges with a
@@ -232,10 +247,12 @@ reuse the local sync token or expose unrestricted SurrealQL.
   configures one (`docs/podrick.md`), which reads fitness tables but never
   writes them; `just dev --no-podrick` skips it.
 - `just reset-fitness-local [csv]` runs while `just dev` is active. It
-  truncates only the local fitness tables (including `fitness_interruptions`,
-  locally imported `running_activities`, and `daily_steps`), resets the
-  fitness version, and imports the CSV; local Spire tables in the shared
-  database remain untouched.
+  truncates only the local fitness archive tables (including
+  `fitness_interruptions`, locally imported `running_activities`, and
+  `daily_steps`, but
+  deliberately preserving `exercise_aliases`), resets the fitness version,
+  and imports the CSV; local Spire tables in the shared database remain
+  untouched.
   This intentionally deletes locally pasted manual workouts, manual and
   Garmin runs, step totals, and interruption notes too.
 
@@ -254,6 +271,13 @@ reuse the local sync token or expose unrestricted SurrealQL.
 - Stable workout and set IDs remain derived from the raw UTC start timestamp
   (and the whole-workout ordinal for sets). Timezone conversion must never
   change identity, deduplication, or import ordering.
+- `sets.exercise_name` is the current canonical exercise name;
+  `raw_exercise_name` remains the source spelling. Both JSON and Lyfta writes
+  resolve `exercise_aliases` before idempotency, taxonomy, or set writes, so
+  an old export cannot split records or facets after a rename. The in-memory
+  snapshot resolves aliases defensively too, which makes a valid row added
+  directly in the database merge existing history as soon as the fitness
+  version changes.
 - Strong omits load and distance units. This archive assumes every imported
   load is pounds and persists `weight_unit='lbs'`; distance remains unitless.
 - Set load is signed: a negative `weight_milli` represents assistance. CSV,
@@ -438,7 +462,8 @@ for corrections: delete, then repaste or resync.
 - 400 for any query string. The response carries no
   `Access-Control-Allow-Origin`; the GET on the same URL still does.
 - Removes exactly the `workouts` row, its `sets`, and bumps the version.
-  `exercises`, `exercise_tags`, and `exercise_muscles` rows survive even
+  `exercises`, `exercise_tags`, `exercise_muscles`, and `exercise_aliases`
+  rows survive even
   when the deleted workout held an exercise's last set: the snapshot never
   loads the `exercises` table and every public count joins through sets, so
   orphans are invisible rather than merely harmless, and hand-corrected
@@ -481,7 +506,9 @@ workout, while the same deterministic timestamp ID with different workout
 content returns 409. A repeated manual-run submission token redirects to the
 first stored run when its metrics match and returns 409 when they do not.
 Existing exercise taxonomy is preserved; taxonomy is inserted only for a new
-exercise. The JSON sync endpoint continues to accept only
+canonical exercise. Alias-only imports of an existing canonical exercise use
+its stored taxonomy instead of retagging it from the old spelling. The JSON
+sync endpoint continues to accept only
 `source='workout-data-csv'`.
 
 ## Local development
@@ -498,7 +525,9 @@ exercise. The JSON sync endpoint continues to accept only
   just reset-fitness-local /path/to/WorkoutData.csv
   ```
 
-  This replaces local fitness data only; it never affects production or local
+  This replaces local fitness archive data only; it preserves
+  `exercise_aliases` so renamed exercises remain compatible with the old CSV,
+  and it never affects production or local
   Spire fixtures. It also removes manual workouts, manual runs, and imported
   Garmin runs from the local archive; none can be reconstructed from the CSV.
 
@@ -530,6 +559,32 @@ exercise. The JSON sync endpoint continues to accept only
   answer "how much" at the granular scale. An admin weight for a muscle
   whose coarse tag the exercise lacks will not surface in the filter;
   accepted drift, audited by `.claude/skills/audit-muscle-weights`.
+
+## Exercise aliases
+
+- `exercise_aliases` stores `(alias_name, canonical_name, updated_at)`, with a
+  unique index on `alias_name`. Application writes keep it one hop: an alias
+  is not itself a canonical exercise and does not point to another alias.
+  Direct database edits must preserve that invariant and bump
+  `fitness_meta:version` once so every process rebuilds its snapshot.
+- The exercise-page identity form is the normal management surface. It
+  normalizes whitespace exactly like the importers, accepts at most 32 names,
+  keeps the previous canonical name automatically on rename, and requires a
+  second, server-rendered confirmation before any change. Naming another
+  existing exercise or one of its aliases intentionally folds that exercise's
+  normalized history into the selected canonical name; the review page lists
+  every affected identity before the transaction runs.
+- Site schema migration 7 renames `Barbell Pullover Crunches` to
+  `Barbell Resurrection Lifts`, retaining both `Barbell Pullover Crunches`
+  and `Pullover Crunches` as aliases. It also maps `Barbell Overhead Press`
+  to `Barbell Standing Military Press` when the former does not already own
+  history; an existing pair stays separate until the admin confirms the merge
+  on the exercise page. On a clean database the alias rows exist before the
+  first import; on an existing archive the pullover rename migrates sets,
+  taxonomy, and muscle weights in the same transaction.
+- `just reset-fitness-local` deliberately preserves aliases. The following
+  CSV re-import therefore creates/uses the canonical exercise even though the
+  export still says `Barbell Pullover Crunches`.
 
 ## Changing taxonomy or filters
 

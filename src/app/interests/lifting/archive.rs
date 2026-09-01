@@ -17,6 +17,7 @@
 //! too but compiles inside the lib crate (see `src/data.rs`), and
 //! `fitness_sync.rs` is its own binary (`Cargo.toml` `[[bin]]`).
 
+pub(crate) mod aliases;
 pub(crate) mod api;
 pub(crate) mod db;
 // The Eastern projection moved to diary-core (diary entry ids share it and

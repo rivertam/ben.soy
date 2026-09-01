@@ -33,6 +33,8 @@ printf 'reset-fitness-local: deleting the local fitness records\n'
 # The CLI submits each input line separately, so keep the transaction on one
 # line. It exits zero for statement errors; the exact JSON result is the
 # success check before the import is allowed to continue.
+# `exercise_aliases` is configuration, not imported archive data: preserve it
+# so an old CSV still resolves to renamed canonical exercises after a reset.
 reset_query='BEGIN TRANSACTION; DELETE sets RETURN NONE;'\
 ' DELETE exercise_tags RETURN NONE; DELETE exercises RETURN NONE;'\
 ' DELETE exercise_muscles RETURN NONE; DELETE muscles RETURN NONE;'\

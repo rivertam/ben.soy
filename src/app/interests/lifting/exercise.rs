@@ -1,24 +1,30 @@
-//! `/fitness/exercise/{name}` — one exercise's muscle weights, and the
-//! admin's only surface for editing them.
+//! `/fitness/exercise/{name}` — one exercise's muscle weights, canonical
+//! name, aliases, and history.
 //!
 //! The URL segment is the percent-encoded exact exercise name, the same
 //! convention as the `?exercise=` filter. Anyone can read the page; the
-//! signed-in `ADMIN_EMAIL` additionally sees the weight inputs. The POST
-//! repeats the admin check with positive same-origin evidence and bounds
-//! the body before parsing — the form is not an authorization boundary
-//! (`docs/auth.md`). A successful save replaces the exercise's rows with
-//! `source='admin'`, bumps the fitness version, and rebuilds the snapshot,
-//! so every page reflects the new ratios immediately. Responses that
-//! redirect are hand-built `Ok(303)`s so every branch carries `no-store`.
+//! signed-in `ADMIN_EMAIL` additionally sees the weight and identity inputs.
+//! Both POSTs repeat the admin check with positive same-origin evidence and
+//! bound the body before parsing — the form is not an authorization boundary
+//! (`docs/auth.md`). Identity mutations render a server-side review before a
+//! digest-bound confirmation can merge history. A successful ratio save uses
+//! `source='admin'`; both writes bump the fitness version and rebuild the
+//! snapshot. Redirects are hand-built `Ok(303)`s so every branch carries
+//! `no-store`.
 
 use benjisponge::data::Data;
+use sha2::{Digest, Sha256};
 use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        Body, HeaderMap, HeaderValue, StatusCode, error::not_found, error::redirect_permanent,
-        header, page, path_param, query_params, request::headers, response::Response, route,
-        to_bytes,
+        Body, HeaderMap, HeaderValue, StatusCode,
+        error::not_found,
+        error::redirect_permanent,
+        header, page, path_param, query_params,
+        request::headers,
+        response::{IntoResponse, Response},
+        route, to_bytes,
     },
     view::{class, component, view},
 };
@@ -56,8 +62,8 @@ struct ExerciseQuery {
 
 #[page("/fitness/exercise/{exercise_name}")]
 async fn exercise_page(cx: &Cx) -> Result {
-    let name = path_param::<ExerciseName>(cx);
-    if !plausible_exercise_name(name) {
+    let requested_name = path_param::<ExerciseName>(cx);
+    if !plausible_exercise_name(requested_name) {
         return Err(not_found().into());
     }
     let snapshot = match app_context::<FitnessStore>(cx).snapshot().await {
@@ -74,7 +80,7 @@ async fn exercise_page(cx: &Cx) -> Result {
                     <header class="rail-row mt-16">
                         <p class="rail-stamp rail-stamp-label">"exercise"</p>
                         <h1 class="font-display text-4xl font-bold tracking-tight break-words">
-                            (name)
+                            (requested_name)
                         </h1>
                     </header>
                     <p class="mt-8 max-w-prose text-ink2">
@@ -85,20 +91,29 @@ async fn exercise_page(cx: &Cx) -> Result {
             };
         }
     };
-    let Some(profile) = snapshot.exercise_profile(name) else {
+    let Some(name) = snapshot.canonical_exercise_name(requested_name) else {
+        return Err(not_found().into());
+    };
+    if name != requested_name {
+        let target = with_raw_query(cx, &page_url(&name));
+        return Err(redirect_permanent(&target).into());
+    }
+    let Some(profile) = snapshot.exercise_profile(&name) else {
         return Err(not_found().into());
     };
     let weights: Vec<(&'static str, u32)> = snapshot
         .exercise_weight_map()
-        .get(name)
+        .get(&name)
         .cloned()
         .unwrap_or_default();
     let tags: Vec<(String, String)> = snapshot
         .exercise_tag_map()
-        .get(name)
+        .get(&name)
         .cloned()
         .unwrap_or_default();
-    let involvement = muscles::involvement_for_exercises([name], snapshot.exercise_weight_map());
+    let aliases = snapshot.exercise_aliases(&name);
+    let involvement =
+        muscles::involvement_for_exercises([name.as_str()], snapshot.exercise_weight_map());
 
     let can_edit = viewer(cx).is_some_and(|current| is_admin(&current.email));
     let notice = if can_edit {
@@ -107,8 +122,10 @@ async fn exercise_page(cx: &Cx) -> Result {
             .as_deref()
             .map(|code| match code {
                 "saved" => "Saved — every page now uses the new ratios.",
+                "identity-saved" => "Saved — old names now resolve to this exercise.",
+                "identity-stale" => "The archive changed; review the identity edit again.",
                 "invalid" => "That didn't validate; nothing changed.",
-                "unavailable" => "The weight store didn't answer; nothing changed.",
+                "unavailable" => "The exercise store didn't answer; nothing changed.",
                 _ => "Nothing changed.",
             })
     } else {
@@ -117,7 +134,7 @@ async fn exercise_page(cx: &Cx) -> Result {
     // Provenance rides only on the admin variant: it needs a second read and
     // a public page has no use for it.
     let provenance = if can_edit {
-        match db_sources(cx, name).await {
+        match db_sources(cx, &name).await {
             Ok(sources) => provenance_line(&sources),
             Err(error) => {
                 eprintln!("exercise weight provenance read failed: {error}");
@@ -137,7 +154,7 @@ async fn exercise_page(cx: &Cx) -> Result {
         profile.first_date,
         profile.last_date,
     );
-    let log_href = format!("{LOG_PATH}?exercise={}#set-log", urlencode(name));
+    let log_href = format!("{LOG_PATH}?exercise={}#set-log", urlencode(&name));
     let title = format!("{name} · Fitness");
 
     view! {
@@ -151,7 +168,7 @@ async fn exercise_page(cx: &Cx) -> Result {
                 <p class="rail-stamp rail-stamp-label">"exercise"</p>
                 <div class="min-w-0">
                     <h1 class="font-display text-4xl font-bold tracking-tight break-words">
-                        (name)
+                        (name.as_str())
                     </h1>
                     <p class="mt-2 font-meta text-[0.72rem] text-muted">
                         (history.as_str())
@@ -162,6 +179,12 @@ async fn exercise_page(cx: &Cx) -> Result {
                             href=(log_href.as_str())
                         >"view in log"</a>
                     </p>
+                    if !aliases.is_empty() {
+                        <p class="mt-1 font-meta text-[0.68rem] leading-relaxed text-muted">
+                            "also known as "
+                            (aliases.join(", "))
+                        </p>
+                    }
                     if !tags.is_empty() {
                         <div class="mt-3 flex flex-wrap gap-[0.45rem]">
                             for (kind, value) in &tags {
@@ -218,13 +241,19 @@ async fn exercise_page(cx: &Cx) -> Result {
                         if let Some(line) = &provenance {
                             <p class="mt-1 font-meta text-[0.68rem] text-muted">(line.as_str())</p>
                         }
-                        weight_form(name: name, weights: &weights)
+                        weight_form(name: name.as_str(), weights: &weights)
                     } else {
                         <p class=(META_LABEL)>"volume ratios"</p>
                         weight_bars(weights: &weights)
                     }
                 </div>
             </div>
+            if can_edit {
+                <section class="mt-12 border-t border-hairline pt-8">
+                    <p class=(META_LABEL)>"name & aliases · edit"</p>
+                    identity_form(name: name.as_str(), aliases: &aliases)
+                </section>
+            }
         )
     }
 }
@@ -333,6 +362,205 @@ async fn weight_form(name: &str, weights: &[(&'static str, u32)]) -> Result {
     }
 }
 
+/// Canonical-name and alias editor. Renames keep the former canonical name
+/// automatically, so the textarea is both transparent and reversible on a
+/// later save.
+#[component]
+async fn identity_form(name: &str, aliases: &[String]) -> Result {
+    let action = format!("{}/identity", page_url(name));
+    let alias_lines = aliases.join("\n");
+    view! {
+        <form method="post" action=(action.as_str()) class="mt-4 max-w-[36rem] space-y-4">
+            <label class="block space-y-1.5" for="canonical-exercise-name">
+                <span class="block font-meta text-[0.7rem] text-ink2">"canonical name"</span>
+                <input
+                    id="canonical-exercise-name"
+                    name="canonical_name"
+                    type="text"
+                    required=""
+                    maxlength="200"
+                    autocomplete="off"
+                    value=(name)
+                    class="block w-full rounded-[0.2rem] border border-hairline bg-page px-3 \
+                         py-2 font-meta text-sm text-ink outline-none \
+                         focus-visible:outline-solid focus-visible:outline-2 \
+                         focus-visible:outline-oxide focus-visible:outline-offset-2"
+                >
+            </label>
+            <label class="block space-y-1.5" for="exercise-aliases">
+                <span class="block font-meta text-[0.7rem] text-ink2">
+                    "aliases · one per line"
+                </span>
+                <textarea
+                    id="exercise-aliases"
+                    name="aliases"
+                    rows="4"
+                    maxlength="6400"
+                    autocomplete="off"
+                    spellcheck="false"
+                    class="block w-full resize-y rounded-[0.2rem] border border-hairline \
+                         bg-page px-3 py-2 font-mono text-sm leading-relaxed text-ink \
+                         outline-none focus-visible:outline-solid focus-visible:outline-2 \
+                         focus-visible:outline-oxide focus-visible:outline-offset-2"
+                >(alias_lines.as_str())</textarea>
+            </label>
+            <p class="max-w-prose font-meta text-[0.65rem] leading-[1.5] text-muted">
+                "Renaming rewrites the normalized history and keeps the old name as an alias. \
+                 Uploads using any listed name merge into this exercise. If a listed name \
+                 already owns lift history, you will review the merge before anything changes."
+            </p>
+            <button
+                type="submit"
+                class="cursor-pointer rounded-sm border border-oxide px-3 py-2 font-meta \
+                     text-xs text-oxide hover:bg-oxide hover:text-card \
+                     focus-visible:outline-solid focus-visible:outline-2 \
+                     focus-visible:outline-oxide focus-visible:outline-offset-2"
+            >"save name & aliases"</button>
+        </form>
+    }
+}
+
+/// Server-rendered second step for every identity mutation. The digest binds
+/// the confirm button to the exact names and fitness version shown here; if
+/// anything changes before the second POST, the handler shows a fresh review
+/// instead of applying a different merge.
+async fn identity_review(
+    cx: &Cx,
+    plan: &db::ExerciseIdentityPlan,
+    confirmation: &str,
+) -> Result<Response> {
+    let renamed = plan.current_name != plan.canonical_name;
+    let merged: Vec<&str> = plan
+        .merge_names
+        .iter()
+        .filter(|name| *name != &plan.current_name)
+        .map(String::as_str)
+        .collect();
+    let heading = if merged.is_empty() {
+        "Apply this exercise identity change?"
+    } else {
+        "Merge these exercise histories?"
+    };
+    let confirm_label = if merged.is_empty() {
+        "confirm change"
+    } else {
+        "confirm merge"
+    };
+    let action = format!("{}/identity", page_url(&plan.current_name));
+    let cancel = page_url(&plan.current_name);
+    let alias_lines = plan.aliases.join("\n");
+    let __cx = cx;
+    let page = view! {
+        ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
+        shell(
+            page: "Review exercise merge",
+            active: "",
+            runtime: false,
+            fitness_pwa: true,
+            <header class="rail-row mt-16">
+                <p class="rail-stamp rail-stamp-label">"warning"</p>
+                <div class="min-w-0">
+                    <h1 class="font-display text-4xl font-bold tracking-tight">
+                        (heading)
+                    </h1>
+                    <p class="mt-3 max-w-prose text-sm leading-relaxed text-ink2">
+                        "Nothing has changed yet. Confirm only after reviewing the canonical \
+                         name, aliases, and existing lift histories below."
+                    </p>
+                </div>
+            </header>
+            <section class="mt-10 max-w-[42rem] border-l-2 border-oxide pl-5">
+                if renamed {
+                    <p class=(META_LABEL)>"rename"</p>
+                    <p class="mt-2 break-words font-meta text-sm text-ink">
+                        (plan.current_name.as_str())
+                        " → "
+                        (plan.canonical_name.as_str())
+                    </p>
+                } else {
+                    <p class=(META_LABEL)>"canonical name"</p>
+                    <p class="mt-2 break-words font-meta text-sm text-ink">
+                        (plan.canonical_name.as_str())
+                    </p>
+                }
+                if !merged.is_empty() {
+                    <p class=(class!(META_LABEL, "mt-6"))>"existing histories to merge"</p>
+                    <ul class="mt-2 list-disc space-y-1 pl-5 font-meta text-sm text-ink">
+                        for name in &merged {
+                            <li class="break-words">(*name)</li>
+                        }
+                    </ul>
+                }
+                if !plan.added_aliases.is_empty() {
+                    <p class=(class!(META_LABEL, "mt-6"))>"aliases to add or carry forward"</p>
+                    <ul class="mt-2 list-disc space-y-1 pl-5 font-meta text-sm text-ink">
+                        for alias in &plan.added_aliases {
+                            <li class="break-words">(alias.as_str())</li>
+                        }
+                    </ul>
+                }
+                if !plan.removed_aliases.is_empty() {
+                    <p class=(class!(META_LABEL, "mt-6"))>"aliases to remove"</p>
+                    <ul class="mt-2 list-disc space-y-1 pl-5 font-meta text-sm text-ink">
+                        for alias in &plan.removed_aliases {
+                            <li class="break-words">(alias.as_str())</li>
+                        }
+                    </ul>
+                }
+                <p class="mt-6 max-w-prose font-meta text-xs leading-relaxed text-ink2">
+                    "Confirming moves normalized set history under "
+                    <strong>(plan.canonical_name.as_str())</strong>
+                    ", recomputes records from the combined history, and preserves every raw \
+                     imported exercise name. The exercise you started from keeps its taxonomy \
+                     and muscle weights when present."
+                </p>
+            </section>
+            <form method="post" action=(action.as_str()) class="mt-8 flex flex-wrap items-center gap-4">
+                <input type="hidden" name="canonical_name" value=(plan.canonical_name.as_str())>
+                <input type="hidden" name="aliases" value=(alias_lines.as_str())>
+                <input type="hidden" name="confirmation" value=(confirmation)>
+                <a
+                    class="quiet-link font-meta text-sm"
+                    href=(cancel.as_str())
+                    autofocus=""
+                >"cancel"</a>
+                <button
+                    type="submit"
+                    class="cursor-pointer rounded-sm border border-oxide bg-oxide px-4 py-2.5 \
+                         font-meta text-sm text-card hover:bg-oxide-hot \
+                         focus-visible:outline-solid focus-visible:outline-2 \
+                         focus-visible:outline-oxide focus-visible:outline-offset-2"
+                >(confirm_label)</button>
+            </form>
+        )
+    }?;
+    page.into_response(cx)
+}
+
+fn identity_confirmation_digest(plan: &db::ExerciseIdentityPlan) -> String {
+    fn field(hasher: &mut Sha256, value: &str) {
+        hasher.update(value.len().to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"fitness-exercise-identity-v1");
+    hasher.update(plan.version.to_le_bytes());
+    field(&mut hasher, &plan.current_name);
+    field(&mut hasher, &plan.canonical_name);
+    for alias in &plan.aliases {
+        field(&mut hasher, alias);
+    }
+    for name in &plan.merge_names {
+        field(&mut hasher, name);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[route(POST "/fitness/exercise/{exercise_name}")]
 async fn save_weights(cx: &Cx, body: Body) -> Result<Response> {
     save_weights_inner(cx, body).await
@@ -345,9 +573,85 @@ async fn legacy_save_weights(cx: &Cx, body: Body) -> Result<Response> {
     save_weights_inner(cx, body).await
 }
 
+#[route(POST "/fitness/exercise/{exercise_name}/identity")]
+async fn save_identity(cx: &Cx, body: Body) -> Result<Response> {
+    save_identity_inner(cx, body).await
+}
+
+#[route(POST "/lifting/exercise/{exercise_name}/identity")]
+async fn legacy_save_identity(cx: &Cx, body: Body) -> Result<Response> {
+    save_identity_inner(cx, body).await
+}
+
+async fn save_identity_inner(cx: &Cx, body: Body) -> Result<Response> {
+    let requested_name = path_param::<ExerciseName>(cx).to_string();
+    if !plausible_exercise_name(&requested_name) {
+        return Ok(plain(StatusCode::NOT_FOUND, "not found"));
+    }
+    let form = match gate_identity(cx, body).await {
+        Ok(form) => form,
+        Err(response) => return Ok(*response),
+    };
+
+    let store = app_context::<FitnessStore>(cx);
+    let canonical_name = match store.snapshot().await {
+        Ok(snapshot) => match snapshot.canonical_exercise_name(&requested_name) {
+            Some(name) => name,
+            None => return Ok(plain(StatusCode::NOT_FOUND, "not found")),
+        },
+        Err(error) => {
+            eprintln!("fitness snapshot fetch failed for identity save: {error}");
+            return Ok(back(&requested_name, "unavailable"));
+        }
+    };
+    let db = match app_context::<Data>(cx).db().await {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!("exercise identity save could not reach the database: {error}");
+            return Ok(back(&canonical_name, "unavailable"));
+        }
+    };
+    let plan =
+        match db::plan_exercise_identity(&db, &canonical_name, &form.canonical_name, &form.aliases)
+            .await
+        {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return Ok(plain(StatusCode::NOT_FOUND, "not found")),
+            Err(error) => {
+                eprintln!("exercise identity preview failed: {error}");
+                return Ok(back(&canonical_name, "unavailable"));
+            }
+        };
+    let confirmation = identity_confirmation_digest(&plan);
+    if plan.mutated && form.confirmation.as_deref() != Some(confirmation.as_str()) {
+        return identity_review(cx, &plan, &confirmation).await;
+    }
+
+    match db::replace_exercise_identity(&db, &plan, epoch_seconds()).await {
+        Ok(db::ExerciseIdentityOutcome::Saved {
+            canonical_name,
+            mutated,
+            ..
+        }) => {
+            if mutated && let Err(error) = store.rebuild().await {
+                // The transaction committed. The version backstop will pick
+                // it up even if this eager rebuild is temporarily unavailable.
+                eprintln!("post-identity-save snapshot rebuild failed: {error}");
+            }
+            Ok(back(&canonical_name, "identity-saved"))
+        }
+        Ok(db::ExerciseIdentityOutcome::Stale) => Ok(back(&canonical_name, "identity-stale")),
+        Ok(db::ExerciseIdentityOutcome::NotFound) => Ok(plain(StatusCode::NOT_FOUND, "not found")),
+        Err(error) => {
+            eprintln!("exercise identity save failed: {error}");
+            Ok(back(&canonical_name, "unavailable"))
+        }
+    }
+}
+
 async fn save_weights_inner(cx: &Cx, body: Body) -> Result<Response> {
-    let name = path_param::<ExerciseName>(cx).to_string();
-    if !plausible_exercise_name(&name) {
+    let requested_name = path_param::<ExerciseName>(cx).to_string();
+    if !plausible_exercise_name(&requested_name) {
         return Ok(plain(StatusCode::NOT_FOUND, "not found"));
     }
     let ratios = match gate(cx, body).await {
@@ -358,17 +662,16 @@ async fn save_weights_inner(cx: &Cx, body: Body) -> Result<Response> {
     // The exercise must exist in the archive; weights for phantom names
     // would be invisible everywhere and only invite typo rows.
     let store = app_context::<FitnessStore>(cx);
-    match store.snapshot().await {
-        Ok(snapshot) => {
-            if snapshot.exercise_profile(&name).is_none() {
-                return Ok(plain(StatusCode::NOT_FOUND, "not found"));
-            }
-        }
+    let name = match store.snapshot().await {
+        Ok(snapshot) => match snapshot.canonical_exercise_name(&requested_name) {
+            Some(name) => name,
+            None => return Ok(plain(StatusCode::NOT_FOUND, "not found")),
+        },
         Err(error) => {
             eprintln!("fitness snapshot fetch failed for weight save: {error}");
-            return Ok(back(&name, "unavailable"));
+            return Ok(back(&requested_name, "unavailable"));
         }
-    }
+    };
 
     let kept: Vec<(String, u32)> = ratios.into_iter().filter(|(_, ratio)| *ratio > 0).collect();
     if kept.is_empty() {
@@ -404,6 +707,16 @@ async fn save_weights_inner(cx: &Cx, body: Body) -> Result<Response> {
 /// Order is load-bearing: viewer → admin → same-origin → content type →
 /// bounded body → strict parse (`src/app/admin.rs` is the pattern).
 async fn gate(cx: &Cx, body: Body) -> std::result::Result<Vec<(String, u32)>, Box<Response>> {
+    let bytes = admin_form_body(cx, body).await?;
+    parse_weight_form(&bytes).ok_or_else(|| Box::new(plain(StatusCode::BAD_REQUEST, "bad form")))
+}
+
+async fn gate_identity(cx: &Cx, body: Body) -> std::result::Result<IdentityForm, Box<Response>> {
+    let bytes = admin_form_body(cx, body).await?;
+    parse_identity_form(&bytes).ok_or_else(|| Box::new(plain(StatusCode::BAD_REQUEST, "bad form")))
+}
+
+async fn admin_form_body(cx: &Cx, body: Body) -> std::result::Result<Vec<u8>, Box<Response>> {
     let name = path_param::<ExerciseName>(cx);
     if viewer(cx).is_none() {
         let login = format!("/login?next={}", urlencode(&page_url(name)));
@@ -431,7 +744,7 @@ async fn gate(cx: &Cx, body: Body) -> std::result::Result<Vec<(String, u32)>, Bo
             )));
         }
     };
-    parse_weight_form(&bytes).ok_or_else(|| Box::new(plain(StatusCode::BAD_REQUEST, "bad form")))
+    Ok(bytes.to_vec())
 }
 
 /// Exactly one `ratio_<muscle>` field per canonical muscle, nothing else.
@@ -458,6 +771,71 @@ fn parse_weight_form(body: &[u8]) -> Option<Vec<(String, u32)>> {
         .into_iter()
         .map(|(id, ratio)| ratio.map(|ratio| (id, ratio)))
         .collect()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IdentityForm {
+    canonical_name: String,
+    aliases: Vec<String>,
+    confirmation: Option<String>,
+}
+
+/// Exactly one canonical-name field and one newline-delimited alias field.
+/// Names normalize whitespace the same way the CSV and Lyfta parsers do.
+fn parse_identity_form(body: &[u8]) -> Option<IdentityForm> {
+    let mut canonical_name = None;
+    let mut alias_text = None;
+    let mut confirmation = None;
+    for (key, value) in form_urlencoded::parse(body) {
+        match key.as_ref() {
+            "canonical_name" => {
+                if canonical_name.is_some() {
+                    return None;
+                }
+                canonical_name = Some(normalize_exercise_name(&value)?);
+            }
+            "aliases" => {
+                if alias_text.is_some() {
+                    return None;
+                }
+                alias_text = Some(value.into_owned());
+            }
+            "confirmation" => {
+                if confirmation.is_some()
+                    || value.len() != 64
+                    || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return None;
+                }
+                confirmation = Some(value.into_owned());
+            }
+            _ => return None,
+        }
+    }
+    let canonical_name = canonical_name?;
+    let alias_text = alias_text?;
+    let mut seen = std::collections::HashSet::new();
+    let mut aliases = Vec::new();
+    for line in alias_text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let alias = normalize_exercise_name(line)?;
+        if !seen.insert(alias.clone()) || aliases.len() == 32 {
+            return None;
+        }
+        aliases.push(alias);
+    }
+    Some(IdentityForm {
+        canonical_name,
+        aliases,
+        confirmation,
+    })
+}
+
+fn normalize_exercise_name(name: &str) -> Option<String> {
+    let normalized = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    plausible_exercise_name(&normalized).then_some(normalized)
 }
 
 /// Printable, non-empty, and small enough for the schema — the same shape
@@ -604,6 +982,58 @@ mod tests {
             parse_weight_form(full.replace("ratio_quads=0", "ratio_quads=abc").as_bytes())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn identity_form_normalizes_and_strictly_bounds_names() {
+        let parsed = parse_identity_form(
+            b"canonical_name=Barbell+Resurrection+Lifts&aliases=Barbell+Pullover+Crunches%0D%0A++Pullover+++Crunches++%0A",
+        )
+        .unwrap();
+        assert_eq!(parsed.canonical_name, "Barbell Resurrection Lifts");
+        assert_eq!(
+            parsed.aliases,
+            vec!["Barbell Pullover Crunches", "Pullover Crunches"]
+        );
+        assert_eq!(parsed.confirmation, None);
+
+        let confirmed = parse_identity_form(
+            b"canonical_name=Press&aliases=Military+Press&confirmation=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+        assert_eq!(
+            confirmed.confirmation.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+
+        assert!(parse_identity_form(b"canonical_name=Press&aliases=A&aliases=B").is_none());
+        assert!(parse_identity_form(b"canonical_name=Press&aliases=A%0AA").is_none());
+        assert!(parse_identity_form(b"canonical_name=&aliases=").is_none());
+        assert!(parse_identity_form(b"canonical_name=Press&aliases=&extra=nope").is_none());
+        assert!(parse_identity_form(b"canonical_name=Press&aliases=&confirmation=nope").is_none());
+    }
+
+    #[test]
+    fn identity_confirmation_is_bound_to_the_reviewed_plan() {
+        let plan = db::ExerciseIdentityPlan {
+            current_name: "Military Press".into(),
+            canonical_name: "Barbell Overhead Press".into(),
+            aliases: vec!["Military Press".into()],
+            merge_names: vec!["Military Press".into()],
+            added_aliases: vec!["Military Press".into()],
+            removed_aliases: Vec::new(),
+            version: 7,
+            mutated: true,
+        };
+        let digest = identity_confirmation_digest(&plan);
+        assert_eq!(digest.len(), 64);
+
+        let mut changed = plan.clone();
+        changed.aliases.push("Strict Press".into());
+        assert_ne!(identity_confirmation_digest(&changed), digest);
+        changed = plan.clone();
+        changed.version += 1;
+        assert_ne!(identity_confirmation_digest(&changed), digest);
     }
 
     #[test]
