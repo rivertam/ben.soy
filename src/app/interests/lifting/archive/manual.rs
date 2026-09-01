@@ -372,12 +372,21 @@ fn parse_date_line(line: &str) -> Result<String, ParseError> {
         return Err(ParseError::new("the workout date is malformed"));
     }
     let weekday = pieces[0].trim_end_matches(',');
-    let day: u8 = pieces[1]
-        .trim_end_matches('.')
+    let (day, month) = if month_number(pieces[1]).is_some() {
+        // Current U.S. shares use "Tuesday, September 1, 2026". Older
+        // shares put the day first as "Friday 24. July 2026".
+        (pieces[2].trim_end_matches(','), pieces[1])
+    } else {
+        (
+            pieces[1].trim_end_matches('.'),
+            pieces[2].trim_end_matches('.'),
+        )
+    };
+    let day: u8 = day
         .parse()
         .map_err(|_| ParseError::new("the workout day is malformed"))?;
-    let month = month_number(pieces[2].trim_end_matches('.'))
-        .ok_or_else(|| ParseError::new("the workout month is malformed"))?;
+    let month =
+        month_number(month).ok_or_else(|| ParseError::new("the workout month is malformed"))?;
     let year: i16 = pieces[3]
         .parse()
         .map_err(|_| ParseError::new("the workout year is malformed"))?;
@@ -682,6 +691,42 @@ Set 2: 45lbs x 5 reps (Failure)
 Check out the workout and join me on Lyfta.
 https://lyfta.app/wk/5";
 
+    const US_DATE_SAMPLE: &str = "Pushelodeon
+Tuesday, September 1, 2026 at 11:43 AM
+
+37min | 7 205lbs | 5 Exercises | 18 sets
+
+1. Incline Bench Press (Cambered Bar)
+Set 1: 45lbs x 10 reps (Warm-up)
+Set 2: 135lbs x 7 reps @ 0rir
+Set 3: 115lbs x 7 reps @ 1rir
+Set 4: 115lbs x 6 reps @ 1rir
+Set 5: 115lbs x 3 reps (Failure)
+
+2. Standing Up Straight Crossovers
+Set 1: 15lbs x 6 reps (Warm-up)
+Set 2: 30lbs x 7 reps (Failure)
+Set 3: 25lbs x 7 reps (Failure)
+Set 4: 25lbs x 6 reps @ 1rir
+Set 5: 25lbs x 7 reps @ 0rir
+
+3. Cable One Arm Lateral Raise
+Set 1: 15lbs x 11 reps @ 0rir
+Set 2: 15lbs x 8 reps @ 0rir
+Set 3: 15lbs x 7 reps @ 0rir
+
+4. Front Raise
+Set 1: 20lbs x 10 reps (Failure)
+Set 2: 20lbs x 7 reps @ 0rir
+
+5. Lever Total Abdominal Crunch
+Set 1: 80lbs x 6 reps (Warm-up)
+Set 2: 120lbs x 6 reps @ 0rir
+Set 3: 100lbs x 9 reps @ 2rir
+
+Check out the workout and join me on Lyfta.
+https://lyfta.app/wk/5";
+
     #[test]
     fn parses_the_supplied_lyfta_workout() {
         let parsed = parse_lyfta(SAMPLE).unwrap();
@@ -713,6 +758,19 @@ https://lyfta.app/wk/5";
             parsed.payload.sets[11].id,
             "fitness:2026-07-24T14:38:00:0012"
         );
+    }
+
+    #[test]
+    fn parses_lyftas_us_date_format() {
+        let parsed = parse_lyfta(US_DATE_SAMPLE).unwrap();
+        let workout = &parsed.payload.workouts[0];
+        assert_eq!(workout.title, "Pushelodeon");
+        assert_eq!(workout.started_at_utc, "2026-09-01 15:43:00");
+        assert_eq!(workout.started_at_local, "2026-09-01 11:43:00");
+        assert_eq!(workout.eastern_offset_minutes, -240);
+        assert_eq!(parsed.public_path, "2026-09-01T11-43-00-04-00");
+        assert_eq!(parsed.payload.exercises.len(), 5);
+        assert_eq!(parsed.payload.sets.len(), 18);
     }
 
     #[test]
