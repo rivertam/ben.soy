@@ -13,7 +13,16 @@ pub struct DrumCover {
     pub log_link_label: &'static str,
 }
 
-pub static DRUM_COVERS: [DrumCover; 6] = [
+pub static DRUM_COVERS: [DrumCover; 7] = [
+    DrumCover {
+        youtube_id: "iSg0RuR-nhw",
+        watch_url: "https://www.youtube.com/watch?v=iSg0RuR-nhw",
+        published: "2026-08-29",
+        title: "Flake",
+        artist: "Jack Johnson",
+        card_label: "Jack Johnson cover →",
+        log_link_label: "Jack Johnson ↗",
+    },
     DrumCover {
         youtube_id: "yVRKA-4YbTo",
         watch_url: "https://www.youtube.com/watch?v=yVRKA-4YbTo",
