@@ -8,12 +8,16 @@
 //! (`docs/podrick.md`). It reads the site's public API for message content and
 //! owns the `podrick_*` tables directly; it never writes a fitness table.
 //!
-//! Deliberately REST-only — no gateway, no serenity. See `discord.rs`.
+//! Discord is deliberately REST-only — no gateway, no serenity. Fitness
+//! announcements are woken by a SurrealDB live query and reconciled from
+//! durable database state. See `discord.rs` and `docs/podrick.md`.
 
+use futures_util::StreamExt;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use benjisponge::data::Data;
+use benjisponge::data::{Data, ENDPOINT_VAR};
+use surrealdb::types::Action;
 
 mod announce;
 mod db;
@@ -35,6 +39,10 @@ use seed_install::SeedReport;
 
 const DEFAULT_API: &str = "https://ben.soy";
 const DEFAULT_INTERVAL_SECONDS: u64 = 60;
+/// Give the web process time to rebuild its post-import fitness snapshot before
+/// the announcer asks its workout-detail route for the newly committed lift.
+const FITNESS_LIVE_SETTLE_SECONDS: u64 = 2;
+const FITNESS_LIVE_RECONNECT_SECONDS: u64 = 1;
 const TOKEN_VAR: &str = "DISCORD_BOT_TOKEN";
 const LIFT_CHANNEL_VAR: &str = "PODRICK_LIFT_CHANNEL_ID";
 const PANTS_CHANNEL_VAR: &str = "PODRICK_PANTS_CHANNEL_ID";
@@ -47,13 +55,14 @@ USAGE
   podrick <COMMAND> [FLAGS]        (or: cargo run --bin podrick -- <COMMAND>)
 
 COMMANDS
-  run                   poll forever (the deployed mode)
+  run                   watch fitness and poll Pants forever (deployed mode)
   once                  run a single pass and exit
 
 FLAGS
   --dry-run             read-only: preview work, post/react/write nothing.
                         Pants history reads still need a token.
-  --interval <seconds>  poll interval for `run` (default: 60, minimum: 5)
+  --interval <seconds>  Pants poll and safety-reconciliation interval
+                        (default: 60, minimum: 5)
   --api <origin>        site API origin (default: https://ben.soy)
   --token <token>       bot token; otherwise $DISCORD_BOT_TOKEN, otherwise
                         ~/.config/benjisponge/podrick.token
@@ -192,6 +201,12 @@ fn optional_env(variable: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn supports_fitness_live(endpoint: Option<&str>) -> bool {
+    endpoint
+        .and_then(|endpoint| url::Url::parse(endpoint).ok())
+        .is_some_and(|endpoint| matches!(endpoint.scheme(), "ws" | "wss"))
 }
 
 fn now_seconds() -> i64 {
@@ -405,6 +420,7 @@ async fn main() -> ExitCode {
             dry_run: args.dry_run,
         });
     let data = Data::from_env();
+    let fitness_live = supports_fitness_live(optional_env(ENDPOINT_VAR).as_deref());
 
     log(
         "starting",
@@ -416,6 +432,7 @@ async fn main() -> ExitCode {
             "infarctions_channel": pants_channels.as_ref().map(|channels| &channels.1),
             "dry_run": args.dry_run,
             "interval_seconds": args.interval.as_secs(),
+            "fitness_live": announcer.is_some() && fitness_live,
         }),
     );
 
@@ -448,37 +465,200 @@ async fn main() -> ExitCode {
         };
     }
 
+    match run_forever(
+        &data,
+        announcer.as_ref(),
+        pants_worker.as_ref(),
+        args.dry_run,
+        args.interval,
+        fitness_live,
+    )
+    .await
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            // Only unrecoverable conditions reach here: a rejected token, a
+            // channel the bot cannot post in, or a database query that failed
+            // after connection. Exiting lets the restart policy and the logs
+            // show it instead of a silent loop that never posts.
+            eprintln!("podrick: {error}");
+            log(
+                "stopping",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Run scheduled reconciliation, with manual workout creates able to wake the
+/// lift announcer between intervals.
+///
+/// A live notification is deliberately not work itself. The stream is opened
+/// before each catch-up pass, and `Announcer::tick` still reads the durable
+/// watermark, unconfirmed claims, and unclaimed workouts. If the pinned SDK
+/// closes the stream on a WebSocket reset, dropping it and returning to the
+/// top of this loop resubscribes before doing another catch-up pass.
+async fn run_forever(
+    data: &Data,
+    announcer: Option<&Announcer>,
+    pants_worker: Option<&PantsWorker>,
+    dry_run: bool,
+    interval: Duration,
+    fitness_live: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut workout_changes = None;
+
+    if announcer.is_some() && !fitness_live {
+        log(
+            "fitness-live-unavailable",
+            serde_json::json!({
+                "error": format!("{ENDPOINT_VAR} must use ws:// or wss://"),
+                "note": "using interval reconciliation"
+            }),
+        );
+    }
+
     loop {
-        let delay = match run_pass(
-            &data,
-            announcer.as_ref(),
-            pants_worker.as_ref(),
-            args.dry_run,
-        )
-        .await
-        {
+        if fitness_live && workout_changes.is_none() && announcer.is_some() {
+            workout_changes = match data.db().await {
+                Ok(handle) => match db::watch_manual_workouts(&handle).await {
+                    Ok(changes) => {
+                        log(
+                            "fitness-live-subscribed",
+                            serde_json::json!({ "source": db::ANNOUNCED_SOURCE }),
+                        );
+                        Some(changes)
+                    }
+                    Err(error) => {
+                        log(
+                            "fitness-live-unavailable",
+                            serde_json::json!({
+                                "error": error.to_string(),
+                                "note": "using interval reconciliation; will retry"
+                            }),
+                        );
+                        None
+                    }
+                },
+                Err(error) => {
+                    log(
+                        "fitness-live-unavailable",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                            "note": "using interval reconciliation; will retry"
+                        }),
+                    );
+                    None
+                }
+            };
+        }
+
+        let delay = match run_pass(data, announcer, pants_worker, dry_run).await {
             Ok(report) => {
                 let delay = report
                     .retry_after()
-                    .map_or(args.interval, |after| args.interval.max(after));
-                log_report(&report, args.dry_run);
+                    .map_or(interval, |after| interval.max(after));
+                let rate_limited = report.retry_after().is_some();
+                log_report(&report, dry_run);
+                if rate_limited {
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
                 delay
             }
-            Err(error) => {
-                // Only unrecoverable conditions reach here: a rejected token,
-                // a channel the bot cannot post in, or a database that stayed
-                // unreachable. Exiting lets the restart policy and the logs
-                // show it instead of a silent loop that never posts.
-                eprintln!("podrick: {error}");
-                log(
-                    "stopping",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
-                return ExitCode::FAILURE;
-            }
+            Err(error) => return Err(error),
         };
-        tokio::time::sleep(delay).await;
+
+        let Some(changes) = workout_changes.as_mut() else {
+            tokio::time::sleep(delay).await;
+            continue;
+        };
+        let deadline = tokio::time::Instant::now() + delay;
+        let mut reconnect = false;
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                change = changes.next() => match change {
+                    Some(Ok(change)) if change.action == Action::Create => {
+                        // The workout and its sets committed atomically, but the
+                        // web process rebuilds its read snapshot just after that
+                        // commit. A short settle avoids racing the detail route.
+                        tokio::time::sleep(Duration::from_secs(
+                            FITNESS_LIVE_SETTLE_SECONDS,
+                        ))
+                        .await;
+                        let report = run_announcement_pass(
+                            data,
+                            announcer.expect("live stream requires announcer"),
+                        )
+                        .await?;
+                        let retry_after = report.retry_after;
+                        log_report(
+                            &PassReport {
+                                announcements: report,
+                                ..PassReport::default()
+                            },
+                            dry_run,
+                        );
+                        if let Some(after) = retry_after {
+                            // A Discord 429 may be global. Pause every Discord
+                            // path, including Pants, for the full advertised
+                            // delay just as the interval pass does.
+                            tokio::time::sleep(interval.max(after)).await;
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        log(
+                            "fitness-live-disconnected",
+                            serde_json::json!({
+                                "error": error.to_string(),
+                                "note": "will resubscribe and reconcile"
+                            }),
+                        );
+                        reconnect = true;
+                        break;
+                    }
+                    None => {
+                        log(
+                            "fitness-live-disconnected",
+                            serde_json::json!({
+                                "error": "stream ended",
+                                "note": "will resubscribe and reconcile"
+                            }),
+                        );
+                        reconnect = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if reconnect {
+            workout_changes = None;
+            tokio::time::sleep(Duration::from_secs(FITNESS_LIVE_RECONNECT_SECONDS)).await;
+        }
     }
+}
+
+async fn run_announcement_pass(
+    data: &Data,
+    announcer: &Announcer,
+) -> Result<TickReport, Box<dyn std::error::Error>> {
+    let handle = match data.db().await {
+        Ok(handle) => handle,
+        Err(error) => {
+            log(
+                "database-unavailable",
+                serde_json::json!({ "error": error.to_string(), "note": "will retry next pass" }),
+            );
+            return Ok(TickReport::default());
+        }
+    };
+    Ok(announcer.tick(&handle, now_seconds()).await?)
 }
 
 /// One pass, with database connection errors treated as transient.
@@ -566,5 +746,15 @@ mod tests {
             ..PassReport::default()
         };
         assert_eq!(report.retry_after(), Some(Duration::from_secs(1_337)));
+    }
+
+    #[test]
+    fn fitness_live_requires_a_websocket_endpoint() {
+        assert!(supports_fitness_live(Some("ws://database.internal:8000")));
+        assert!(supports_fitness_live(Some("wss://database.example")));
+        assert!(!supports_fitness_live(Some(
+            "http://database.internal:8000"
+        )));
+        assert!(!supports_fitness_live(None));
     }
 }

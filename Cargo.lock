@@ -419,6 +419,7 @@ dependencies = [
  "eastern-time",
  "fitness-entry-core",
  "form_urlencoded",
+ "futures-util",
  "http",
  "inventory",
  "jiff",

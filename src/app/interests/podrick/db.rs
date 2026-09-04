@@ -18,7 +18,7 @@ use benjisponge::data::{
     podrick_models::{PodrickAnnouncement, PodrickMeta, PodrickPantsAction, PodrickPantsMessage},
 };
 use serde::Deserialize;
-use surrealdb::types::SurrealValue;
+use surrealdb::{Notification, method::QueryStream, types::SurrealValue};
 
 /// The cursor key holding the newest workout that predates Podrick.
 pub const ANNOUNCE_WATERMARK: &str = "announce_watermark";
@@ -46,6 +46,36 @@ pub struct AnnounceCandidate {
     pub started_at_utc: String,
     pub started_at_local: String,
     pub eastern_offset_minutes: i64,
+}
+
+/// A manual workout mutation delivered by SurrealDB's live query.
+///
+/// The notification is only a wake-up hint. The announcer still discovers and
+/// claims work through [`workouts_after`], so a dropped or duplicate live
+/// notification cannot lose or duplicate a Discord post.
+#[derive(Clone, Debug, Deserialize, SurrealValue)]
+pub struct WorkoutChange {
+    pub id: String,
+}
+
+pub type WorkoutChanges = QueryStream<Notification<WorkoutChange>>;
+
+/// Watch future mutations to manual workouts.
+///
+/// Live queries have no initial snapshot and are not durable across a socket
+/// reset. The run loop therefore establishes this stream before reconciling
+/// [`workouts_after`] and repeats that ordering whenever the stream ends.
+pub async fn watch_manual_workouts(db: &Db) -> surrealdb::Result<WorkoutChanges> {
+    let mut response = db
+        .query(
+            "LIVE SELECT record::id(id) AS id
+             FROM workouts
+             WHERE source = $source;",
+        )
+        .bind(("source", ANNOUNCED_SOURCE.to_string()))
+        .await?
+        .check()?;
+    response.stream::<Notification<WorkoutChange>>(0)
 }
 
 /// The newest stored workout's `started_at_utc`, or `None` for an empty
@@ -487,4 +517,41 @@ pub async fn record_pants_action_attempt(db: &Db, action_id: &str) -> surrealdb:
     .await?
     .check()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use std::time::Duration;
+    use surrealdb::types::Action;
+
+    #[tokio::test]
+    async fn workout_watch_emits_only_manual_workouts() {
+        let db = surrealdb::engine::any::connect("mem://").await.unwrap();
+        db.use_ns("test").use_db("test").await.unwrap();
+        db.query("DEFINE TABLE workouts SCHEMALESS;")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        let mut changes = watch_manual_workouts(&db).await.unwrap();
+        db.query(
+            "CREATE workouts:history SET source = 'csv';
+             CREATE workouts:fresh SET source = 'manual';",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let change = tokio::time::timeout(Duration::from_secs(2), changes.next())
+            .await
+            .expect("manual workout notification")
+            .expect("live query remains open")
+            .expect("valid live notification");
+        assert_eq!(change.action, Action::Create);
+        assert_eq!(change.data.id, "fresh");
+    }
 }

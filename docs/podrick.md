@@ -55,9 +55,18 @@ uncertain POST is reconciled without duplicating it after a long outage.
 ```sh
 just podrick once --dry-run          # render to stdout, post nothing
 just podrick once                    # one pass
-just podrick run --interval 30       # poll forever
+just podrick run --interval 30       # live fitness + polled Pants
 just podrick --help
 ```
+
+In `run` mode, a SurrealDB live query watches future `source = 'manual'`
+workout mutations and wakes the lift announcer on creates. The interval still
+drives Pants polling, Discord retries, and a durable safety reconciliation for
+lifts. A live notification is never treated as a queue item: startup and every
+resubscription establish the stream first and then scan the watermark, claims,
+and unclaimed workouts. If the live query is unavailable, Podrick logs that it
+is using interval reconciliation and retries the subscription on the next pass.
+`once` remains one ordinary reconciliation pass and opens no live query.
 
 `--dry-run` is read-only: it writes neither database nor Discord — no
 watermarks, cursors, claims, reactions, posts, or attempt counters. The lift
@@ -80,8 +89,9 @@ are required as usual.
 ### Locally
 
 `just dev` runs Podrick beside the site, so a lift pasted into the local
-upload dialog is announced without remembering to start a second terminal. It
-polls every 10 seconds locally rather than the deployed 60, and it stops when
+upload dialog is announced without remembering to start a second terminal.
+Lift creates arrive through the live query; Pants and the safety reconciliation
+run every 10 seconds locally rather than the deployed 60. Podrick stops when
 the dev server does.
 
 ```sh
@@ -166,6 +176,13 @@ origin doing its job, not a bug to fix.
 - **Only `source = 'manual'` workouts are announced.** CSV history does not
   join the `/` timeline or `/feed.xml` either, and a resync would
   otherwise replay years of workouts into the channel.
+- **The fitness live query is a wake-up hint, never the source of truth.** It
+  filters to manual workouts and only create notifications wake the announcer;
+  `announce_watermark`, unconfirmed claims, and the unclaimed-workout scan
+  still decide what must be posted. The pinned SDK closes live streams on a
+  WebSocket reset, so Podrick resubscribes before immediately reconciling.
+  The ordinary interval remains a safety net for registration gaps, process
+  downtime, unsupported transports, and failed posts.
 - **Podrick never writes a fitness table.** It reads `workouts` to decide what
   is eligible and owns the `podrick_*` tables; everything a message *says*
   comes from `GET /api/fitness/workouts/by-path/{path}`, so the Eastern
@@ -302,6 +319,11 @@ PODRICK_LIFT_CHANNEL_ID=<channel id>
 PODRICK_PANTS_CHANNEL_ID=883473115085164544
 PODRICK_INFARCTIONS_CHANNEL_ID=1049738190107451433
 ```
+
+Keep Podrick's database endpoint on `ws://` or `wss://`: the fitness wake-up
+stream requires the WebSocket transport. A mistaken HTTP endpoint remains
+safe—the interval reconciliation continues—but logs
+`fitness-live-unavailable` at startup.
 
 No `PORT`, no public domain, no Tunnel ingress. The service makes outbound
 connections only.
