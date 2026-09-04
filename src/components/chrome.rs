@@ -164,7 +164,7 @@ fn pane_href(at_home: bool, tab: &str) -> String {
 /// Signed-in viewers get two quiet extras: their allowlisted hidden pages
 /// join the session windows (and home's `more` listing renders them as
 /// dotfiles), and a barely-there "signed in" line replaces
-/// the footer's login link. The `more` listing and default session bar also
+/// the footer's login link. The `more` listing and session bar also
 /// expose the door as a small terminal action. These personalize the HTML,
 /// which is why
 /// `response_layer.rs` forces `private, no-store` whenever the viewer cookie
@@ -205,9 +205,9 @@ pub async fn shell(
         Some(current) => access::visible_pages(app_context::<Data>(cx), &current.email).await,
         None => Vec::new(),
     };
-    // The session bar is the default navigation. It rides along in every
-    // render because cached HTML cannot know whether localStorage will apply
-    // an alternate finish before paint.
+    // The session bar is the site's primary navigation. It rides along in
+    // every render because cached HTML cannot know whether localStorage will
+    // apply an alternate finish before paint.
     let request_uri = uri(cx);
     let post = post_for_path(request_uri.path());
     let return_to = auth_return_target(cx);
@@ -283,7 +283,6 @@ pub async fn shell(
                     type="module"
                     src=(SESSION_JS)
                     data-session-runtime=""
-                    data-default-theme=(themes::DEFAULT_THEME_ID)
                     data-vimium-module=(SESSION_VIMIUM_JS)
                 ></script>
                 <link rel="stylesheet" href=(SITE_CSS)>
@@ -411,7 +410,8 @@ pub async fn shell(
                     }
                 </footer>
                 // The primary nav: Rust owns its windows and message surface;
-                // session.js adds only client-local clock and key behavior.
+                // session.js adds only client-local clock and key behavior;
+                // both remain available under every appearance.
                 <nav
                     class="tmux-bar"
                     aria-label="tmux windows"

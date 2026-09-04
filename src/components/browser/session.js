@@ -1,15 +1,13 @@
-// Controls that belong specifically to the default tmux session: its status
-// bar, prefix, windows, clock, and Vimium notice. Site-wide f/j/k navigation
-// and H/L history live in navigation.js and continue under every appearance.
+// Controls for the site's shared tmux session bar: its status line, prefix,
+// windows, clock, and Vimium notice. Site-wide f/j/k navigation and H/L
+// history live in navigation.js; the session controls travel with every
+// appearance too.
 
 const config = document.querySelector("[data-session-runtime]");
-const root = document.documentElement;
-const DEFAULT_ID = config.dataset.defaultTheme;
 const LAST_WINDOW_KEY = "bens-tmux-last";
 const bar = document.querySelector("[data-session-bar]");
 const message = document.querySelector("[data-session-message]");
 
-const active = () => !root.dataset.theme || root.dataset.theme === DEFAULT_ID;
 const windows = () => [
   ...document.querySelectorAll("[data-session-window]"),
 ];
@@ -90,11 +88,11 @@ let vimiumPromise = null;
 const vimiumFeature = () => {
   vimiumPromise ||= import(config.dataset.vimiumModule).then((vimiumModule) => {
     vimium = vimiumModule.createVimiumNotice({
-      isActive: active,
+      isActive: () => true,
       showMessage,
       clearMessage,
     });
-    if (active()) vimium.start();
+    vimium.start();
     return vimium;
   });
   return vimiumPromise;
@@ -107,19 +105,9 @@ const paintClock = () => {
 };
 
 const sync = () => {
-  if (active()) {
-    paintClock();
-    if (!clockTimer) clockTimer = setInterval(paintClock, 20000);
-    void vimiumFeature().then((loadedVimium) => {
-      if (active()) loadedVimium.start();
-    });
-  } else {
-    clearInterval(clockTimer);
-    clockTimer = null;
-    vimium?.stop();
-    clearMessage();
-    armPrefix(false);
-  }
+  paintClock();
+  if (!clockTimer) clockTimer = setInterval(paintClock, 20000);
+  void vimiumFeature().then((loadedVimium) => loadedVimium.start());
 };
 
 document.addEventListener("site:appearancechange", sync);
@@ -132,7 +120,6 @@ document.addEventListener("site:navigationkey", () => {
 document.addEventListener(
   "keydown",
   (event) => {
-    if (!active()) return;
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("input, textarea, select, [contenteditable='true']")) {
       return;

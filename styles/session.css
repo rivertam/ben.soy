@@ -1,30 +1,37 @@
 /*
- * The site's default session shell is core chrome, not theme lifecycle.
- * Fresh HTML carries no data-theme; choosing an alternate appearance adds
- * that attribute and these scoped layout rules stand down. Rust renders the
- * pane, windows, and status-line message; browser/session*.js supplies only
- * client-local controls.
+ * The site's session shell is core chrome, not theme lifecycle. Rust renders
+ * the pane, windows, and status-line message; browser/session*.js supplies
+ * only client-local controls. Theme tokens style the same bar under every
+ * appearance.
  */
 
-/* The ordinary header stands down; the status bar is the default nav. */
-:root:not([data-theme]) body > header {
+/* The session bar owns primary navigation in every desktop appearance. */
+body > header {
   display: none;
 }
 
-/* Clearance for the fixed bar, and room for the appearance rack above it. */
-:root:not([data-theme]) body {
-  padding-bottom: 2.6rem;
+/* Clearance for the fixed top bar, including a phone's safe-area inset. */
+body {
+  padding-top: calc(2.6rem + env(safe-area-inset-top, 0rem));
 }
 
-:root:not([data-theme]) .corner-rack {
-  bottom: calc(3.2rem + env(safe-area-inset-bottom, 0rem));
+/* The default finish keeps its original terminal signals. Alternate finishes
+   leave these unset and use the active theme's semantic tokens below. */
+:root:not([data-theme]) {
+  --session-bar: var(--tmux-bar);
+  --session-border: var(--tmux-border);
+  --session-brand: var(--tmux-violet);
+  --session-active: var(--tmux-lime);
+  --session-signal: var(--tmux-lime);
+  --session-prefix: var(--tmux-pink);
+  --session-coal: var(--tmux-coal);
 }
 
 /* The content column is a pane. Immersive pages stay unframed. */
 :root:not([data-theme]) body:not([data-nav-hidden="true"]) main {
   position: relative;
   width: calc(100% - 0.9rem);
-  border: 1px solid var(--tmux-border);
+  border: 1px solid var(--color-hairline);
   margin-top: 1.25rem;
   padding-top: 1.5rem;
 }
@@ -41,14 +48,14 @@
   color: var(--color-muted);
 }
 
-/* Phones run the minimal pane bar instead (styles/panes.css): the status
-   bar, the pane frame, and its clearances all stand down below 40rem. */
+/* Phones run the minimal pane bar instead (styles/panes.css): the session
+   bar, pane frame, and their clearances all stand down below 40rem. */
 @media (width < 40rem) {
-  :root:not([data-theme]) body {
-    padding-bottom: 0;
+  body {
+    padding-top: 0;
   }
 
-  :root:not([data-theme]) .tmux-bar {
+  .tmux-bar {
     display: none !important;
   }
 
@@ -64,44 +71,44 @@
   }
 }
 
-/* Alternate finishes leave the status bar in the DOM but hidden. */
+/* The shared status bar is the desktop nav for every finish. */
 .tmux-bar {
-  display: none;
-}
-
-:root:not([data-theme]) .tmux-bar {
   position: fixed;
-  inset: auto 0 0 0;
+  inset: 0 0 auto 0;
   z-index: 35;
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.22rem 0.55rem calc(0.22rem + env(safe-area-inset-bottom, 0rem));
-  background: var(--tmux-bar);
-  border-top: 1px solid var(--tmux-border);
+  padding: calc(0.22rem + env(safe-area-inset-top, 0rem)) 0.55rem 0.22rem;
+  background: var(--session-bar, var(--color-card));
+  border-bottom: 1px solid var(--session-border, var(--color-hairline));
   font-family: var(--font-meta);
   font-size: 0.78rem;
   line-height: 1.6;
   white-space: nowrap;
 }
 
-:root:not([data-theme]) .tmux-session {
+.tmux-session {
   flex: none;
   padding: 0 0.55em;
   border-radius: 2px;
-  background: var(--tmux-violet);
-  color: var(--tmux-coal);
+  background: var(--session-brand, var(--color-ink));
+  color: var(--session-coal, var(--color-page));
   font-weight: 700;
   text-decoration: none;
 }
 
-:root:not([data-theme]) .tmux-session:hover,
-:root:not([data-theme]) .tmux-session:focus-visible {
-  background: color-mix(in srgb, var(--tmux-violet) 80%, white);
-  color: var(--tmux-coal);
+.tmux-session:hover,
+.tmux-session:focus-visible {
+  background: color-mix(
+    in srgb,
+    var(--session-brand, var(--color-ink)) 80%,
+    white
+  );
+  color: var(--session-coal, var(--color-page));
 }
 
-:root:not([data-theme]) .tmux-windows {
+.tmux-windows {
   display: flex;
   flex: 1;
   min-width: 0;
@@ -110,18 +117,18 @@
   scrollbar-width: none;
 }
 
-:root:not([data-theme]) .tmux-windows::-webkit-scrollbar {
+.tmux-windows::-webkit-scrollbar {
   display: none;
 }
 
 /* Phones shed the strip, but the anchors remain for prefix-number jumps. */
 @media (max-width: 40rem) {
-  :root:not([data-theme]) .tmux-windows {
+  .tmux-windows {
     display: none;
   }
 }
 
-:root:not([data-theme]) .tmux-window {
+.tmux-window {
   flex: none;
   padding: 0 0.5em;
   border-radius: 2px;
@@ -129,19 +136,19 @@
   text-decoration: none;
 }
 
-:root:not([data-theme]) .tmux-window:hover,
-:root:not([data-theme]) .tmux-window:focus-visible {
+.tmux-window:hover,
+.tmux-window:focus-visible {
   color: var(--color-ink);
   background: color-mix(in srgb, var(--color-ink) 12%, transparent);
 }
 
-:root:not([data-theme]) .tmux-window[aria-current] {
-  background: var(--tmux-lime);
-  color: var(--tmux-coal);
+.tmux-window[aria-current] {
+  background: var(--session-active, var(--color-oxide));
+  color: var(--session-coal, var(--color-page));
   font-weight: 700;
 }
 
-:root:not([data-theme]) .tmux-status-right {
+.tmux-status-right {
   flex: none;
   display: flex;
   align-items: center;
@@ -149,58 +156,63 @@
   margin-left: auto;
 }
 
-:root:not([data-theme]) .tmux-keys {
+.tmux-keys {
   color: var(--color-muted);
 }
 
 @media (max-width: 64rem) {
-  :root:not([data-theme]) .tmux-keys {
+  .tmux-keys {
     display: none;
   }
 }
 
-:root:not([data-theme]) .tmux-host {
-  color: var(--tmux-lime);
+.tmux-host {
+  color: var(--session-signal, var(--color-patina));
 }
 
-:root:not([data-theme]) .tmux-clock {
+.tmux-clock {
   color: var(--color-brass);
 }
 
 /* Auth is a status action, not another numbered window. The small framed
    chip gives the terminal door enough contrast without competing with the
    active window. */
-:root:not([data-theme]) .tmux-login {
+.tmux-login {
   flex: none;
   padding: 0 0.45em;
-  color: var(--tmux-lime);
-  border: 1px solid color-mix(in srgb, var(--tmux-lime) 55%, var(--tmux-border));
+  color: var(--session-signal, var(--color-patina));
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--session-signal, var(--color-patina)) 55%,
+      var(--session-border, var(--color-hairline))
+    );
   border-radius: 2px;
   text-decoration: none;
 }
 
-:root:not([data-theme]) .tmux-login:hover,
-:root:not([data-theme]) .tmux-login:focus-visible {
-  color: var(--tmux-coal);
-  background: var(--tmux-lime);
-  border-color: var(--tmux-lime);
+.tmux-login:hover,
+.tmux-login:focus-visible {
+  color: var(--session-coal, var(--color-page));
+  background: var(--session-signal, var(--color-patina));
+  border-color: var(--session-signal, var(--color-patina));
 }
 
 .tmux-prefix {
   display: none;
 }
 
-:root:not([data-theme]) .tmux-bar[data-prefix-armed] .tmux-prefix {
+.tmux-bar[data-prefix-armed] .tmux-prefix {
   display: inline;
   padding: 0 0.45em;
   border-radius: 2px;
-  background: var(--tmux-pink);
-  color: var(--tmux-coal);
+  background: var(--session-prefix, var(--color-oxide-hot));
+  color: var(--session-coal, var(--color-page));
   font-weight: 700;
 }
 
 /* A server-rendered display-message surface, currently used for Vimium. */
-:root:not([data-theme]) .tmux-note {
+.tmux-note {
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -210,7 +222,7 @@
   padding: 0 0.6rem;
   background: var(--color-oxide);
   border: 0;
-  color: var(--tmux-coal);
+  color: var(--session-coal, var(--color-page));
   font: inherit;
   font-weight: 700;
   text-align: left;

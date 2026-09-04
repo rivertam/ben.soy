@@ -24,7 +24,7 @@ asset registration; `styles/themes.css` eagerly imports package CSS for a
 flash-free first paint; `browser/appearance.js` validates and lazily imports
 package JavaScript.
 
-Tmux uses this interface for its palette and attach bell, but the tmux session
-is the site's default chrome. Its rendering and controls therefore stay in
-Rust, `styles/session.css`, and `browser/session*.js` rather than in the theme
-lifecycle.
+Tmux uses this interface for its palette and attach bell, while the tmux
+session is the site's shared chrome. Its rendering and controls therefore stay
+in Rust, `styles/session.css`, and `browser/session*.js` rather than in the
+theme lifecycle.

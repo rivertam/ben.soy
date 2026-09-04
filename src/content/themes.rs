@@ -4,10 +4,10 @@
 //! over that default shell.
 //!
 //! The tmux palette has a `[data-theme="tmux"]` preview block only so its menu
-//! swatch can resolve the right tokens. Its layout and keyboard behavior live
-//! in `styles/session.css` and `components/browser/session*.js`; those
-//! session behaviors remain core even though the palette uses the same
-//! package interface as every alternate appearance.
+//! swatch can resolve the right tokens. The shared session layout and keyboard
+//! behavior live in `styles/session.css` and `components/browser/session*.js`;
+//! they remain core even though the palette uses the same package interface as
+//! every alternate appearance.
 
 use topcoat::asset::{Asset, asset};
 
@@ -345,7 +345,13 @@ mod tests {
         assert!(APPEARANCE_JS.contains("import(registration.module)"));
         assert!(!APPEARANCE_JS.contains("clownModule"));
         assert!(!APPEARANCE_JS.contains("felixModule"));
-        assert!(SESSION_CSS.contains(":root:not([data-theme]) .tmux-bar"));
+        assert!(SESSION_CSS.contains(".tmux-bar {"));
+        assert!(SESSION_CSS.contains("inset: 0 0 auto 0"));
+        assert!(SESSION_CSS.contains("border-bottom: 1px solid"));
+        assert!(
+            !SESSION_CSS.contains(":root:not([data-theme]) .tmux-bar"),
+            "the session bar must remain visible under alternate appearances"
+        );
     }
 
     #[test]
