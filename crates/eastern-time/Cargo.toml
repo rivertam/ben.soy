@@ -1,0 +1,11 @@
+[package]
+name = "eastern-time"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jiff = { version = "0.2.34", default-features = false, features = [
+    "std",
+    "tzdb-bundle-always",
+    "perf-inline",
+] }

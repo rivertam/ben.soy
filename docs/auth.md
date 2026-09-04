@@ -139,9 +139,13 @@ escaped review form; native-share ingress never writes. A deliberate second
 same-origin POST publishes it through the ordinary strict lift importer.
 Link-only or ambiguous shares fail closed. `src/app/interests/running/pwa.js`
 registers the stable `/fitness/sw.js` worker with that same scope. The worker
-has install/activate only—no fetch interception, cache, private state, or diary
-code. `Service-Worker-Allowed: /fitness` lets the script below the path control
-the exact `/fitness` start URL.
+has no fetch interception or cache and contains no diary code. It does own the
+Fitness logger's device-local `fitness-entry` IndexedDB database: one Workout
+Draft plus guide configuration in `state`, and immutable Queued Workouts and
+saved Workout Receipts in `outbox`. It loads the dedicated Rust/Wasm core,
+serializes state changes behind a versioned `MessageChannel` protocol, and
+publishes oldest-first in the background. `Service-Worker-Allowed: /fitness`
+lets the script below the path control the exact `/fitness` start URL.
 
 The phone Fitness tab always navigates to canonical `/fitness`, rather than
 the home deck's `/#fitness` fragment, so the browser sees that manifest before
@@ -176,15 +180,23 @@ form gives that logical write a create-only identity, so an exact replay returns
 the first stored run rather than creating another, while changed metrics under
 the same token conflict. The token is an idempotency key, not authorization.
 
-The Fitness manifest/worker are ungated for the same browser-install reason as
-the diary bytes. This does not grant logging or import capability: every write
-independently requires the exact `ADMIN_EMAIL`; non-admins get 404, and every
-review/write response is `no-store`. Garmin confirmation, Lyfta lift import,
-manual-run, and interruption POSTs require positive same-origin evidence and
-bounded forms. Manual-run responses also carry `no-referrer`; no raw entry is
-staged elsewhere. A signed-out Garmin share keeps only the validated numeric
-activity id in OAuth `next`; signed-out Lyfta text is not staged at all and must
-be shared again after login. Incoming Web Share Target support is
+The Fitness manifest, worker, and content-hashed Wasm pair are ungated for the
+same browser-install reason as the diary bytes. Their code reveals no private
+server data, but unlike Diary the Fitness worker's IndexedDB state is not an
+offline mirror and cannot render an archive page. A local Workout Draft,
+Queued Workout, or Workout Receipt outlives sign-out and cookie rotation until
+the user edits, restores, publishes, or dismisses it; anyone with the unlocked
+device/browser profile can read it. This still grants no logging or import
+capability: every network write independently requires the exact
+`ADMIN_EMAIL`; non-admins get 404, and every review/write response is
+`no-store`. Fitness entry publication additionally requires positive
+same-origin evidence and a bounded 64 KiB JSON body. Garmin confirmation,
+Lyfta lift import, manual-run, and interruption POSTs require positive
+same-origin evidence and bounded forms. Manual-run responses also carry
+`no-referrer`; no raw entry is staged elsewhere. A signed-out Garmin share
+keeps only the validated numeric activity id in OAuth `next`; signed-out Lyfta
+text is not staged at all and must be shared again after login. Incoming Web
+Share Target support is
 platform-dependent: the installed Android/Chrome PWA is the target workflow,
 while iOS Home Screen apps do not currently expose Web Share Target. The manual
 fields and Garmin URL importer inside the Run dialog, plus the Lyfta text form

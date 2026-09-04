@@ -14,8 +14,9 @@ use surrealdb::types::SurrealValue;
 
 pub const BODY_LIMIT_BYTES: usize = 256 * 1024;
 pub const RECENT_DAYS_LIMIT: usize = 35;
+pub const HEATMAP_DAYS_LIMIT: usize = 53 * 7;
 const MAX_DAILY_RECORDS: usize = 400;
-const MAX_STEPS_PER_DAY: i64 = 1_000_000;
+pub const MAX_STEPS_PER_DAY: i64 = 1_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepPayload {
@@ -248,7 +249,7 @@ pub async fn load(data: &Data, limit: usize) -> anyhow::Result<Vec<StepDay>> {
 }
 
 pub async fn load_recent(db: &Db, limit: usize) -> surrealdb::Result<Vec<StepDay>> {
-    let limit = i64::try_from(limit.min(RECENT_DAYS_LIMIT)).unwrap_or(RECENT_DAYS_LIMIT as i64);
+    let limit = bounded_read_limit(limit);
     let mut response = db
         .query(
             "SELECT date, steps
@@ -260,6 +261,10 @@ pub async fn load_recent(db: &Db, limit: usize) -> surrealdb::Result<Vec<StepDay
         .await?
         .check()?;
     response.take(0)
+}
+
+fn bounded_read_limit(limit: usize) -> i64 {
+    i64::try_from(limit.min(MAX_DAILY_RECORDS)).unwrap_or(MAX_DAILY_RECORDS as i64)
 }
 
 pub async fn apply_import(
@@ -547,5 +552,12 @@ mod tests {
                 steps: 9_000,
             }]
         );
+    }
+
+    #[test]
+    fn page_read_can_span_the_heatmap_without_widening_the_public_limit() {
+        assert_eq!(bounded_read_limit(RECENT_DAYS_LIMIT), 35);
+        assert_eq!(bounded_read_limit(HEATMAP_DAYS_LIMIT), 371);
+        assert_eq!(bounded_read_limit(usize::MAX), MAX_DAILY_RECORDS as i64);
     }
 }

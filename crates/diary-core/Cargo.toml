@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+eastern-time = { workspace = true }
 # Minimal feature set on purpose: eastern.rs only does calendar math over the
 # bundled tzdb (no clock reads), and this is the set that must also compile
 # for wasm32 in the worker's workspace — `js` is deliberately absent.

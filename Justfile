@@ -8,6 +8,7 @@ install-hooks:
 
 # Start local SurrealDB, Topcoat with live reload, and Podrick if .env.dev configures it
 dev *args:
+    just fitness-wasm
     bash scripts/dev.sh {{args}}
 
 # Replace local fitness tables and import a Strong CSV (run while `just dev` is active)
@@ -16,23 +17,31 @@ reset-fitness-local csv="/home/benji/Downloads/WorkoutData.csv":
 
 # Build the debug binary and extract its assets
 build:
+    just fitness-wasm
     cargo build
     topcoat asset bundle --bin benjisponge
 
-# Build the diary queue's wasm module + JS glue into wasm-dist/ (docs/diary-sync.md).
-# Optional: without it the site serves fine and /diary falls back to plain form
-# POSTs. A running `just dev` picks up a fresh build on the next request.
-# The vendor step materializes the patched surrealdb-core the worker's own
-# workspace builds against (never the server's).
-wasm:
+# Build the required Fitness entry core + glue pair.
+fitness-wasm:
+    cargo build -p fitness-entry-worker --profile wasm --target wasm32-unknown-unknown
+    wasm-bindgen --target no-modules --out-dir wasm-dist --out-name fitness_entry \
+        target/wasm32-unknown-unknown/wasm/fitness_entry_worker.wasm
+
+# Build Diary's optional offline module. Its own workspace carries the
+# wasm-only SurrealDB patch and must stay separate from the server graph.
+diary-wasm:
     bash scripts/vendor-surrealdb-core.sh
     cargo build --manifest-path crates/diary-worker/Cargo.toml \
         --profile wasm --target wasm32-unknown-unknown
     wasm-bindgen --target no-modules --out-dir wasm-dist --out-name diary_sync \
         crates/diary-worker/target/wasm32-unknown-unknown/wasm/diary_worker.wasm
 
+# Build both browser Rust modules into wasm-dist/.
+wasm: diary-wasm fitness-wasm
+
 # Build the release binary and extract its assets
 release:
+    just fitness-wasm
     cargo build --release
     topcoat asset bundle --release --bin benjisponge
 
@@ -77,11 +86,11 @@ podrick-local *args:
 # Thought posts: `just thought new`, `just thought publish` (see `just thought`)
 mod thought
 
-# Run formatting, lint, and test checks (workspace-wide: the site plus
-# diary-core; no wasm toolchain needed). crates/diary-worker is deliberately
-# NOT covered — it lives in its own excluded workspace, so a diary-core API
-# change that breaks it surfaces at `just wasm` or the Docker wasm stage,
-# not here.
+# Run formatting, lint, and test checks for the root workspace (site, shared
+# cores, and the Fitness wasm skin; no wasm target needed). crates/diary-worker
+# is deliberately NOT covered — it lives in its own excluded workspace, so a
+# diary-core API change that breaks it surfaces at `just wasm` or the Docker
+# wasm stage, not here.
 check:
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings

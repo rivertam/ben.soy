@@ -46,11 +46,11 @@ async fn legacy_interest_lifting() -> Result {
     Err(redirect_permanent(FITNESS_PATH).into())
 }
 
-/// The landing page's body: heatmap, steps, open interruptions, training
-/// focus, and the most recent lift/run. The standalone `/fitness` page wraps
-/// it in the shell above; the home deck renders it as the phone's fitness
-/// pane. Home keeps its own 60-second edge TTL, so the pane can trail the
-/// archive by up to a minute where this page itself stays no-store.
+/// The landing page's body: a training/steps heatmap, open interruptions,
+/// training focus, and the most recent lift/run. The standalone `/fitness`
+/// page wraps it in the shell above; the home deck renders it as the phone's
+/// fitness pane. Home keeps its own 60-second edge TTL, so the pane can trail
+/// the archive by up to a minute where this page itself stays no-store.
 #[component]
 pub(crate) async fn fitness_home_content(cx: &Cx) -> Result {
     let meta = interest("fitness");
@@ -60,7 +60,7 @@ pub(crate) async fn fitness_home_content(cx: &Cx) -> Result {
         crate::app::interests::running::load(app_context::<benjisponge::data::Data>(cx)),
         archive::steps::load(
             app_context::<benjisponge::data::Data>(cx),
-            archive::steps::RECENT_DAYS_LIMIT,
+            archive::steps::HEATMAP_DAYS_LIMIT,
         ),
     );
     let (calendar, latest, focus, interruptions) = lifting_home;
@@ -85,6 +85,8 @@ pub(crate) async fn fitness_home_content(cx: &Cx) -> Result {
 
     let calendar_days = calendar.ok().map(|calendar| calendar.days);
     let run_days = heatmap::run_days(&runs.activities);
+    let steps_unavailable = steps.is_err();
+    let step_days = steps.unwrap_or_default();
     let interruption_rows = interruptions.unwrap_or_default();
     let open_interruptions = interruptions::open_rows(&interruption_rows);
     let focus_summary = focus
@@ -178,6 +180,8 @@ pub(crate) async fn fitness_home_content(cx: &Cx) -> Result {
                             heatmap::calendar_heatmap(
                                 days: days,
                                 runs: run_days.clone(),
+                                steps: step_days.clone(),
+                                steps_unavailable: steps_unavailable,
                                 interruptions: interruption_rows.clone()
                             )
                         } else {
@@ -194,15 +198,6 @@ pub(crate) async fn fitness_home_content(cx: &Cx) -> Result {
                             </p>
                         }
                     </header>
-                )
-
-                rail_section(
-                    class: "mt-12",
-                    stamp: "steps",
-                    step_history(
-                        days: steps.as_deref().unwrap_or(&[]),
-                        unavailable: steps.is_err()
-                    )
                 )
 
                 if !open_interruptions.is_empty() {
@@ -283,139 +278,9 @@ pub(crate) async fn fitness_home_content(cx: &Cx) -> Result {
     }
 }
 
-struct StepBar {
-    date: String,
-    label: String,
-    style: String,
-}
-
-#[component]
-async fn step_history(days: &[archive::steps::StepDay], unavailable: bool) -> Result {
-    let latest = days.first();
-    let max_steps = days
-        .iter()
-        .take(14)
-        .map(|day| day.steps.max(0) as u64)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let bars: Vec<StepBar> = days
-        .iter()
-        .take(14)
-        .rev()
-        .map(|day| {
-            let steps = day.steps.max(0) as u64;
-            let height = if steps == 0 {
-                2
-            } else {
-                (steps.saturating_mul(100) / max_steps).max(4)
-            };
-            StepBar {
-                date: day.date.clone(),
-                label: format!("{}: {} steps", day.date, format_integer(steps)),
-                style: format!("height:{height}%"),
-            }
-        })
-        .collect();
-    let average_days = consecutive_day_count(days, 7);
-    let average = (average_days > 0).then(|| {
-        let total: u64 = days
-            .iter()
-            .take(average_days)
-            .map(|day| day.steps.max(0) as u64)
-            .sum();
-        (total + average_days as u64 / 2) / average_days as u64
-    });
-    let oldest_date = bars.first().map(|bar| bar.date.as_str()).unwrap_or("");
-    let newest_date = bars.last().map(|bar| bar.date.as_str()).unwrap_or("");
-
-    view! {
-        <header class="flex items-end justify-between gap-4" id="steps">
-            <div>
-                <p class=(META_LABEL)>"Health Connect"</p>
-                <h2 class="font-display text-2xl font-semibold">"Daily steps"</h2>
-            </div>
-            if let (Some(average), Some(latest)) = (average, latest) {
-                <div class="flex-none text-right font-meta text-[0.68rem] leading-[1.45] text-muted">
-                    <p>
-                        <span class="text-ink">(format_integer(latest.steps.max(0) as u64))</span>
-                        " latest"
-                    </p>
-                    if average_days > 1 {
-                        <p>
-                            (format_integer(average))
-                            " · "
-                            (average_days)
-                            "-day avg"
-                        </p>
-                    }
-                </div>
-            }
-        </header>
-
-        if unavailable {
-            <section class="mt-4 p-4 bg-card border border-hairline">
-                <p class=(EMPTY_COPY)>"Daily steps are unavailable right now."</p>
-            </section>
-        } else if bars.is_empty() {
-            <section class="mt-4 p-4 bg-card border border-hairline">
-                <p class=(EMPTY_COPY)>"No daily steps have synced yet."</p>
-            </section>
-        } else {
-            <figure class="mt-4 rounded-[0.2rem] border border-hairline bg-card px-4 pb-3 pt-5">
-                <ol
-                    class="flex h-24 items-end gap-1.5"
-                    aria-label="Recent daily step totals, oldest to newest"
-                >
-                    for bar in bars.iter() {
-                        <li
-                            class="flex h-full min-w-0 flex-1 items-end"
-                            title=(bar.label.as_str())
-                        >
-                            <span class="sr-only">(bar.label.as_str())</span>
-                            <span
-                                class="block w-full min-w-[0.18rem] rounded-t-[0.1rem] bg-brass/80"
-                                style=(bar.style.as_str())
-                                aria-hidden="true"
-                            ></span>
-                        </li>
-                    }
-                </ol>
-                <figcaption class="mt-2 flex justify-between gap-4 font-meta text-[0.61rem] text-muted">
-                    <time datetime=(oldest_date)>(oldest_date)</time>
-                    <time datetime=(newest_date)>(newest_date)</time>
-                </figcaption>
-            </figure>
-        }
-    }
-}
-
-fn consecutive_day_count(days: &[archive::steps::StepDay], limit: usize) -> usize {
-    let Some(first) = days.first() else {
-        return 0;
-    };
-    if first.date.parse::<jiff::civil::Date>().is_err() {
-        return 0;
-    }
-    let mut count = 1;
-    for pair in days.windows(2).take(limit.saturating_sub(1)) {
-        let Ok(newer) = pair[0].date.parse::<jiff::civil::Date>() else {
-            break;
-        };
-        let Ok(older) = pair[1].date.parse::<jiff::civil::Date>() else {
-            break;
-        };
-        if newer.yesterday().ok() != Some(older) {
-            break;
-        }
-        count += 1;
-    }
-    count
-}
-
-/// One owner action opens a small training-ledger menu. Each item is a real
-/// anchor for the no-script path and is progressively enhanced by the shared
-/// native-dialog driver in `components::modal`.
+/// One owner action opens a small training-ledger menu. Every item remains a
+/// real anchor: Lift enters the dedicated logger, while the smaller forms are
+/// progressively enhanced by the shared native-dialog driver.
 #[component]
 pub(crate) async fn log_launcher() -> Result {
     view! {
@@ -444,8 +309,7 @@ pub(crate) async fn log_launcher() -> Result {
                 aria-label="Choose what to log"
             >
                 <a
-                    href="#fitness-lift-dialog"
-                    data-modal-open="fitness-lift-dialog"
+                    href="/fitness/entry"
                     class="group/item flex min-h-11 items-center gap-3 border-b border-hairline \
                            px-3 py-2.5 text-ink no-underline hover:bg-oxide/8 \
                            focus-visible:bg-oxide/8 focus-visible:outline-solid \
@@ -460,7 +324,7 @@ pub(crate) async fn log_launcher() -> Result {
                     <span class="min-w-0">
                         <span class="block font-display text-base font-semibold">"Lift"</span>
                         <span class="block font-meta text-[0.65rem] leading-tight text-muted">
-                            "Lyfta workout text"
+                            "sets + PR routes"
                         </span>
                     </span>
                 </a>
@@ -488,8 +352,9 @@ pub(crate) async fn log_launcher() -> Result {
                 <a
                     href="#fitness-interruption-dialog"
                     data-modal-open="fitness-interruption-dialog"
-                    class="group/item flex min-h-11 items-center gap-3 px-3 py-2.5 text-ink \
-                           no-underline hover:bg-brass/8 focus-visible:bg-brass/8 \
+                    class="group/item flex min-h-11 items-center gap-3 border-b border-hairline \
+                           px-3 py-2.5 text-ink no-underline hover:bg-brass/8 \
+                           focus-visible:bg-brass/8 \
                            focus-visible:outline-solid focus-visible:outline-2 \
                            focus-visible:outline-brass focus-visible:outline-offset-[-2px]"
                 >
@@ -504,6 +369,26 @@ pub(crate) async fn log_launcher() -> Result {
                         </span>
                         <span class="block font-meta text-[0.65rem] leading-tight text-muted">
                             "sickness, travel, rest"
+                        </span>
+                    </span>
+                </a>
+                <a
+                    href="#fitness-lift-dialog"
+                    data-modal-open="fitness-lift-dialog"
+                    class="group/item flex min-h-11 items-center gap-3 px-3 py-2.5 text-ink \
+                           no-underline hover:bg-steel/8 focus-visible:bg-steel/8 \
+                           focus-visible:outline-solid focus-visible:outline-2 \
+                           focus-visible:outline-steel focus-visible:outline-offset-[-2px]"
+                >
+                    <span
+                        class="grid size-7 flex-none place-items-center rounded-full border \
+                               border-steel font-meta text-[0.65rem] font-semibold text-steel"
+                        aria-hidden="true"
+                    >"I"</span>
+                    <span class="min-w-0">
+                        <span class="block font-display text-base font-semibold">"Import"</span>
+                        <span class="block font-meta text-[0.65rem] leading-tight text-muted">
+                            "Lyfta text fallback"
                         </span>
                     </span>
                 </a>
@@ -538,29 +423,4 @@ fn workout_start_seconds(workout: &fitness::Workout) -> i64 {
         .map(|value| value.replacen('T', " ", 1))
         .and_then(|value| archive::eastern::utc_timestamp(&value).ok())
         .map_or(0, |timestamp| timestamp.as_second())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn step_day(date: &str) -> archive::steps::StepDay {
-        archive::steps::StepDay {
-            date: date.to_string(),
-            steps: 1,
-        }
-    }
-
-    #[test]
-    fn step_average_stops_at_the_first_missing_calendar_day() {
-        let days = [
-            step_day("2026-08-29"),
-            step_day("2026-08-28"),
-            step_day("2026-08-27"),
-            step_day("2026-08-25"),
-        ];
-        assert_eq!(consecutive_day_count(&days, 7), 3);
-        assert_eq!(consecutive_day_count(&days, 2), 2);
-        assert_eq!(consecutive_day_count(&[], 7), 0);
-    }
 }

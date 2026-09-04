@@ -1,0 +1,10 @@
+[package]
+name = "fitness-entry-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eastern-time = { workspace = true }
+jiff = { version = "0.2.34", default-features = false, features = ["std"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -12,13 +12,14 @@ reuse the local sync token or expose unrestricted SurrealQL.
 ## Data flow
 
 - Page, filter/query handling, API reader, and HTML rendering compose the
-  independently stored lifting, running, and daily-step models under one public surface.
-  `/fitness` is the landing view (combined training heatmap, recent step chart,
-  and the newest lift and run), `/fitness/log` is the filterable, UTC-interleaved activity
-  archive, `/fitness/lift/YYYY-MM-DDTHH-MM-SS-04-00` (or `-05-00`) is a
-  complete workout page, and `/fitness/run/{Eastern-start}/{sha256-id}` is a
-  run summary. Legacy `/lifting` and `/running` reads permanently redirect to
-  their canonical Fitness equivalents. A lift timestamp is the
+  independently stored lifting, running, and daily-step models under one
+  public surface. `/fitness` is the landing view (combined training/steps
+  heatmap and the newest lift and run), `/fitness/log` is the filterable,
+  UTC-interleaved activity archive,
+  `/fitness/lift/YYYY-MM-DDTHH-MM-SS-04-00` (or `-05-00`) is a complete workout
+  page, and `/fitness/run/{Eastern-start}/{sha256-id}` is a run summary. Legacy
+  `/lifting` and `/running` reads permanently redirect to their canonical
+  Fitness equivalents. A lift timestamp is the
   `America/New_York` projection of the
   source instant; the explicit Eastern offset keeps same-date workouts and the
   repeated fall DST hour distinct without exposing importer IDs.
@@ -35,10 +36,11 @@ reuse the local sync token or expose unrestricted SurrealQL.
   the navigation path. Page size lives with the pager at the top of the
   activity log, not in the filter picker.
 - `/fitness` and `/fitness/log` render one layered training calendar. Oxide
-  fill intensity remains strictly lifting volume, a patina edge marker means
-  one or more runs occurred, and the existing emoji annotates an interruption;
-  all three can coexist. Run-only days are interactive but add zero volume
-  points. The filtered lifting calendar comes from
+  fill intensity remains strictly lifting volume, a fixed-scale brass border
+  encodes daily steps (0 / 4k / 8k / 12k+), a patina edge marker means one or
+  more runs occurred, and the existing emoji annotates an interruption; all
+  four can coexist. Run-only and step-only days are interactive but add zero
+  volume points. The filtered lifting calendar comes from
   `Snapshot::calendar_filtered` in-process (the same per-set predicate as the
   set log), while eligible runs are composed in the page layer; the public
   `/api/fitness/calendar` endpoint deliberately remains lifting-only and still
@@ -46,20 +48,23 @@ reuse the local sync token or expose unrestricted SurrealQL.
   apply to both activity types. Any set-specific predicate excludes runs,
   because a run cannot satisfy an exercise/load/set condition. Heatmap day
   cells carry the active filters
-  (minus `from`/`to`/`page`) into their day-log links. A logged day opens a
-  shared popover whose body is a Topcoat shard (`day_preview_shard`): the
-  calendar SSR stays compact, and that day's lifts, runs, exercise names, and
-  compact muscle maps load on hover or click in exact UTC order. Shard args are untrusted and
-  validated (`YYYY-MM-DD` plus a filter-shaped `link_query`). Hover/pin
+  (minus `from`/`to`/`page`) into their day-log links. An interactive day opens
+  a shared popover whose body is a Topcoat shard (`day_preview_shard`): the
+  calendar SSR stays compact, and that day's exact step count, lifts, runs,
+  exercise names, and compact muscle maps load on hover or click in exact UTC
+  order. Shard args are untrusted and validated (canonical `YYYY-MM-DD`,
+  optional bounded step count, and a filter-shaped `link_query`). Hover/pin
   chrome is `heatmap-preview.js`; click-to-open still works via native
   `popovertarget`. Previews remain full-day even when filters only lit the
   cell, and never widen the lifting calendar JSON. The activity log paginates
   lifts and runs together; interruptions consume no slots and render after all
   primary activities on their ending date.
-- `/fitness` also reads the 35 newest `daily_steps` rows directly and renders a
-  14-day step chart. Steps remain deliberately outside the training heatmap,
-  activity log, lifting snapshot/version, scoring, records, muscle load, feeds,
-  and Podrick. Their Android ingestion and setup are in
+- The page layer reads at most the 371 newest `daily_steps` rows directly so
+  the 53-week calendar can show available backfill; the public steps API
+  remains capped at 35. Step borders are independent of active lift/run
+  filters. Steps remain deliberately outside the activity list, lifting
+  snapshot/version, scoring, records, muscle load, feeds, and Podrick. Their
+  Android ingestion and setup are in
   [steps-sync.md](steps-sync.md).
 - Muscle involvement is driven by stored weighted connections, not tags:
   `exercise_muscles` rows carry `(exercise_name, granular muscle,
@@ -134,11 +139,12 @@ reuse the local sync token or expose unrestricted SurrealQL.
   `src/app/interests/lifting/fitness_sync.rs`; taxonomy shared by that binary
   and browser uploads lives in `src/app/interests/lifting/taxonomy.rs`.
 - For the signed-in `ADMIN_EMAIL` only, the `/fitness` and main log headers
-  share the same “log” launcher with Lift, Run, and Interruption choices. Each
-  choice opens its own native dialog;
-  the launcher options remain fragment links and the forms render in flow
-  under `<noscript>`, so the ordinary form POSTs remain usable without the
-  dialog enhancement. The Lift dialog accepts one pasted Lyfta share.
+  share the same “log” launcher with Lift, Run, Interruption, and Import
+  choices. Lift opens the dedicated `/fitness/entry` logger; the other three
+  choices open native dialogs. Their launcher options remain fragment links
+  and the forms render in flow under `<noscript>`, so the ordinary form POSTs
+  remain usable without the dialog enhancement. Import accepts one pasted
+  Lyfta share as a fallback.
   `POST /fitness/lift/import` independently
   repeats that exact admin check, requires positive same-origin browser
   evidence, bounds and strictly decodes the form, parses the text in
@@ -151,6 +157,69 @@ reuse the local sync token or expose unrestricted SurrealQL.
   generated by `lifting/share.rs` before opening the workout. The normal
   textarea and form remain the no-JavaScript, denied-permission, and
   unsupported-browser fallback.
+- `/fitness/entry` is the owner-only, mobile-first lifting path. It keeps one
+  Workout Draft in the worker-owned `fitness-entry` IndexedDB database, starts
+  from existing canonical exercises,
+  and shows the current e1RM/load/volume/reps winners derived at snapshot
+  build with the archive's normal record rules. The fixed app header is a
+  sibling of the dedicated workout scroller, so focus panning and scroll
+  restoration cannot move it above the viewport. Before the first completed
+  set, Push/Pull/Squat/Hinge/Arms/Shoulders directions come first; choosing one
+  exposes a familiar exercise and a stale or under-paced option from that
+  movement family, followed by inline search as the fallback. Once a set is
+  complete those starter directions collapse into two next-exercise lanes,
+  again followed by search. “Deepen” rewards muscles and movement patterns
+  already worked plus missing isolation complements (for example direct
+  triceps after pressing), while “expand” rewards stale or under-paced muscles
+  and new body regions. The breadth reward increases as the trailing 21-day
+  workout pace falls below roughly 3.5 sessions/week.
+  Archive deficits reuse training focus's regularity and today/yesterday
+  recovery gates, and a need stops boosting “expand” once that muscle enters
+  the in-progress workout.
+  Suggestions are guidance only; archive search always remains available.
+  The load field shows `BW` only for exercises carrying the canonical
+  `equipment=bodyweight` tag; every other exercise gets a neutral blank-load
+  hint. Blank still publishes `weight_milli=null`, literal zero remains zero,
+  and negative values remain assistance. The active set opens a page-only
+  load dock: up to two warm-up loads plus one working load come from the three
+  newest sessions (explicit warm-up rows win; safe positive fallbacks use
+  rounded 50%/75% loads), and choosing one also chooses warm/work set type.
+  Bodyweight and negative-assistance histories are never percentage-scaled.
+  Four relative controls adjust the current load by -10/-5/+5/+10 lb, while
+  direct decimal entry and the exact six-value set-type selector remain
+  available. The effort cell is presented as reps in reserve rather than RPE:
+  the active set exposes one-tap `0` through `4` choices in half-rep steps plus
+  an explicit unrated choice. Drafts retain their canonical RPE text and
+  publishing still sends exact RPE hundredths using
+  `RPE = 10 - RIR` (`0 RIR = 1000`, `0.5 = 950`, ... `4 = 600`), so existing
+  drafts and the archive wire shape do not change. A non-half-step value in an
+  older draft remains exact and is shown as its corresponding RIR until it is
+  replaced. These suggestions add no draft or publish fields.
+  Only explicitly completed set rows publish. The strict JSON
+  `POST /fitness/entry/publish` repeats exact-admin and same-origin checks,
+  accepts RPE 6.00-10.00 and existing set types, derives all IDs/Eastern
+  projections/taxonomy server-side, and commits the whole workout through the
+  existing create-only manual write. A valid 200 response contains
+  `{location,duplicate,share_text}`; `share_text` is generated from the
+  freshly rebuilt stored workout, so aliases, timing, volume, and PR labels
+  match its page exactly for both a new write and an idempotent replay.
+  An empty restored draft always takes a
+  fresh start time; any other mutable draft at least four hours old keeps its
+  entered content but rebases its start when it is restored. Finish atomically
+  freezes only completed sets into an immutable Queued Workout and installs a
+  fresh Workout Draft before any request. The queue retries those exact bytes
+  oldest-first, so a crash after commit or an ambiguous response cannot change
+  identity. This path adds no server draft, record, or recommendation tables.
+  The device database is `fitness-entry`, version 1: `state` contains that one
+  draft plus the latest server-supplied guide configuration, and `outbox`
+  contains immutable queued values keyed by a random queue id. Saved Workout
+  Receipts remain there until dismissed. The retired
+  `fitness-entry-draft-v1` localStorage value is deliberately not migrated and
+  is removed only after IndexedDB and the worker core initialize successfully.
+  A failed Queued Workout can replace the current draft atomically only while
+  the current draft is empty. A collision-marked restore rebases that mutable
+  draft to the current UTC second, since resending the rejected timestamp can
+  only collide again; other recent failures retain their original start.
 - Running is a sibling fitness storage model, not a synthetic lifting set.
   `src/app/interests/running/` owns both the Garmin adapter and manual run
   entry, their route-free summaries, and the shared create-only write, while
@@ -215,8 +284,22 @@ reuse the local sync token or expose unrestricted SurrealQL.
   viewer is asked to sign in and share again. Unknown, link-only, mixed
   Garmin+Lyfta, and multi-activity shares fail without writing.
 - `/fitness.webmanifest`, `/fitness/sw.js`, and the tiny registration module
-  form a separate PWA scoped to `/fitness`. Its worker has no fetch handler,
-  cache, or offline data. Never add the share target to the diary manifest:
+  form a separate PWA scoped to `/fitness`. Its message-driven worker owns the
+  Workout Draft and delivery queue but has no `fetch` event: it never
+  intercepts navigations, caches pages, or provides offline reads. Page/worker
+  calls use a versioned request/reply protocol over `MessageChannel`; the
+  worker serializes mutations, commits them before replying, and broadcasts
+  queue changes to every open Fitness client. Flushes run oldest-first after
+  enqueue and on worker activation, Fitness-page startup, `online`,
+  `pageshow`, visibility, and Background Sync when available. A 200 becomes
+  `saved` only when its canonical location and share text parse; 401/404 pause
+  the queue for authentication; 409/413/415/422 fail that row and continue;
+  network errors, 400/403/5xx, and malformed successes leave it pending for an
+  exact retry. Pending rows may display their Predicted Workout Link as “not
+  live yet”; failed rows never do. Only a Workout Receipt exposes Copy and
+  Open. Queue markup comes from server-rendered templates, so browser
+  JavaScript does not become another Tailwind source. Never add the share
+  target to the diary manifest:
   Web Share Target actions must be inside their manifest scope, while the
   diary intentionally owns only `/diary`. Platforms without incoming Web
   Share Target support use the manual fields or nested Garmin URL form in the
@@ -500,11 +583,13 @@ the matching `FITNESS_SYNC_TOKEN` secret is covered in
 
 The browser writes are separate from that API and are authorized only by
 `content::access::ADMIN_EMAIL`; hidden-page grants never authorize them. Lift
-and manual-run writes also require positive same-origin evidence and remain
-create-only. A repeated pasted lift redirects to the existing permanent
-workout, while the same deterministic timestamp ID with different workout
-content returns 409. A repeated manual-run submission token redirects to the
-first stored run when its metrics match and returns 409 when they do not.
+entry, lift import, and manual-run writes also require positive same-origin
+evidence and remain create-only. An exact repeated native-entry payload returns
+the existing permanent workout; reusing its timestamp identity with different
+content returns 409. A repeated pasted lift likewise redirects to the existing
+workout or returns 409 for conflicting content. A repeated manual-run
+submission token redirects to the first stored run when its metrics match and
+returns 409 when they do not.
 Existing exercise taxonomy is preserved; taxonomy is inserted only for a new
 canonical exercise. Alias-only imports of an existing canonical exercise use
 its stored taxonomy instead of retagging it from the old spelling. The JSON
@@ -513,6 +598,16 @@ sync endpoint continues to accept only
 
 ## Local development
 
+- Fitness entry requires its Rust/Wasm pair. `just dev`, `just build`, and
+  `just release` run `just fitness-wasm` automatically; use `just wasm` when
+  rebuilding Diary and Fitness together. Install the
+  `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.126 exactly (the
+  CLI must match the worker crate's pin). Generated glue and Wasm stay ignored
+  under `wasm-dist/`. `/fitness-entry-wasm.js` is the stable `no-cache` loader;
+  its content hash pairs the generated JavaScript and Wasm routes, which are
+  immutable only for the exact current version. Missing or corrupt artifacts,
+  IndexedDB failure, or an incompatible worker protocol disables Fitness entry
+  with an explicit error; there is no JavaScript model or in-page Wasm fallback.
 - Local data lives in the `benjisponge-surrealdb` Docker container (named
   volume `benjisponge-surrealdb-data`, host port `5800`), which `just dev`
   starts. The app bootstraps `src/schema.surql`; startup does not seed data.
@@ -677,6 +772,9 @@ verify row counts afterwards rather than trusting the status.
 ```sh
 just check
 just build
+just fitness-wasm
+just wasm
+node --check src/app/interests/lifting/entry.js
 node --check src/app/interests/lifting/auto-filter.js
 node --check src/app/interests/running/pwa.js
 node --check src/app/running/sw.js

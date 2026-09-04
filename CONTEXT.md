@@ -62,6 +62,30 @@ _Avoid_: Outbox row, queue item
 The `pending`, `synced`, or `failed` status attached to a Device Entry.
 _Avoid_: Delivery flag
 
+### Fitness entry
+
+**Workout Draft**:
+The one mutable, device-local workout currently being composed. It may be
+rebased when restored, but it has no server identity and never enters the
+archive.
+_Avoid_: Unsaved workout, pending workout
+
+**Queued Workout**:
+An immutable finalized workout stored in the device outbox with `pending`,
+`failed`, or `saved` delivery state. Finalization creates it atomically with a
+fresh Workout Draft before publication begins.
+_Avoid_: Draft retry, uploaded workout
+
+**Predicted Workout Link**:
+The deterministic Eastern-path URL derived from a Queued Workout's frozen UTC
+start. It is display-only and explicitly not live; rejection removes it.
+_Avoid_: Permalink, hosted link
+
+**Workout Receipt**:
+The server-confirmed canonical location and exact share text attached to a
+saved Queued Workout. It remains on the device until explicitly dismissed.
+_Avoid_: Predicted link, approximate share
+
 ## Relationships
 
 - A **Composed Entry** contains exactly one **Entry Content**
@@ -80,6 +104,12 @@ _Avoid_: Delivery flag
   migration-owned table permission
 - An unprojectable legacy entry is failed under a **Recovery Key**, which can
   never become an **Entry Reference**
+- Finalizing a **Workout Draft** atomically creates one **Queued Workout** and
+  one fresh Workout Draft
+- A pending **Queued Workout** may show a **Predicted Workout Link**, but only a
+  saved Queued Workout carries a **Workout Receipt**
+- A failed **Queued Workout** can become the current Workout Draft only while
+  that draft is empty
 
 ## Example dialogue
 

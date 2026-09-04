@@ -20,13 +20,13 @@
 pub(crate) mod aliases;
 pub(crate) mod api;
 pub(crate) mod db;
-// The Eastern projection moved to diary-core (diary entry ids share it and
-// the wasm worker compiles it); this re-export keeps every archive-relative
-// path working unchanged.
-pub(crate) use diary_core::eastern;
+// The lightweight projection is shared by the native server and both wasm
+// workers without making Fitness entry pull in Diary's database engine.
+pub(crate) use eastern_time as eastern;
 pub(crate) mod filters;
 pub(crate) mod import;
 pub(crate) mod manual;
+pub(crate) mod native_entry;
 pub(crate) mod records;
 pub(crate) mod routes;
 pub(crate) mod scoring;

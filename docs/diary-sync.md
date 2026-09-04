@@ -18,9 +18,10 @@ sentence is the whole design.
 
 - `crates/diary-core` — everything shared. `entry` owns the canonical
   lifecycle values; `contract` owns the exact-epoch transport boundary and
-  response/pull classification; `eastern` owns the America/New_York
-  projection (Entry Keys derive from it); `placement` owns the shared
-  probe-and-dedupe algorithm; `store` is its server persistence Adapter;
+  response/pull classification; `eastern` re-exports the lightweight shared
+  `crates/eastern-time` America/New_York projection (Diary Entry Keys and
+  Fitness Predicted Workout Links both derive from it); `placement` owns the
+  shared probe-and-dedupe algorithm; `store` is its server persistence Adapter;
   `outbox` is its DEVICE-LOCAL Adapter and single store — mirror and queue
   in one `diary_entries` table, including snapshot reconciliation and the
   empty-snapshot wipe guard; `sync` only sequences flush then pull over the
@@ -232,10 +233,11 @@ re-creates the table.
 
 ## Serving and cache pairing
 
-`just wasm` (or the Dockerfile's wasm-builder stage) puts two artifacts in
-`wasm-dist/`: `diary_sync.js` (wasm-bindgen `--target no-modules` glue) and
-`diary_sync_bg.wasm`. They only work as a matched pair, so `diary_sync.rs`
-never serves them unversioned to callers:
+`just diary-wasm` (or the Diary half of the Dockerfile's wasm-builder stage)
+puts two Diary artifacts in `wasm-dist/`: `diary_sync.js` (wasm-bindgen
+`--target no-modules` glue) and `diary_sync_bg.wasm`. `just wasm` builds these
+and the separate Fitness entry pair. The two Diary files only work as a
+matched pair, so `diary_sync.rs` never serves them unversioned to callers:
 
 - `/diary-sync.js` — two-line loader, `no-cache`. Sets `self.DIARY_SYNC`
   with `?v=<hash>` URLs for the pair; the hash covers BOTH files.
@@ -253,14 +255,18 @@ falls back to the plain form POST when anything refuses — a dev checkout
 without `wasm-dist/` behaves exactly like the no-JS diary.
 
 Artifacts are read from disk per request with a file-stamp cache, not
-`include_bytes!`: `just build` stays green without a wasm toolchain and a
-running `just dev` picks up a fresh `just wasm` immediately. The immutable
-variants are exactly what `response_layer.rs`'s signed-in exemption expects;
-everything else stays `no-store` for cookie-bearing requests.
+`include_bytes!`: the server binary does not embed either pair, and a running
+`just dev` picks up a fresh `just wasm` immediately. `just build` now invokes
+the required lightweight Fitness Wasm build; Diary's much larger optional
+pair is still built only by `just diary-wasm`, combined `just wasm`, or the
+Docker stage. The immutable variants are exactly what
+`response_layer.rs`'s signed-in exemption expects; everything else stays
+`no-store` for cookie-bearing requests.
 
 ## Building
 
-- `just wasm` — needs `rustup target add wasm32-unknown-unknown`,
+- `just diary-wasm` (or combined `just wasm`) — needs
+  `rustup target add wasm32-unknown-unknown`,
   `clang` on `PATH` (`ring`, via surrealdb, compiles C for wasm32; gcc
   has no wasm backend), and
   `cargo install wasm-bindgen-cli --version 0.2.126 --locked`. The CLI

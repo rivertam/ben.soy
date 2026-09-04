@@ -4,6 +4,7 @@ pub(crate) mod archive;
 mod badge;
 mod data;
 mod delete;
+mod entry;
 mod exercise;
 mod filter_ui;
 mod filters;

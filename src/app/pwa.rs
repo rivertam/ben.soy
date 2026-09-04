@@ -4,14 +4,15 @@
 //! `favicon.rs` is the pattern. The diary's interactive halves live in
 //! `diary/sw.js` and `diary/diary.js`; the queue those two load is Rust served
 //! by `diary_sync.rs`; the write endpoint is `POST /api/diary/entries` in
-//! `diary.rs`. Fitness's worker is intentionally inert.
+//! `diary.rs`.
 //!
 //! Deliberately ungated: Chrome fetches manifests without credentials (a
 //! cookie gate would break install), and none of these bytes are private —
 //! they disclose only that the two app surfaces exist, which their public
 //! pages/repo already do. Every route declares an explicit
 //! Content-Type: the response layer treats untyped bodies as HTML and runs
-//! the em-dash rewriter through them.
+//! the em-dash rewriter through them. Fitness's worker owns its local entry
+//! queue but deliberately registers no fetch handler and never caches pages.
 
 use topcoat::{Result, router::route};
 
@@ -21,9 +22,9 @@ use topcoat::{Result, router::route};
 /// HTTP cache for service-worker update checks regardless.
 const SW_JS: &str = include_str!("diary/sw.js");
 
-/// The Fitness PWA needs a service-worker registration for installability,
-/// but deliberately owns no fetches or offline data. Its narrow scope keeps
-/// it completely separate from the diary's local mirror and outbox.
+/// Fitness owns a distinct message-driven workout queue. It has no navigation
+/// or asset interception; its narrow scope and storage names keep it separate
+/// from Diary's local mirror and outbox.
 const FITNESS_SW_JS: &str = include_str!("running/sw.js");
 
 /// App identity + install metadata. `scope`/`start_url` stay on `/diary` so
@@ -101,8 +102,8 @@ async fn fitness_service_worker() -> Result<([(&'static str, &'static str); 3], 
             ("Content-Type", "text/javascript; charset=utf-8"),
             ("Cache-Control", "no-cache"),
             // The script lives one slash below the exact `/fitness` start
-            // URL. This explicit allowance lets the otherwise inert worker
-            // control that start URL as well as `/fitness/*`.
+            // URL. This explicit allowance lets the queue worker control that
+            // start URL as well as `/fitness/*`.
             ("Service-Worker-Allowed", "/fitness"),
         ],
         FITNESS_SW_JS,
@@ -152,6 +153,7 @@ mod tests {
     use super::*;
 
     const DIARY_JS: &str = include_str!("diary/diary.js");
+    const FITNESS_PWA_JS: &str = include_str!("interests/running/pwa.js");
 
     #[test]
     fn manifest_declares_the_diary_app() {
@@ -191,7 +193,53 @@ mod tests {
         assert_eq!(parsed["share_target"]["params"]["url"], "url");
         assert!(FITNESS_SW_JS.contains("self.skipWaiting()"));
         assert!(FITNESS_SW_JS.contains("self.clients.claim()"));
-        assert!(!FITNESS_SW_JS.contains("fetch"));
+        assert!(!FITNESS_SW_JS.contains("addEventListener(\"fetch\""));
+        for needle in [
+            "importScripts(LOADER)",
+            "importScripts(self.FITNESS_ENTRY_WASM.glue)",
+            "\"fitness-entry\"",
+            "\"state\"",
+            "\"outbox\"",
+            "\"fitness-entry-flush\"",
+            "commitFinalization",
+            "commitRestore",
+            "response.status",
+            "includeUncontrolled: true",
+            "fitness_pending_outbox",
+            "fitness_order_outbox",
+            "registration.sync?.register",
+            "if (flush.retry_pending)",
+            "wasmReady === attempt",
+            "indexedDB.open(DATABASE, DATABASE_VERSION)",
+            "tx.objectStore(OUTBOX_STORE).add(queued)",
+            "AbortController",
+        ] {
+            assert!(
+                FITNESS_SW_JS.contains(needle),
+                "Fitness worker lost {needle:?}"
+            );
+        }
+        assert!(!FITNESS_SW_JS.contains("caches."));
+        assert!(
+            !FITNESS_SW_JS.contains("if (stillPending) await registerBackgroundSync()"),
+            "a firing sync event must not re-register its own tag"
+        );
+        assert!(FITNESS_SW_JS.contains("case \"flush_only\""));
+        assert!(FITNESS_PWA_JS.contains(&format!(
+            "const FITNESS_ENTRY_PROTOCOL = {};",
+            fitness_entry_core::PROTOCOL_VERSION
+        )));
+        for trigger in [
+            "requestFitnessFlush()",
+            "window.addEventListener(\"online\"",
+            "window.addEventListener(\"pageshow\"",
+            "document.addEventListener(\"visibilitychange\"",
+        ] {
+            assert!(
+                FITNESS_PWA_JS.contains(trigger),
+                "Fitness registration adapter lost {trigger:?}"
+            );
+        }
     }
 
     /// The worker owns flushing; these literals ARE the protocol. If one

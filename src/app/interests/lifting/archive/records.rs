@@ -75,6 +75,20 @@ pub struct Badge {
     pub kind: Kind,
 }
 
+/// The current all-time winner for one exercise and record kind.
+///
+/// Unlike [`Badge`], which is frozen on the set that earned it, this points
+/// only at the best eligible set after considering the complete history.
+/// The source prescription rides along so entry views can show the useful PR
+/// without looking the set up again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurrentBest {
+    pub kind: Kind,
+    pub set_id: String,
+    pub weight_milli: Option<i64>,
+    pub reps: Option<i64>,
+}
+
 /// The fields of a set that record derivation reads. Callers must supply
 /// sets in chronological order: (started_at_utc, workout id, ordinal).
 #[derive(Clone, Copy, Debug)]
@@ -166,6 +180,61 @@ pub fn derive<'a>(
     badges
 }
 
+/// Derive the current all-time winner for every `(exercise, kind)` pair.
+///
+/// Callers supply sets in chronological order, just like [`derive`]. A
+/// strictly larger metric replaces the winner; an equal metric does not, so
+/// the earliest achiever keeps a tie. Each exercise's result follows
+/// [`KIND_ORDER`] regardless of hash-map iteration order.
+pub fn current_bests<'a>(
+    sets_in_chronological_order: impl IntoIterator<Item = SetSource<'a>>,
+) -> HashMap<String, Vec<CurrentBest>> {
+    let mut bests: HashMap<String, [Option<(i128, CurrentBest)>; KIND_ORDER.len()]> =
+        HashMap::new();
+
+    for set in sets_in_chronological_order {
+        if EXCLUDED_SET_TYPES.contains(&set.set_type) {
+            continue;
+        }
+        for kind in KIND_ORDER {
+            let Some(candidate) = metric(kind, set.weight_milli, set.reps) else {
+                continue;
+            };
+            let by_kind = bests
+                .entry(set.exercise_name.to_string())
+                .or_insert_with(|| std::array::from_fn(|_| None));
+            let winner = &mut by_kind[kind.index()];
+            if winner
+                .as_ref()
+                .is_some_and(|(current, _)| *current >= candidate)
+            {
+                continue;
+            }
+            *winner = Some((
+                candidate,
+                CurrentBest {
+                    kind,
+                    set_id: set.id.to_string(),
+                    weight_milli: set.weight_milli,
+                    reps: set.reps,
+                },
+            ));
+        }
+    }
+
+    bests
+        .into_iter()
+        .map(|(exercise, by_kind)| {
+            let winners = by_kind
+                .into_iter()
+                .flatten()
+                .map(|(_, best)| best)
+                .collect();
+            (exercise, winners)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +274,92 @@ mod tests {
                 ("gold", "reps"),
             ],
         );
+    }
+
+    #[test]
+    fn current_winners_replace_frozen_historical_gold_badges() {
+        let history = [
+            set("first", "Squat", "NORMAL_SET", Some(200_000), Some(5)),
+            set("later", "Squat", "NORMAL_SET", Some(225_000), Some(5)),
+        ];
+        let frozen = derive(history);
+        assert!(
+            frozen["first"]
+                .iter()
+                .any(|badge| badge.level == Level::Gold && badge.kind == Kind::MaxWeight)
+        );
+        assert!(
+            frozen["later"]
+                .iter()
+                .any(|badge| badge.level == Level::Gold && badge.kind == Kind::MaxWeight)
+        );
+
+        let current = current_bests(history);
+        let squat = &current["Squat"];
+        assert_eq!(
+            squat.iter().map(|best| best.kind).collect::<Vec<_>>(),
+            KIND_ORDER
+        );
+        assert_eq!(
+            squat
+                .iter()
+                .find(|best| best.kind == Kind::MaxWeight)
+                .map(|best| best.set_id.as_str()),
+            Some("later")
+        );
+        // Equal reps keep the earlier achiever even though the later set won
+        // every weight-derived kind.
+        assert_eq!(
+            squat
+                .iter()
+                .find(|best| best.kind == Kind::Reps)
+                .map(|best| best.set_id.as_str()),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn current_winners_share_record_eligibility_and_earliest_tie_rules() {
+        let current = current_bests([
+            set("warmup", "Pull Up", "WARMUP_SET", Some(500_000), Some(100)),
+            set(
+                "assisted-first",
+                "Pull Up",
+                "NORMAL_SET",
+                Some(-45_000),
+                Some(12),
+            ),
+            set(
+                "assisted-tie",
+                "Pull Up",
+                "NORMAL_SET",
+                Some(-40_000),
+                Some(12),
+            ),
+            set("weighted", "Pull Up", "NORMAL_SET", Some(25_000), Some(8)),
+        ]);
+        let pull_up = &current["Pull Up"];
+        assert_eq!(
+            pull_up.iter().map(|best| best.kind).collect::<Vec<_>>(),
+            KIND_ORDER
+        );
+        for kind in [Kind::OneRm, Kind::MaxWeight, Kind::Volume] {
+            assert_eq!(
+                pull_up
+                    .iter()
+                    .find(|best| best.kind == kind)
+                    .map(|best| best.set_id.as_str()),
+                Some("weighted")
+            );
+        }
+        let reps = pull_up
+            .iter()
+            .find(|best| best.kind == Kind::Reps)
+            .expect("assisted reps are eligible");
+        assert_eq!(reps.set_id, "assisted-first");
+        assert_eq!(reps.weight_milli, Some(-45_000));
+        assert_eq!(reps.reps, Some(12));
+        assert!(pull_up.iter().all(|best| best.set_id != "warmup"));
     }
 
     #[test]

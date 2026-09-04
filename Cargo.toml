@@ -12,13 +12,22 @@ default-run = "benjisponge"
 # workspace (excluded here): its build carries a [patch] on surrealdb-core
 # for a wasm-only upstream bug, and that patch must never enter this
 # workspace's graph — the server always builds pristine crates.io code.
+# Fitness entry has no embedded database patch, so its pure core and thin
+# wasm wrapper are ordinary workspace members.
 [workspace]
-members = ["crates/diary-core"]
+members = [
+    "crates/diary-core",
+    "crates/eastern-time",
+    "crates/fitness-entry-core",
+    "crates/fitness-entry-worker",
+]
 exclude = ["crates/diary-worker"]
 resolver = "3"
 
 [workspace.dependencies]
 diary-core = { path = "crates/diary-core" }
+eastern-time = { path = "crates/eastern-time" }
+fitness-entry-core = { path = "crates/fitness-entry-core" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.11.0"
@@ -47,6 +56,8 @@ axum = "0.8.9"
 base64 = "0.22"
 csv = "1.3.1"
 diary-core = { workspace = true, features = ["view"] }
+eastern-time = { workspace = true }
+fitness-entry-core = { workspace = true }
 form_urlencoded = "1.2.2"
 # Same crate topcoat re-exports header types from; needed whole for
 # `http::request::Parts` in the viewer layer.
@@ -99,3 +110,11 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

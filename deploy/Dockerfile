@@ -46,6 +46,11 @@ RUN cargo build --manifest-path crates/diary-worker/Cargo.toml \
     --profile wasm --target wasm32-unknown-unknown
 RUN wasm-bindgen --target no-modules --out-dir wasm-dist --out-name diary_sync \
     crates/diary-worker/target/wasm32-unknown-unknown/wasm/diary_worker.wasm
+# Fitness entry is a small pure core plus wasm-bindgen skin in the root
+# workspace; unlike Diary it has no embedded database or patch.
+RUN cargo build -p fitness-entry-worker --profile wasm --target wasm32-unknown-unknown
+RUN wasm-bindgen --target no-modules --out-dir wasm-dist --out-name fitness_entry \
+    target/wasm32-unknown-unknown/wasm/fitness_entry_worker.wasm
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
@@ -58,8 +63,8 @@ COPY --from=builder /build/target/release/benjisponge /app/benjisponge
 COPY --from=builder /build/target/release/podrick /app/podrick
 # AssetBundle::load() looks beside the executable for assets/manifest.toml.
 COPY --from=builder /build/target/release/assets /app/assets
-# diary_sync.rs reads the wasm pair from ./wasm-dist relative to the working
-# directory; missing files would quietly disable the diary's offline queue.
+# The Diary and Fitness serving modules read their matched wasm pairs from
+# ./wasm-dist relative to the working directory.
 COPY --from=wasm-builder /build/wasm-dist /app/wasm-dist
 ENV HOST=0.0.0.0 PORT=8080
 EXPOSE 8080

@@ -863,6 +863,7 @@ checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
 name = "diary-core"
 version = "0.1.0"
 dependencies = [
+ "eastern-time",
  "jiff",
  "serde",
  "serde_json",
@@ -1018,6 +1019,13 @@ checksum = "79127ed59a85d7687c409e9978547cffb7dc79675355ed22da6b66fd5f6ead01"
 dependencies = [
  "itertools 0.11.0",
  "num-traits",
+]
+
+[[package]]
+name = "eastern-time"
+version = "0.1.0"
+dependencies = [
+ "jiff",
 ]
 
 [[package]]

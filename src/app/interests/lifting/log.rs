@@ -24,12 +24,15 @@ async fn lifting_log(cx: &Cx) -> Result {
     let can_edit = viewer(cx).is_some_and(|current| is_admin(&current.email));
     let api_pairs = filters.api_pairs();
     let runs = running::load(app_context::<Data>(cx)).await;
-    let (facets, activities, calendar, interruptions) = fitness::load(
-        app_context::<FitnessStore>(cx),
-        &api_pairs,
-        &runs.activities,
-    )
-    .await;
+    let (fitness_results, steps) = tokio::join!(
+        fitness::load(
+            app_context::<FitnessStore>(cx),
+            &api_pairs,
+            &runs.activities,
+        ),
+        archive::steps::load(app_context::<Data>(cx), archive::steps::HEATMAP_DAYS_LIMIT),
+    );
+    let (facets, activities, calendar, interruptions) = fitness_results;
     if let Err(error) = &facets {
         eprintln!("fitness facets fetch failed: {error}");
     }
@@ -39,6 +42,9 @@ async fn lifting_log(cx: &Cx) -> Result {
     if let Err(error) = &interruptions {
         eprintln!("fitness interruptions fetch failed: {error}");
     }
+    if let Err(error) = &steps {
+        eprintln!("fitness steps fetch failed: {error}");
+    }
     let calendar_days = calendar.ok().map(|calendar| calendar.days);
     let run_days = activities
         .as_ref()
@@ -46,6 +52,8 @@ async fn lifting_log(cx: &Cx) -> Result {
         .map(|page| heatmap::run_days(&page.matching_runs))
         .unwrap_or_default();
     let interruption_rows = interruptions.unwrap_or_default();
+    let steps_unavailable = steps.is_err();
+    let step_days = steps.unwrap_or_default();
     let day_link_query = filters.day_link_query();
     if let Ok(page) = &activities {
         let last_page = total_pages(page);
@@ -133,6 +141,8 @@ async fn lifting_log(cx: &Cx) -> Result {
                             heatmap::calendar_heatmap(
                                 days: days,
                                 runs: run_days.clone(),
+                                steps: step_days.clone(),
+                                steps_unavailable: steps_unavailable,
                                 link_query: day_link_query,
                                 filtered: !active_filters.is_empty(),
                                 interruptions: interruption_rows.clone()

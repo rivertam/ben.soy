@@ -85,8 +85,8 @@ scheduled automation is a one-time in-app purchase, not a subscription.
    ```
 
    A successful first import returns a receipt in Health.md with one `added`
-   row. The GET returns newest-first `{date,steps}` rows, and `/fitness#steps`
-   renders the recent chart.
+   row. The GET returns newest-first `{date,steps}` rows, and `/fitness#volume`
+   shows the day with a brass step-count border; hover it for the exact total.
 7. Once that works, manually export the last 30 or 90 days for the initial
    backfill. Health Connect can only return history it actually has and that
    Health.md is allowed to read, so enabling Garmin sharing today may not make
@@ -128,11 +128,15 @@ watch data or a priority correction. The Health.md `exported_at` watermark is
 stored in milliseconds; an older delayed request is accepted as `2xx` but
 counted `stale` and cannot regress the row. Steps do not bump
 `fitness_meta:version` and never enter lifting records, volume, filters, the
-training heatmap, running activities, or Podrick.
+activity list, running activities, or Podrick. The page layer reads them
+separately only to draw the training calendar's brass borders and include the
+exact total in its day preview; they never change any training calculation.
 
 `GET /api/fitness/steps` is public, `no-store`, CORS-readable, accepts no query
 parameters, and returns at most 35 newest days as
 `{"days":[{"date":"YYYY-MM-DD","steps":12345}]}`.
+The server-rendered 53-week calendar reads at most 371 rows directly rather
+than widening this public response.
 
 ## Troubleshooting
 

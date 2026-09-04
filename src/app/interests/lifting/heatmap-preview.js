@@ -8,7 +8,7 @@ const HIDE_MS = 1000;
 const root = document.querySelector("[data-heatmap-previews]");
 
 if (root && typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.prototype) {
-  const input = root.querySelector("[data-heatmap-day-input]");
+  const input = root.querySelector("[data-heatmap-selection-input]");
   const panel = root.querySelector("[data-heatmap-panel]");
   if (!(input instanceof HTMLInputElement) || !(panel instanceof HTMLElement)) {
     // Missing chrome — leave native popovertarget alone.
@@ -20,10 +20,10 @@ if (root && typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.p
       hideTimer = 0;
     };
 
-    const setDay = (date) => {
+    const setDay = (date, selection) => {
       panel.style.setProperty("position-anchor", `--heatmap-day-${date}`);
-      if (input.value === date) return;
-      input.value = date;
+      if (input.value === selection) return;
+      input.value = selection;
       input.dispatchEvent(new Event("input", { bubbles: true }));
     };
 
@@ -43,9 +43,9 @@ if (root && typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.p
       }
     };
 
-    const show = (date, button) => {
+    const show = (date, selection, button) => {
       clearHide();
-      setDay(date);
+      setDay(date, selection);
       open(button);
     };
 
@@ -62,13 +62,14 @@ if (root && typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.p
     for (const button of root.querySelectorAll("[data-heatmap-trigger]")) {
       if (!(button instanceof HTMLElement)) continue;
       const date = button.dataset.heatmapDate;
-      if (!date) continue;
+      const selection = button.dataset.heatmapSelection;
+      if (!date || !selection) continue;
 
-      button.addEventListener("mouseenter", () => show(date, button));
+      button.addEventListener("mouseenter", () => show(date, selection, button));
       button.addEventListener("mouseleave", scheduleHide);
       button.addEventListener("click", () => {
         clearHide();
-        setDay(date);
+        setDay(date, selection);
         panel.dataset.pinned = "true";
         open(button);
       });

@@ -1,7 +1,50 @@
+const FITNESS_ENTRY_PROTOCOL = 1;
+let fitnessRegistration = null;
+let fitnessFlushId = 0;
+
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker
-    .register("/fitness/sw.js", { scope: "/fitness" })
-    .catch(() => {});
+  fitnessRegistration = navigator.serviceWorker.register("/fitness/sw.js", {
+    scope: "/fitness",
+  });
+  globalThis.FITNESS_SERVICE_WORKER = fitnessRegistration;
+  fitnessRegistration.catch(() => {});
+
+  // `/fitness/entry` owns its richer request/reply status. The landing page
+  // still wakes a durable queue after a sign-in, reconnect, or app resume.
+  if (location.pathname === "/fitness") {
+    void requestFitnessFlush();
+    window.addEventListener("online", () => void requestFitnessFlush());
+    window.addEventListener("pageshow", () => void requestFitnessFlush());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") void requestFitnessFlush();
+    });
+  }
+}
+
+async function requestFitnessFlush() {
+  try {
+    const registration = await fitnessRegistration;
+    const worker = registration?.active;
+    if (!worker) return;
+    const requestId = `fitness-pwa-${++fitnessFlushId}`;
+    const channel = new MessageChannel();
+    const timer = window.setTimeout(() => channel.port1.close(), 30_000);
+    channel.port1.onmessage = () => {
+      window.clearTimeout(timer);
+      channel.port1.close();
+    };
+    worker.postMessage(
+      {
+        protocol: FITNESS_ENTRY_PROTOCOL,
+        request_id: requestId,
+        method: "flush_only",
+        payload: {},
+      },
+      [channel.port2],
+    );
+  } catch (_error) {
+    // Registration, activation, and Background Sync remain the fallbacks.
+  }
 }
 
 const installRegion = document.querySelector("[data-fitness-install]");

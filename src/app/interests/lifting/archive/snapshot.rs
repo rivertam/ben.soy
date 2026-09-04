@@ -18,7 +18,7 @@ use super::aliases::AliasMap;
 use super::api;
 use super::eastern::{self, EasternInstant, InvalidTimestamp};
 use super::filters::Filters;
-use super::records::{self, SetSource};
+use super::records::{self, CurrentBest, SetSource};
 use super::scoring;
 use crate::app::interests::lifting::muscle_taxonomy;
 use crate::app::interests::lifting::training_focus::{self, TrainingFocus, TrainingSet};
@@ -33,6 +33,9 @@ pub struct Snapshot {
     /// Weighted muscle credit per exercise: `(granular muscle id,
     /// ratio_hundredths)` in canonical muscle order, ratios clamped 1..=100.
     weights_by_exercise: HashMap<String, Vec<(&'static str, u32)>>,
+    /// Current all-time winners per canonical exercise, in record-kind order.
+    /// Page-only: frozen historical badges remain the public wire contract.
+    current_bests_by_exercise: HashMap<String, Vec<CurrentBest>>,
     /// Annotate-only gym interruptions: open rows first, then closed by
     /// newest `to_date`.
     interruptions: Vec<Interruption>,
@@ -169,6 +172,14 @@ pub fn build(
         weight_milli: row.weight_milli,
         reps: row.reps,
     }));
+    let current_bests_by_exercise =
+        records::current_bests(chronological.iter().map(|row| SetSource {
+            id: &row.id,
+            exercise_name: &row.exercise_name,
+            set_type: &row.set_type,
+            weight_milli: row.weight_milli,
+            reps: row.reps,
+        }));
 
     let mut sets_by_workout: HashMap<&str, Vec<&LiftSet>> = HashMap::new();
     for row in &chronological {
@@ -330,6 +341,7 @@ pub fn build(
         aliases,
         tags_by_exercise,
         weights_by_exercise,
+        current_bests_by_exercise,
         interruptions: interruption_rows,
         facets,
         calendar,
@@ -595,6 +607,17 @@ impl Snapshot {
     /// public wire.
     pub fn exercise_weight_map(&self) -> &HashMap<String, Vec<(&'static str, u32)>> {
         &self.weights_by_exercise
+    }
+
+    /// Current all-time winners for one exercise in `records::KIND_ORDER`.
+    /// Alias-valued callers receive the canonical exercise's winners. This
+    /// stays inside the lifting page layer and never widens the public JSON.
+    pub fn exercise_current_bests(&self, name: &str) -> &[CurrentBest] {
+        let canonical = self.aliases.resolve(name);
+        self.current_bests_by_exercise
+            .get(&canonical)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     /// Resolve a route/filter name to its canonical exercise, but only when
@@ -1125,6 +1148,28 @@ mod tests {
                 .iter()
                 .any(|r| r.level == "gold" && r.kind == "1rm")
         );
+
+        let current = snap.exercise_current_bests("Squat (Barbell)");
+        assert_eq!(
+            current.iter().map(|best| best.kind).collect::<Vec<_>>(),
+            records::KIND_ORDER
+        );
+        assert_eq!(
+            current
+                .iter()
+                .find(|best| best.kind == records::Kind::MaxWeight)
+                .map(|best| (best.set_id.as_str(), best.weight_milli, best.reps)),
+            Some(("fitness:2026-07-21T14:39:04:0001", Some(225_000), Some(5)))
+        );
+        assert_eq!(
+            current
+                .iter()
+                .find(|best| best.kind == records::Kind::Reps)
+                .map(|best| best.set_id.as_str()),
+            Some("fitness:2026-07-20T14:00:00:0001"),
+            "equal reps keep the earliest achiever even though both sets remain frozen gold"
+        );
+        assert!(snap.exercise_current_bests("Unknown exercise").is_empty());
     }
 
     #[test]
@@ -1203,6 +1248,11 @@ mod tests {
         assert_eq!(
             snap.exercise_weight_map()["Barbell Resurrection Lifts"],
             vec![("abs", 100)]
+        );
+        assert_eq!(
+            snap.exercise_current_bests("Barbell Pullover Crunches"),
+            snap.exercise_current_bests("Barbell Resurrection Lifts"),
+            "alias-valued entry choices share the canonical current PRs"
         );
 
         let old_link =

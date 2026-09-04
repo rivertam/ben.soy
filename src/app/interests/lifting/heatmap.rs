@@ -1,8 +1,8 @@
-//! A local-date calendar of lifting volume points. Logged days open a shared
-//! popover whose body is a Topcoat shard — the heatmap SSR stays light; the
-//! day's lifts and muscle maps load on demand when the reader hovers or
-//! clicks. `heatmap-preview.js` handles hover/pin chrome; the shard owns the
-//! data. Arguments to the shard are untrusted and validated server-side.
+//! A local-date calendar layering lifting volume, runs, daily steps, and
+//! interruptions. Interactive days open a shared popover whose body is a
+//! Topcoat shard — the heatmap SSR stays light; the day's activities load on
+//! demand when the reader hovers or clicks. `heatmap-preview.js` handles
+//! hover/pin chrome; shard arguments are untrusted and validated server-side.
 
 use std::collections::BTreeMap;
 
@@ -17,9 +17,13 @@ use topcoat::{
 
 use super::{
     META_LABEL,
-    archive::{eastern, store::FitnessStore},
+    archive::{
+        eastern,
+        steps::{MAX_STEPS_PER_DAY, StepDay},
+        store::FitnessStore,
+    },
     data::CalendarDay,
-    format::{format_duration, plural},
+    format::{format_duration, format_integer, plural},
     interruptions, muscles,
     results::workout_url,
 };
@@ -39,11 +43,9 @@ const LEGEND_CELL: &str = "w-[0.625rem] h-[0.625rem] sm:w-[0.72rem] sm:h-[0.72re
      rounded-[0.12rem] border border-hairline/88";
 const CELL: &str = "block rounded-[0.12rem] border \
      transition-[background-color,border-color,box-shadow,transform] duration-[140ms] ease-[ease]";
-const CELL_BORDER: &str = "border-hairline/88";
-const CELL_BORDER_ZERO: &str = "border-dashed \
-     border-[color-mix(in_srgb,var(--color-oxide)_55%,var(--color-hairline))]";
-const CELL_HOVER: &str = "hover:border-oxide \
-     hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-oxide)_25%,transparent)] \
+const CELL_BORDER: &str = "border-solid";
+const CELL_BORDER_ZERO: &str = "border-dashed";
+const CELL_HOVER: &str = "hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-oxide)_32%,transparent)] \
      hover:-translate-y-px focus-visible:z-[1] focus-visible:outline-solid \
      focus-visible:outline-2 focus-visible:outline-oxide focus-visible:outline-offset-2";
 const CELL_BUTTON: &str = "appearance-none p-0 size-full cursor-pointer \
@@ -91,22 +93,24 @@ pub(super) fn run_days(activities: &[RunningActivity]) -> Vec<RunDay> {
         .collect()
 }
 
-/// Composite training calendar. `link_query` carries the log page's active filters
-/// (canonical, minus `from`/`to`/`page`) into the preview's day-log link.
-/// Day activity bodies are not embedded here — they load through
-/// [`day_preview_shard`] when `preview_day` is set.
-/// Runs and interruptions remain overlays: neither changes lifting volume.
+/// Composite training calendar. `link_query` carries the log page's active
+/// filters (canonical, minus `from`/`to`/`page`) into the preview's day-log
+/// link. Day activity bodies are not embedded here — they load through
+/// [`day_preview_shard`] when `preview_selection` is set. Runs, daily steps,
+/// and interruptions remain overlays: none changes lifting volume.
 #[component]
 pub(super) async fn calendar_heatmap(
     days: Vec<CalendarDay>,
     #[default(Vec::new())] runs: Vec<RunDay>,
+    #[default(Vec::new())] steps: Vec<StepDay>,
+    #[default(false)] steps_unavailable: bool,
     #[default(String::new())] link_query: String,
     #[default(false)] filtered: bool,
     #[default(Vec::new())] interruptions: Vec<Interruption>,
 ) -> Result {
-    // Always run through today (Eastern), or a later training day if one exists.
+    // Always run through today (Eastern), or a later stored day if one exists.
     let through = eastern::eastern_date(Timestamp::now());
-    let Some(calendar) = Calendar::from_days(&days, &runs, &interruptions, through) else {
+    let Some(calendar) = Calendar::from_days(&days, &runs, &steps, &interruptions, through) else {
         return view! {
             <section aria-labelledby="fitness-heatmap-title">
                 <header
@@ -136,13 +140,15 @@ pub(super) async fn calendar_heatmap(
     let ending = format_short(calendar.latest);
     let start = format_short(calendar.latest - 53.weeks());
     let counts = format!(
-        "{} lift {} · {} {} on {} run {}",
+        "{} lift {} · {} {} on {} run {} · {} step {}",
         calendar.lift_days,
         plural(calendar.lift_days, "day", "days"),
         calendar.run_count,
         plural(calendar.run_count, "run", "runs"),
         calendar.run_days,
         plural(calendar.run_days, "day", "days"),
+        calendar.step_days,
+        plural(calendar.step_days, "day", "days"),
     );
     let subtitle = if filtered {
         format!("{start} - {ending} · matching view · {counts}")
@@ -155,20 +161,23 @@ pub(super) async fn calendar_heatmap(
         ""
     };
     let navigation_label = format!(
-        "Training by day for the 53 weeks ending {ending}. Oxide fill shows lifting volume points{filter_copy}; a patina corner marks one or more runs; emoji mark interruptions. {} training days open an activity preview.",
-        calendar.activity_days,
+        "Training by day for the 53 weeks ending {ending}. Oxide fill shows lifting volume points{filter_copy}; brass borders show daily steps; a patina corner marks one or more runs; emoji mark interruptions. Days with training, steps, or interruptions open a detail preview.",
     );
     let legend_styles: Vec<String> = (0..=4).map(heat_style).collect();
+    let step_legend_styles: Vec<String> = [0, 4_000, 8_000, 12_000]
+        .into_iter()
+        .map(|steps| step_border_style(Some(steps)))
+        .collect();
     let shard_link_query = link_query.clone();
 
     view! {
         <section aria-labelledby="fitness-heatmap-title" data-heatmap-previews="">
-            signal preview_day = String::new();
+            signal preview_selection = String::new();
             <input
                 type="hidden"
-                data-heatmap-day-input=""
-                :value=$(preview_day.get())
-                @input=$(|e: Event| preview_day.set(e.target.value))
+                data-heatmap-selection-input=""
+                :value=$(preview_selection.get())
+                @input=$(|e: Event| preview_selection.set(e.target.value))
             />
             <header class="flex flex-wrap items-end justify-between gap-y-[0.8rem] gap-x-5">
                 <div>
@@ -181,30 +190,49 @@ pub(super) async fn calendar_heatmap(
                     </h2>
                     <p class=(class!(HEAT_NOTE, "mt-[0.3rem]"))>(subtitle.as_str())</p>
                 </div>
-                <div
-                    class="inline-flex items-center gap-[0.22rem] font-meta text-[0.61rem] \
-                         leading-none uppercase text-muted"
-                    aria-label="Oxide fill is lifting volume from less to more. A patina corner marks a run."
-                >
-                    <span class="mr-[0.12rem]">"lift volume"</span>
-                    <span class="mr-[0.12rem]">"less"</span>
-                    for style in legend_styles.iter() {
+                <div class="flex flex-col items-end gap-[0.38rem] font-meta text-[0.61rem] \
+                            leading-none uppercase text-muted">
+                    <div
+                        class="inline-flex items-center gap-[0.22rem]"
+                        aria-label="Oxide fill is lifting volume from less to more. A patina corner marks a run."
+                    >
+                        <span class="mr-[0.12rem]">"lift volume"</span>
+                        <span class="mr-[0.12rem]">"less"</span>
+                        for style in legend_styles.iter() {
+                            <span
+                                class=(class!(LEGEND_CELL, HEAT_FILL))
+                                style=(style.as_str())
+                                aria-hidden="true"
+                            >
+
+                            </span>
+                        }
+                        <span class="ml-[0.12rem]">"more"</span>
+                        <span class="ml-[0.45rem]">"run"</span>
                         <span
-                            class=(class!(LEGEND_CELL, HEAT_FILL))
-                            style=(style.as_str())
+                            class=(class!(LEGEND_CELL, "relative overflow-hidden bg-card"))
                             aria-hidden="true"
                         >
-
+                            <span class=(CELL_RUN_MARKER)></span>
                         </span>
-                    }
-                    <span class="ml-[0.12rem]">"more"</span>
-                    <span class="ml-[0.45rem]">"run"</span>
-                    <span
-                        class=(class!(LEGEND_CELL, "relative overflow-hidden bg-card"))
-                        aria-hidden="true"
+                    </div>
+                    <div
+                        class="inline-flex items-center gap-[0.22rem]"
+                        aria-label="Brass border intensity shows 0, 4,000, 8,000, and 12,000 or more daily steps."
                     >
-                        <span class=(CELL_RUN_MARKER)></span>
-                    </span>
+                        <span class="mr-[0.12rem]">"steps"</span>
+                        <span class="mr-[0.12rem]">"0"</span>
+                        for style in step_legend_styles.iter() {
+                            <span
+                                class=(class!(LEGEND_CELL, "bg-card"))
+                                style=(style.as_str())
+                                aria-hidden="true"
+                            >
+
+                            </span>
+                        }
+                        <span class="ml-[0.12rem]">"12k+"</span>
+                    </div>
                 </div>
             </header>
 
@@ -257,6 +285,12 @@ pub(super) async fn calendar_heatmap(
                 </div>
             </div>
 
+            if steps_unavailable {
+                <p class=(class!(HEAT_NOTE, "mt-[0.1rem]"))>
+                    "Step totals are unavailable right now; borders show training chrome only."
+                </p>
+            }
+
             <div
                 id=(PREVIEW_POPOVER_ID)
                 class="inline-popover-panel"
@@ -271,7 +305,7 @@ pub(super) async fn calendar_heatmap(
                     aria-label="Close preview"
                 >"×"</button>
                 day_preview_shard(
-                    date: $(preview_day.get()),
+                    selection: $(preview_selection.get()),
                     link_query: $(shard_link_query.to_owned())
                 )
             </div>
@@ -280,18 +314,21 @@ pub(super) async fn calendar_heatmap(
     }
 }
 
-/// On-demand body for a heatmap day popover. `date` and `link_query` arrive
-/// from the browser and are validated before touching either archive.
+/// On-demand body for a heatmap day popover. `selection` (canonical date plus
+/// an optional step count) and `link_query` arrive from the browser and are
+/// validated before touching either archive.
 #[shard]
-async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result {
-    if date.is_empty() {
+async fn day_preview_shard(cx: &Cx, selection: String, link_query: String) -> Result {
+    if selection.is_empty() {
         return view! {};
     }
-    let Ok(parsed) = date.parse::<Date>() else {
+    let Some(selection) = parse_preview_selection(&selection) else {
         return view! {
             <p class=(HEAT_NOTE)>"That day could not be loaded."</p>
         };
     };
+    let parsed = selection.date;
+    let step_count = selection.steps;
     let date = parsed.to_string();
     let link_query = sanitize_link_query(&link_query);
     let href = if link_query.is_empty() {
@@ -370,8 +407,12 @@ async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result 
     sort_shard_activities(&mut activities);
 
     if activities.is_empty() {
+        let step_detail = step_count.map(step_count_label);
         return view! {
             <span class="inline-popover-kicker">(format_long(parsed))</span>
+            if let Some(detail) = &step_detail {
+                <span class="inline-popover-detail">(detail.as_str())</span>
+            }
             if let Some(copy) = &interrupted_copy {
                 <p class=(PREVIEW_INTERRUPTION)>(copy.as_str())</p>
             }
@@ -387,11 +428,16 @@ async fn day_preview_shard(cx: &Cx, date: String, link_query: String) -> Result 
     }
 
     let heading = format_long(parsed);
-    let detail_label = format!(
-        "{volume_points} lifting volume {} · {run_count} {}",
+    let mut detail_parts = Vec::with_capacity(3);
+    if let Some(steps) = step_count {
+        detail_parts.push(step_count_label(steps));
+    }
+    detail_parts.push(format!(
+        "{volume_points} lifting volume {}",
         plural(volume_points as usize, "point", "points"),
-        plural(run_count, "run", "runs"),
-    );
+    ));
+    detail_parts.push(format!("{run_count} {}", plural(run_count, "run", "runs")));
+    let detail_label = detail_parts.join(" · ");
 
     view! {
         <span class="inline-popover-kicker">(heading.as_str())</span>
@@ -541,7 +587,11 @@ async fn day_cell(cell: &HeatmapCell) -> Result {
     if let Some(date_key) = &cell.date_key {
         // Named CSS anchor so the shared day popover can sit beside this
         // cell — `heatmap-preview.js` points `position-anchor` at it on show.
-        let style = format!("{}; anchor-name: --heatmap-day-{date_key};", cell.style);
+        let style = format!(
+            "{}; {}; anchor-name: --heatmap-day-{date_key};",
+            cell.style, cell.step_style
+        );
+        let preview_key = cell.preview_key.as_deref().unwrap_or(date_key);
         view! {
             <button
                 type="button"
@@ -550,6 +600,7 @@ async fn day_cell(cell: &HeatmapCell) -> Result {
                 popovertargetaction="show"
                 data-heatmap-trigger=""
                 data-heatmap-date=(date_key.as_str())
+                data-heatmap-selection=(preview_key)
                 aria-label=(cell.label.as_str())
                 style=(style.as_str())
             >
@@ -567,12 +618,35 @@ async fn day_cell(cell: &HeatmapCell) -> Result {
                 class=(class!(CELL, HEAT_FILL, cell.border))
                 title=(cell.label.as_str())
                 aria-hidden="true"
-                style=(cell.style.as_str())
+                style=(format!("{}; {}", cell.style, cell.step_style))
             >
 
             </span>
         }
     }
+}
+
+struct PreviewSelection {
+    date: Date,
+    steps: Option<u64>,
+}
+
+fn parse_preview_selection(raw: &str) -> Option<PreviewSelection> {
+    let (raw_date, raw_steps) = raw.split_once('|')?;
+    let date: Date = raw_date.parse().ok()?;
+    if date.to_string() != raw_date {
+        return None;
+    }
+    let steps = if raw_steps.is_empty() {
+        None
+    } else {
+        let steps: i64 = raw_steps.parse().ok()?;
+        if !(0..=MAX_STEPS_PER_DAY).contains(&steps) {
+            return None;
+        }
+        Some(steps as u64)
+    };
+    Some(PreviewSelection { date, steps })
 }
 
 /// Query strings we echo into the day-log link must stay filter-shaped —
@@ -604,7 +678,7 @@ struct Calendar {
     lift_days: usize,
     run_days: usize,
     run_count: usize,
-    activity_days: usize,
+    step_days: usize,
     cells: Vec<HeatmapCell>,
     month_labels: Vec<MonthLabel>,
 }
@@ -617,6 +691,7 @@ impl Calendar {
     fn from_days(
         days: &[CalendarDay],
         runs: &[RunDay],
+        steps: &[StepDay],
         interruptions: &[Interruption],
         through: Date,
     ) -> Option<Self> {
@@ -632,12 +707,30 @@ impl Calendar {
             let count = runs_by_day.entry(date).or_insert(0_usize);
             *count = count.saturating_add(run.count);
         }
-        if points_by_day.is_empty() && runs_by_day.is_empty() && interruptions.is_empty() {
+        let mut steps_by_day = BTreeMap::new();
+        for day in steps {
+            let Ok(date) = day.date.parse::<Date>() else {
+                continue;
+            };
+            let Ok(step_count) = u64::try_from(day.steps) else {
+                continue;
+            };
+            if step_count > MAX_STEPS_PER_DAY as u64 {
+                continue;
+            }
+            steps_by_day.insert(date, step_count);
+        }
+        if points_by_day.is_empty()
+            && runs_by_day.is_empty()
+            && steps_by_day.is_empty()
+            && interruptions.is_empty()
+        {
             return None;
         }
         let latest = points_by_day
             .keys()
             .chain(runs_by_day.keys())
+            .chain(steps_by_day.keys())
             .max()
             .copied()
             .map_or(through, |logged| logged.max(through));
@@ -649,13 +742,14 @@ impl Calendar {
         let mut lift_days = 0;
         let mut run_days = 0;
         let mut run_count = 0_usize;
-        let mut activity_days = 0;
+        let mut step_days = 0;
         for offset in 0..CELL_COUNT {
             let date = start + (offset as i64).days();
             let date_key = date.to_string();
             let points = points_by_day.get(&date).copied().unwrap_or(0);
             let has_lift = points_by_day.contains_key(&date);
             let day_run_count = runs_by_day.get(&date).copied().unwrap_or(0);
+            let step_count = steps_by_day.get(&date).copied();
             let marks =
                 interruptions::marks_covering(interruptions, &date_key, &through.to_string());
             if has_lift {
@@ -665,14 +759,15 @@ impl Calendar {
                 run_days += 1;
                 run_count = run_count.saturating_add(day_run_count);
             }
-            if has_lift || day_run_count > 0 {
-                activity_days += 1;
+            if step_count.is_some() {
+                step_days += 1;
             }
             cells.push(HeatmapCell::new(
                 date,
                 points,
                 has_lift,
                 day_run_count,
+                step_count,
                 &marks,
             ));
         }
@@ -682,7 +777,7 @@ impl Calendar {
             lift_days,
             run_days,
             run_count,
-            activity_days,
+            step_days,
             cells,
             month_labels,
         })
@@ -692,9 +787,11 @@ impl Calendar {
 struct HeatmapCell {
     date: Date,
     date_key: Option<String>,
+    preview_key: Option<String>,
     border: &'static str,
     label: String,
     style: String,
+    step_style: String,
     emoji: Option<String>,
     run_count: usize,
 }
@@ -705,6 +802,7 @@ impl HeatmapCell {
         points: u32,
         has_lift: bool,
         run_count: usize,
+        step_count: Option<u64>,
         marks: &[interruptions::DayMark<'_>],
     ) -> Self {
         let intensity = intensity(points);
@@ -730,7 +828,11 @@ impl HeatmapCell {
             .map(|mark| format!("{} {}", mark.emoji, mark.note))
             .collect::<Vec<_>>()
             .join(" · ");
-        let mut details = vec![lift_label];
+        let mut details = Vec::with_capacity(4);
+        if let Some(steps) = step_count {
+            details.push(step_count_label(steps));
+        }
+        details.push(lift_label);
         if let Some(run_label) = run_label {
             details.push(run_label);
         }
@@ -741,17 +843,31 @@ impl HeatmapCell {
             " Preview activities from this day."
         } else if interrupted {
             " Open this day's interruption note."
+        } else if step_count.is_some() {
+            " View this day's step count."
         } else {
             ""
         };
         let label = format!("{date_label}: {}.{action}", details.join(". "));
+        let interactive = has_lift || run_count > 0 || interrupted || step_count.is_some();
+        let date_key = interactive.then(|| date.to_string());
+        let preview_key = interactive.then(|| {
+            format!(
+                "{date}|{}",
+                step_count
+                    .map(|steps| steps.to_string())
+                    .unwrap_or_default()
+            )
+        });
         Self {
             date,
-            // Interrupted empty days open the same preview so the note is readable.
-            date_key: (has_lift || run_count > 0 || interrupted).then(|| date.to_string()),
+            // Step-only and interrupted empty days open the same detail preview.
+            date_key,
+            preview_key,
             border,
             label,
             style: heat_style(intensity),
+            step_style: step_border_style(step_count),
             emoji: marks.first().map(|mark| mark.emoji.to_string()),
             run_count,
         }
@@ -804,6 +920,33 @@ fn heat_style(intensity: u8) -> String {
     format!("--fitness-heat-alpha: {alpha}%")
 }
 
+fn step_border_alpha(steps: u64) -> u8 {
+    match steps {
+        0 => 22,
+        1..=3_999 => 38,
+        4_000..=7_999 => 58,
+        8_000..=11_999 => 78,
+        _ => 100,
+    }
+}
+
+fn step_border_style(steps: Option<u64>) -> String {
+    let alpha = steps.map(step_border_alpha).unwrap_or(0);
+    format!(
+        "--fitness-step-alpha: {alpha}%; border-color: color-mix(in srgb, \
+         var(--color-brass) var(--fitness-step-alpha), \
+         color-mix(in srgb, var(--color-hairline) 88%, transparent))"
+    )
+}
+
+fn step_count_label(steps: u64) -> String {
+    format!(
+        "{} {}",
+        format_integer(steps),
+        plural(steps as usize, "step", "steps")
+    )
+}
+
 fn format_short(date: Date) -> String {
     date.strftime("%b %-d, %Y").to_string()
 }
@@ -820,6 +963,13 @@ mod tests {
         CalendarDay {
             date: date.to_string(),
             volume_points,
+        }
+    }
+
+    fn steps(date: &str, count: i64) -> StepDay {
+        StepDay {
+            date: date.to_string(),
+            steps: count,
         }
     }
 
@@ -845,8 +995,8 @@ mod tests {
     #[test]
     fn grid_is_53_complete_sunday_to_saturday_weeks_anchored_to_latest_day() {
         let through = "2026-07-21".parse().unwrap();
-        let calendar =
-            Calendar::from_days(&[day("2026-07-21", 42)], &[], &[], through).expect("calendar");
+        let calendar = Calendar::from_days(&[day("2026-07-21", 42)], &[], &[], &[], through)
+            .expect("calendar");
 
         assert_eq!(calendar.cells.len(), 371);
         assert_eq!(calendar.latest.to_string(), "2026-07-21");
@@ -882,8 +1032,8 @@ mod tests {
             emoji: "🤒".into(),
             updated_at: 0,
         }];
-        let calendar =
-            Calendar::from_days(&[day("2026-07-21", 42)], &[], &rows, through).expect("calendar");
+        let calendar = Calendar::from_days(&[day("2026-07-21", 42)], &[], &[], &rows, through)
+            .expect("calendar");
 
         assert_eq!(calendar.latest.to_string(), "2026-08-11");
         let interrupted = calendar
@@ -897,6 +1047,7 @@ mod tests {
         // Future relative to through still wins if a workout lands there.
         let ahead = Calendar::from_days(
             &[day("2026-08-20", 10)],
+            &[],
             &[],
             &[],
             "2026-08-11".parse().unwrap(),
@@ -916,8 +1067,8 @@ mod tests {
             updated_at: 0,
         }];
         let through = "2026-07-21".parse().unwrap();
-        let calendar =
-            Calendar::from_days(&[day("2026-07-21", 42)], &[], &rows, through).expect("calendar");
+        let calendar = Calendar::from_days(&[day("2026-07-21", 42)], &[], &[], &rows, through)
+            .expect("calendar");
         let cell = calendar
             .cells
             .iter()
@@ -940,7 +1091,7 @@ mod tests {
             emoji: "😴".into(),
             updated_at: 0,
         }];
-        let calendar = Calendar::from_days(&[], &[], &rows, through).expect("calendar");
+        let calendar = Calendar::from_days(&[], &[], &[], &rows, through).expect("calendar");
         let covered = calendar
             .cells
             .iter()
@@ -969,10 +1120,24 @@ mod tests {
     }
 
     #[test]
+    fn step_border_bands_use_fixed_daily_milestones() {
+        assert_eq!(step_border_alpha(0), 22);
+        assert_eq!(step_border_alpha(1), 38);
+        assert_eq!(step_border_alpha(3_999), 38);
+        assert_eq!(step_border_alpha(4_000), 58);
+        assert_eq!(step_border_alpha(7_999), 58);
+        assert_eq!(step_border_alpha(8_000), 78);
+        assert_eq!(step_border_alpha(11_999), 78);
+        assert_eq!(step_border_alpha(12_000), 100);
+        assert_eq!(step_border_alpha(u64::MAX), 100);
+    }
+
+    #[test]
     fn duplicate_calendar_days_sum_without_losing_their_link() {
         let through = "2024-02-29".parse().unwrap();
         let calendar = Calendar::from_days(
             &[day("2024-02-29", 20), day("2024-02-29", 25)],
+            &[],
             &[],
             &[],
             through,
@@ -990,7 +1155,7 @@ mod tests {
     #[test]
     fn empty_archive_still_renders_through_today_when_interruptions_exist() {
         let through = "2026-08-11".parse().unwrap();
-        assert!(Calendar::from_days(&[], &[], &[], through).is_none());
+        assert!(Calendar::from_days(&[], &[], &[], &[], through).is_none());
         let rows = [Interruption {
             id: "a".into(),
             from_date: "2026-08-02".into(),
@@ -999,12 +1164,12 @@ mod tests {
             emoji: "🤒".into(),
             updated_at: 0,
         }];
-        let calendar = Calendar::from_days(&[], &[], &rows, through).expect("calendar");
+        let calendar = Calendar::from_days(&[], &[], &[], &rows, through).expect("calendar");
         assert_eq!(calendar.latest.to_string(), "2026-08-11");
         assert_eq!(calendar.lift_days, 0);
         assert_eq!(calendar.run_days, 0);
         assert_eq!(calendar.run_count, 0);
-        assert_eq!(calendar.activity_days, 0);
+        assert_eq!(calendar.step_days, 0);
         assert_eq!(calendar.cells.len(), 371);
     }
 
@@ -1039,7 +1204,7 @@ mod tests {
             date: "2026-08-20".to_string(),
             count: 2,
         }];
-        let calendar = Calendar::from_days(&[], &runs, &[], through).expect("calendar");
+        let calendar = Calendar::from_days(&[], &runs, &[], &[], through).expect("calendar");
         let run_day = calendar
             .cells
             .iter()
@@ -1050,7 +1215,7 @@ mod tests {
         assert_eq!(calendar.lift_days, 0);
         assert_eq!(calendar.run_days, 1);
         assert_eq!(calendar.run_count, 2);
-        assert_eq!(calendar.activity_days, 1);
+        assert_eq!(calendar.step_days, 0);
         assert_eq!(run_day.date_key.as_deref(), Some("2026-08-20"));
         assert_eq!(run_day.run_count, 2);
         assert_eq!(run_day.style, heat_style(0));
@@ -1059,7 +1224,41 @@ mod tests {
     }
 
     #[test]
-    fn lift_run_and_interruption_share_a_cell_without_changing_lift_heat() {
+    fn step_only_day_has_a_brass_border_and_exact_preview_value() {
+        let through = "2026-08-20".parse().unwrap();
+        let calendar = Calendar::from_days(&[], &[], &[steps("2026-08-20", 8_765)], &[], through)
+            .expect("calendar");
+        let cell = calendar
+            .cells
+            .iter()
+            .find(|cell| cell.date.to_string() == "2026-08-20")
+            .expect("step day");
+
+        assert_eq!(calendar.step_days, 1);
+        assert_eq!(cell.date_key.as_deref(), Some("2026-08-20"));
+        assert_eq!(cell.preview_key.as_deref(), Some("2026-08-20|8765"));
+        assert_eq!(cell.style, heat_style(0));
+        assert_eq!(cell.step_style, step_border_style(Some(8_765)));
+        assert_eq!(
+            cell.label,
+            "Thursday, Aug 20, 2026: 8,765 steps. no lifting volume. View this day's step count."
+        );
+    }
+
+    #[test]
+    fn preview_selection_rejects_noncanonical_or_unbounded_values() {
+        let parsed = parse_preview_selection("2026-08-20|12345").expect("selection");
+        assert_eq!(parsed.date.to_string(), "2026-08-20");
+        assert_eq!(parsed.steps, Some(12_345));
+        assert!(parse_preview_selection("2026-08-20|").is_some());
+        assert!(parse_preview_selection("2026-8-20|12345").is_none());
+        assert!(parse_preview_selection("2026-08-20|-1").is_none());
+        assert!(parse_preview_selection("2026-08-20|1000001").is_none());
+        assert!(parse_preview_selection("2026-08-20").is_none());
+    }
+
+    #[test]
+    fn lift_run_steps_and_interruption_share_a_cell_without_crossing_encodings() {
         let through = "2026-08-20".parse().unwrap();
         let runs = [
             RunDay {
@@ -1079,9 +1278,14 @@ mod tests {
             emoji: "🩹".into(),
             updated_at: 0,
         }];
-        let calendar =
-            Calendar::from_days(&[day("2026-08-20", 24)], &runs, &interruptions, through)
-                .expect("calendar");
+        let calendar = Calendar::from_days(
+            &[day("2026-08-20", 24)],
+            &runs,
+            &[steps("2026-08-20", 12_345)],
+            &interruptions,
+            through,
+        )
+        .expect("calendar");
         let cell = calendar
             .cells
             .iter()
@@ -1091,10 +1295,13 @@ mod tests {
         assert_eq!(calendar.lift_days, 1);
         assert_eq!(calendar.run_days, 1);
         assert_eq!(calendar.run_count, 3);
-        assert_eq!(calendar.activity_days, 1);
+        assert_eq!(calendar.step_days, 1);
         assert_eq!(cell.style, heat_style(1));
+        assert_eq!(cell.step_style, step_border_style(Some(12_345)));
+        assert_eq!(cell.preview_key.as_deref(), Some("2026-08-20|12345"));
         assert_eq!(cell.run_count, 3);
         assert_eq!(cell.emoji.as_deref(), Some("🩹"));
+        assert!(cell.label.contains("12,345 steps"));
         assert!(cell.label.contains("24 lifting volume points"));
         assert!(cell.label.contains("3 runs"));
         assert!(cell.label.contains("Interrupted · 🩹 ankle"));

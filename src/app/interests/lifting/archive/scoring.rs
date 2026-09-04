@@ -5,21 +5,10 @@
 //! exact lockstep (it used to be mirrored between the Worker's SQL and two
 //! Rust view helpers).
 
-pub fn effort_points(effort_hundredths: Option<u64>) -> u32 {
-    match effort_hundredths {
-        Some(1000) => 5,
-        Some(900) => 4,
-        Some(800) => 3,
-        _ => 2,
-    }
-}
+pub use fitness_entry_core::set_volume_points;
 
-pub fn set_volume_points(set_type: &str, effort_hundredths: Option<u64>) -> u32 {
-    match set_type {
-        "FAILURE_SET" => 6,
-        "WARMUP_SET" => 0,
-        _ => effort_points(effort_hundredths),
-    }
+pub fn effort_points(effort_hundredths: Option<u64>) -> u32 {
+    set_volume_points("NORMAL_SET", effort_hundredths)
 }
 
 /// Weighted muscle credit for one set, in centi-points: the set's volume

@@ -676,6 +676,23 @@ a.chip:focus-visible {
   }
 }
 
+/* A calendar cell can sit against either edge of its horizontal scroller.
+   Keep its detail card viewport-centered on phones instead of letting anchor
+   positioning strand most of the card beyond that edge. */
+@media (max-width: 40rem) {
+  @supports (position-anchor: --inline-popover-test) {
+    .inline-popover-panel[data-heatmap-panel]:popover-open {
+      position: fixed;
+      top: 6rem;
+      left: 50%;
+      max-height: calc(100dvh - 8rem);
+      margin: 0;
+      overflow-y: auto;
+      transform: translateX(-50%);
+    }
+  }
+}
+
 /*
  * Wide-screen annotation rails. The shared browser driver measures the prose
  * block around each trigger, opts in only when a real gutter remains, and

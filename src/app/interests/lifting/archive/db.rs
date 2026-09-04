@@ -59,8 +59,41 @@ pub async fn load_archive(
         .query(
             "RETURN {
                  version: (SELECT VALUE v FROM fitness_meta:version)[0] ?? 0,
-                 workouts: (SELECT *, record::id(id) AS id FROM workouts),
-                 sets: (SELECT *, record::id(id) AS id FROM sets),
+                 workouts: (
+                     SELECT
+                         record::id(id) AS id,
+                         title,
+                         raw_title,
+                         started_at_utc,
+                         started_at_local,
+                         eastern_offset_minutes,
+                         duration_seconds,
+                         duration_suspicious,
+                         notes,
+                         description,
+                         source,
+                         imported_at
+                     FROM workouts
+                 ),
+                 sets: (
+                     SELECT
+                         record::id(id) AS id,
+                         workout_id,
+                         exercise_name,
+                         raw_exercise_name,
+                         ordinal,
+                         exercise_note,
+                         superset_id,
+                         weight_milli,
+                         weight_unit,
+                         reps,
+                         effort_hundredths,
+                         distance_milli,
+                         set_time_seconds,
+                         set_type,
+                         incomplete
+                     FROM sets
+                 ),
                  aliases: (
                      SELECT alias_name, canonical_name FROM exercise_aliases
                  ),
@@ -907,7 +940,19 @@ async fn existing_manual_outcome(
         .expect("manual payload was validated before lookup");
     let mut response = db
         .query(
-            "SELECT *, record::id(id) AS id
+            "SELECT
+                 record::id(id) AS id,
+                 title,
+                 raw_title,
+                 started_at_utc,
+                 started_at_local,
+                 eastern_offset_minutes,
+                 duration_seconds,
+                 duration_suspicious,
+                 notes,
+                 description,
+                 source,
+                 imported_at
              FROM workouts
              WHERE record::id(id) = $workout_id;",
         )
@@ -918,7 +963,22 @@ async fn existing_manual_outcome(
     if let Some(existing_workout) = existing_workouts.pop() {
         let mut response = db
             .query(
-                "SELECT *, record::id(id) AS id
+                "SELECT
+                     record::id(id) AS id,
+                     workout_id,
+                     exercise_name,
+                     raw_exercise_name,
+                     ordinal,
+                     exercise_note,
+                     superset_id,
+                     weight_milli,
+                     weight_unit,
+                     reps,
+                     effort_hundredths,
+                     distance_milli,
+                     set_time_seconds,
+                     set_type,
+                     incomplete
                  FROM sets
                  WHERE workout_id = $workout_id
                  ORDER BY ordinal ASC;",

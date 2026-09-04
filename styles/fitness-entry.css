@@ -1,0 +1,2170 @@
+/*
+ * Owner workout entry: an app-sized surface inside the site shell.
+ *
+ * The public archive reads like an engineering logbook; this private screen
+ * is the live workbench. Exercise names and entered values use Fira Sans for
+ * quick scanning, while labels, status, records, and timers retain the site's
+ * Fira Mono instrument voice. Everything is scoped to `.fitness-entry` so the
+ * denser controls cannot leak into the reading surfaces.
+ */
+
+body:has(.fitness-entry) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.fitness-entry {
+  --entry-edge: clamp(0.75rem, 3.5vw, 1.25rem);
+  --entry-control: 2.75rem;
+  --entry-affordance: 1.75rem;
+  --entry-radius: 0.22rem;
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  overflow: clip;
+  overscroll-behavior: contain;
+  isolation: isolate;
+  color: var(--color-ink);
+  background: var(--color-page);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  line-height: 1.4;
+}
+
+.fitness-entry *,
+.fitness-entry *::before,
+.fitness-entry *::after {
+  box-sizing: border-box;
+}
+
+.fitness-entry :where(button, input, select, textarea) {
+  font: inherit;
+}
+
+.fitness-entry :where(button, summary) {
+  cursor: pointer;
+}
+
+.fitness-entry [hidden] {
+  display: none !important;
+}
+
+/* Keep the strategic branch out of both layout and accessibility flow while
+   the starter console owns the empty-workout state. */
+.fitness-entry [data-entry-fork][hidden] {
+  display: none !important;
+}
+
+.fitness-entry :where(button, a, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-oxide-hot);
+  outline-offset: 2px;
+}
+
+.entry-shell {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin-inline: auto;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+/* Keep focus panning and scroll restoration away from the app header. Only
+   this inner surface scrolls; the header is a fixed-height sibling. */
+.entry-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-x: clip;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--color-hairline) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* The workout owns the phone viewport, so its one header carries exit,
+   identity, elapsed time, and the final action without a second nav row. */
+.entry-header {
+  position: relative;
+  z-index: 40;
+  display: grid;
+  flex: none;
+  grid-template-columns: var(--entry-control) minmax(0, 1fr) auto;
+  min-height: calc(4rem + env(safe-area-inset-top, 0px));
+  align-items: center;
+  gap: 0.35rem;
+  padding:
+    max(0.65rem, calc(0.45rem + env(safe-area-inset-top, 0px)))
+    var(--entry-edge)
+    0.55rem;
+  background: var(--color-page);
+  border-bottom: 1px solid var(--color-hairline);
+  box-shadow: 0 0.35rem 0.8rem rgb(0 0 0 / 14%);
+}
+
+.entry-header__back,
+.entry-header__finish {
+  display: inline-flex;
+  min-width: var(--entry-control);
+  min-height: var(--entry-control);
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--entry-radius);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.entry-header__back {
+  padding: 0;
+  color: var(--color-ink2);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.entry-header__back:hover,
+.entry-header__back:focus-visible {
+  color: var(--color-oxide);
+  border-color: var(--color-hairline);
+}
+
+.entry-header__identity {
+  min-width: 0;
+}
+
+.entry-header__title {
+  overflow: hidden;
+  margin: 0;
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-header__subtitle {
+  overflow: hidden;
+  margin: 0.12rem 0 0;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.62rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-timer {
+  display: block;
+  min-width: 0;
+  margin-top: 0.12rem;
+  color: var(--color-ink2);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
+
+.entry-header__finish {
+  padding-inline: 0.75rem;
+  color: var(--color-page);
+  background: var(--color-oxide);
+  border: 1px solid var(--color-oxide);
+}
+
+.entry-header__finish:hover,
+.entry-header__finish:focus-visible {
+  color: var(--color-page);
+  background: var(--color-oxide-hot);
+  border-color: var(--color-oxide-hot);
+}
+
+.entry-header__finish:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+/* A compact instrument strip: save/network state stays fixed at the left;
+   the workout's live muscle/movement coverage can scroll without widening
+   the viewport. */
+.entry-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: var(--entry-control);
+  align-items: stretch;
+  background: color-mix(in srgb, var(--color-card) 72%, var(--color-page));
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.entry-status {
+  display: inline-flex;
+  max-width: min(14rem, 60vw);
+  min-height: var(--entry-control);
+  align-items: center;
+  gap: 0.4rem;
+  padding-inline: var(--entry-edge) 0.75rem;
+  color: var(--color-muted);
+  border-right: 1px solid var(--color-hairline);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.65rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.entry-status::before {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: none;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  content: "";
+}
+
+.entry-status[data-state="saved"] {
+  color: var(--color-patina);
+}
+
+.entry-status[data-state="saved"]::before {
+  background: currentColor;
+}
+
+.entry-status[data-state="saving"] {
+  color: var(--color-oxide);
+}
+
+.entry-status[data-state="saving"]::before {
+  border-style: dashed;
+  animation: entry-spin 900ms linear infinite;
+}
+
+.entry-status[data-state="offline"] {
+  color: var(--color-steel);
+}
+
+.entry-status[data-state="error"] {
+  color: var(--color-oxide-hot);
+}
+
+.entry-coverage {
+  display: flex;
+  min-width: 0;
+  min-height: var(--entry-control);
+  align-items: center;
+  gap: 0.8rem;
+  overflow-x: auto;
+  padding: 0.35rem var(--entry-edge) 0.35rem 0.75rem;
+  scrollbar-width: none;
+}
+
+.entry-coverage::-webkit-scrollbar {
+  display: none;
+}
+
+.entry-coverage__item,
+.entry-coverage__chip {
+  display: grid;
+  min-width: max-content;
+  grid-template-columns: auto;
+  line-height: 1.15;
+}
+
+.entry-coverage__label {
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.entry-coverage__value {
+  margin-top: 0.12rem;
+  color: var(--color-ink2);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.67rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-coverage__item[data-state="worked"] .entry-coverage__value,
+.entry-coverage__chip[data-state="worked"] .entry-coverage__value {
+  color: var(--color-oxide);
+}
+
+.entry-coverage__item[data-state="open"] .entry-coverage__value,
+.entry-coverage__chip[data-state="open"] .entry-coverage__value {
+  color: var(--color-patina);
+}
+
+.entry-main {
+  display: block;
+  width: 100%;
+  flex: 1;
+  padding: 1rem var(--entry-edge) calc(1rem + env(safe-area-inset-bottom, 0px));
+}
+
+.entry-workout,
+.entry-side {
+  min-width: 0;
+}
+
+.entry-kicker,
+.entry-section-label {
+  margin: 0;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.64rem;
+  line-height: 1.35;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Bottom add console: directions and paired starters lead an empty workout;
+   direct search stays last beneath either starter or route suggestions. */
+.entry-quick {
+  margin: 0;
+  padding: 0.68rem;
+  background: color-mix(in srgb, var(--color-card) 82%, var(--color-page));
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--entry-radius);
+}
+
+.entry-quick__search {
+  display: grid;
+  gap: 0.28rem;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.entry-quick__directions:not([hidden]) ~ .entry-quick__search,
+.entry-starters:not([hidden]) ~ .entry-quick__search {
+  margin-top: 0.55rem;
+}
+
+.entry-quick__search input {
+  display: block;
+  width: 100%;
+  min-height: var(--entry-control);
+  padding: 0.52rem 0.65rem;
+  color: var(--color-ink);
+  background: var(--color-page);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--entry-radius);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: normal;
+  line-height: 1.2;
+  text-transform: none;
+}
+
+.entry-quick__search input::placeholder {
+  color: var(--color-muted);
+  opacity: 0.82;
+}
+
+.entry-quick__search input:focus {
+  border-color: var(--color-oxide);
+}
+
+.entry-quick__directions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding-bottom: 1px;
+  scrollbar-width: none;
+}
+
+.entry-quick__directions::-webkit-scrollbar {
+  display: none;
+}
+
+.entry-direction {
+  display: inline-flex;
+  min-width: max-content;
+  min-height: var(--entry-control);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0.42rem 0.68rem;
+  color: var(--color-muted);
+  background: var(--color-page);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--entry-radius);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.entry-direction:hover,
+.entry-direction:focus-visible {
+  color: var(--color-oxide);
+  border-color: var(--color-oxide);
+}
+
+.entry-direction[data-active=""],
+.entry-direction[data-active="true"],
+.entry-direction[aria-pressed="true"] {
+  color: var(--color-page);
+  background: var(--color-oxide);
+  border-color: var(--color-oxide);
+}
+
+.entry-quick__results {
+  display: grid;
+  max-height: min(15rem, 42dvh);
+  gap: 0.32rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--color-hairline) transparent;
+}
+
+.entry-quick__results:not(:empty) {
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--color-hairline);
+}
+
+.entry-quick__empty {
+  margin: 0.5rem 0 0;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.62rem;
+}
+
+.entry-quick__results > button,
+.entry-quick__results > .entry-picker-option {
+  display: grid;
+  width: 100%;
+  min-height: var(--entry-control);
+  padding: 0.48rem 0.58rem;
+  color: var(--color-ink);
+  background: var(--color-page);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--entry-radius);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 0.86rem;
+  line-height: 1.25;
+  text-align: left;
+}
+
+.entry-quick__results > button:hover,
+.entry-quick__results > button:focus-visible {
+  background: color-mix(in srgb, var(--color-oxide) 5%, var(--color-page));
+  border-color: var(--color-oxide);
+}
+
+.entry-starters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.42rem;
+  margin-top: 0.55rem;
+}
+
+.entry-starter {
+  --entry-starter-lane: var(--color-oxide);
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 5.25rem;
+  grid-template-rows: auto 1fr auto;
+  align-content: start;
+  gap: 0.2rem;
+  padding: 0.55rem 0.58rem 0.52rem;
+  overflow: hidden;
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--entry-starter-lane) 4%, var(--color-page));
+  border: 1px solid color-mix(in srgb, var(--entry-starter-lane) 42%, var(--color-hairline));
+  border-radius: var(--entry-radius);
+  text-align: left;
+}
+
+.entry-starter::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--entry-starter-lane);
+  content: "";
+}
+
+/* The second-card rule is a markup-light fallback; explicit lane data wins. */
+.entry-starter:nth-child(2) {
+  --entry-starter-lane: var(--color-patina);
+}
+
+.entry-starter[data-lane="deepen"] {
+  --entry-starter-lane: var(--color-oxide);
+}
+
+.entry-starter[data-lane="expand"] {
+  --entry-starter-lane: var(--color-patina);
+}
+
+.entry-starter:hover,
+.entry-starter:focus-visible {
+  background: color-mix(in srgb, var(--entry-starter-lane) 9%, var(--color-page));
+  border-color: var(--entry-starter-lane);
+}
+
+.entry-starter__lane {
+  min-width: 0;
+  color: var(--entry-starter-lane);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.54rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.entry-starter__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 0.88rem;
+  font-weight: 750;
+  line-height: 1.15;
+}
+
+.entry-starter__mark {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-brass);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.57rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Each exercise is a distinct plate in the live set bay. The slight oxide top
+   rule marks active workout material without competing with completed sets. */
+[data-entry-exercises] {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.1rem;
+}
+
+.entry-exercise {
+  min-width: 0;
+  overflow: clip;
+  margin: 0;
+  scroll-margin-top: 1rem;
+  background: color-mix(in srgb, var(--color-card) 94%, var(--color-page));
+  border: 1px solid color-mix(in srgb, var(--color-ink) 15%, var(--color-hairline));
+  border-top: 2px solid color-mix(in srgb, var(--color-oxide) 52%, var(--color-hairline));
+  border-radius: var(--entry-radius);
+  box-shadow: 0 0.35rem 0.9rem rgb(0 0 0 / 12%);
+}
+
+.entry-exercise[data-active="true"] {
+  border-color: color-mix(in srgb, var(--color-oxide) 68%, var(--color-hairline));
+}
+
+.entry-exercise__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--entry-control);
+  align-items: start;
+  gap: 0.5rem;
+  padding: 0.72rem 0.62rem 0.62rem 0.75rem;
+  background: var(--color-card);
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.entry-exercise__heading {
+  min-width: 0;
+}
+
+.entry-exercise__name {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--color-ink);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1.12rem;
+  font-weight: 750;
+  line-height: 1.18;
+}
+
+.entry-exercise__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.6rem;
+  margin: 0.3rem 0 0;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.62rem;
+  line-height: 1.35;
+}
+
+.entry-exercise__menu {
+  position: relative;
+  display: inline-grid;
+  width: var(--entry-control);
+  min-width: var(--entry-control);
+  height: var(--entry-control);
+  padding: 0;
+  place-items: center;
+  color: var(--color-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.72rem;
+}
+
+.entry-exercise__menu::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--entry-affordance);
+  height: var(--entry-affordance);
+  border: 1px solid transparent;
+  border-radius: calc(var(--entry-radius) / 2);
+  content: "";
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.entry-exercise__menu:hover,
+.entry-exercise__menu:focus-visible {
+  color: var(--color-oxide);
+}
+
+.entry-exercise__menu:hover::before,
+.entry-exercise__menu:focus-visible::before {
+  background: color-mix(in srgb, var(--color-oxide) 5%, transparent);
+  border-color: var(--color-hairline);
+}
+
+/* PRs stay one-glance context: a compact horizontal instrument rail above the
+   larger set controls, with the current primary mark still first and brass. */
+.entry-prs {
+  padding: 0.38rem 0.68rem 0.45rem;
+  background: color-mix(in srgb, var(--color-brass) 3%, var(--color-card));
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.entry-prs__head,
+.entry-prs__summary {
+  display: flex;
+  min-height: 1.6rem;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: inherit;
+  list-style: none;
+}
+
+.entry-prs__summary::-webkit-details-marker {
+  display: none;
+}
+
+.entry-prs__label {
+  color: color-mix(in srgb, var(--color-brass) 82%, var(--color-muted));
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.entry-prs__action {
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.6rem;
+  text-decoration: underline;
+  text-decoration-color: var(--color-hairline);
+  text-underline-offset: 0.2em;
+}
+
+.entry-prs__list {
+  display: grid;
+  grid-auto-columns: minmax(7.75rem, 42%);
+  grid-auto-flow: column;
+  grid-template-columns: none;
+  gap: 0.35rem;
+  margin: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding-bottom: 1px;
+  scrollbar-width: none;
+}
+
+.entry-prs__list::-webkit-scrollbar {
+  display: none;
+}
+
+.entry-pr {
+  display: grid;
+  min-width: 0;
+  min-height: 2.5rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: center;
+  align-items: baseline;
+  gap: 0.08rem 0.35rem;
+  padding: 0.28rem 0.4rem;
+  background: color-mix(in srgb, var(--color-page) 42%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-brass) 18%, var(--color-hairline));
+  border-radius: var(--entry-radius);
+}
+
+.entry-pr[data-primary],
+.entry-pr[data-primary="true"] {
+  background: color-mix(in srgb, var(--color-brass) 6%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-brass) 58%, var(--color-hairline));
+}
+
+.entry-pr__kind {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.5rem;
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.entry-pr__value {
+  overflow: hidden;
+  margin-top: 0;
+  color: var(--color-ink);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 0.76rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-pr__detail {
+  display: block;
+  min-width: 0;
+  grid-column: 1 / -1;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.52rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-prs__hint {
+  margin: 0.5rem 0 0;
+  padding-left: 0.55rem;
+  color: var(--color-ink2);
+  border-left: 2px solid var(--color-brass);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.62rem;
+  line-height: 1.45;
+}
+
+/* Sets are the working surface: stronger contrast, larger numerals, and an
+   inset bay distinguish live input from the compact record reference above. */
+.entry-sets {
+  padding: 0.42rem 0.52rem 0.62rem;
+  background: color-mix(in srgb, var(--color-page) 78%, var(--color-card));
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.entry-set-head,
+.entry-set {
+  display: grid;
+  grid-template-columns:
+    3.5rem
+    minmax(3.75rem, 1fr)
+    minmax(3.1rem, 0.72fr)
+    minmax(3rem, 0.62fr)
+    2.75rem
+    2.75rem;
+  align-items: center;
+  column-gap: 0.25rem;
+  row-gap: 0;
+}
+
+.entry-set-head {
+  min-height: 1.55rem;
+  color: color-mix(in srgb, var(--color-muted) 88%, var(--color-ink2));
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.52rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.entry-set {
+  position: relative;
+  min-height: calc(var(--entry-control) + 0.7rem);
+  padding-block: 0.35rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-hairline) 90%, transparent);
+}
+
+.entry-set[data-complete="true"] {
+  background: color-mix(in srgb, var(--color-oxide) 7%, transparent);
+}
+
+.entry-set__ordinal,
+.entry-set__done {
+  position: relative;
+  display: inline-grid;
+  height: var(--entry-control);
+  min-height: var(--entry-control);
+  padding: 0;
+  place-items: center;
+  justify-self: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-set__done {
+  width: var(--entry-control);
+  min-width: var(--entry-control);
+}
+
+.entry-set__ordinal::before,
+.entry-set__done::before,
+.entry-set__remove::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--entry-affordance);
+  height: var(--entry-affordance);
+  background: transparent;
+  border: 1px solid var(--color-hairline);
+  border-radius: calc(var(--entry-radius) / 2);
+  content: "";
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.entry-set__ordinal {
+  --entry-set-kind: var(--color-oxide);
+  --entry-set-kind-bg: transparent;
+  --entry-set-kind-border: color-mix(
+    in srgb,
+    var(--entry-set-kind) 42%,
+    var(--color-hairline)
+  );
+  width: 3.5rem;
+  min-width: 3.5rem;
+  grid-template-rows: auto auto;
+  align-content: center;
+  gap: 0.02rem;
+  color: var(--entry-set-kind);
+}
+
+.entry-set__ordinal::before {
+  width: calc(100% - 0.25rem);
+  height: 2.25rem;
+  background: var(--entry-set-kind-bg);
+  border-color: var(--entry-set-kind-border);
+  border-radius: calc(var(--entry-radius) / 2);
+}
+
+.entry-set__ordinal select {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.entry-set__number,
+.entry-set__type {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  max-width: calc(100% - 0.5rem);
+  overflow: hidden;
+  line-height: 1;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-set__number {
+  color: var(--color-ink2);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.entry-set__type {
+  color: var(--entry-set-kind);
+  font-size: 0.48rem;
+  font-weight: 750;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.entry-set__ordinal:focus-within::before {
+  border-color: var(--color-oxide-hot);
+}
+
+.entry-set__ordinal:is([data-kind="work"], [data-kind="working"]) {
+  --entry-set-kind: var(--color-oxide);
+}
+
+.entry-set__ordinal:is([data-kind="warm"], [data-kind="warmup"]) {
+  --entry-set-kind: var(--color-steel);
+}
+
+.entry-set__ordinal:is([data-kind="warm"], [data-kind="warmup"])::before {
+  border-style: dashed;
+}
+
+.entry-set__ordinal:is([data-kind="fail"], [data-kind="failure"]) {
+  --entry-set-kind: var(--color-oxide-hot);
+  --entry-set-kind-bg: color-mix(in srgb, var(--color-oxide-hot) 8%, transparent);
+}
+
+.entry-set__ordinal[data-kind="drop"] {
+  --entry-set-kind: var(--color-patina);
+  --entry-set-kind-bg: color-mix(in srgb, var(--color-patina) 6%, transparent);
+}
+
+.entry-set__ordinal:is([data-kind="part"], [data-kind="partial"]) {
+  --entry-set-kind: var(--color-brass);
+}
+
+.entry-set__ordinal:is([data-kind="neg"], [data-kind="negative"]) {
+  --entry-set-kind: var(--color-ink2);
+  --entry-set-kind-bg: color-mix(in srgb, var(--color-steel) 5%, transparent);
+}
+
+.entry-set__field {
+  display: block;
+  min-width: 0;
+}
+
+.entry-set__field > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.entry-set__field :where(input, select) {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--entry-control);
+  padding: 0.45rem 0.32rem;
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-page) 90%, var(--color-card));
+  border: 1px solid color-mix(in srgb, var(--color-ink) 18%, var(--color-hairline));
+  border-radius: var(--entry-radius);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1.05rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+}
+
+.entry-set__field :where(input, select)::placeholder {
+  color: color-mix(in srgb, var(--color-muted) 68%, transparent);
+}
+
+.entry-set__field :where(input, select):focus {
+  border-color: var(--color-oxide);
+}
+
+.entry-set__field :where(input, select)[aria-invalid="true"] {
+  color: var(--color-oxide-hot);
+  border-color: var(--color-oxide-hot);
+}
+
+.entry-set__rir {
+  display: inline-grid;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--entry-control);
+  padding: 0.45rem 0.2rem;
+  place-items: center;
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-page) 90%, var(--color-card));
+  border: 1px solid color-mix(in srgb, var(--color-ink) 18%, var(--color-hairline));
+  border-radius: var(--entry-radius);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1.05rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+}
+
+.entry-set__rir:hover,
+.entry-set__rir:focus-visible,
+.entry-set__rir[aria-expanded="true"] {
+  color: var(--color-oxide);
+  border-color: var(--color-oxide);
+}
+
+.entry-set__rir[aria-invalid="true"] {
+  color: var(--color-oxide-hot);
+  border-color: var(--color-oxide-hot);
+}
+
+.entry-set__field :where(input[type="number"]) {
+  appearance: textfield;
+}
+
+.entry-set__field :where(input[type="number"])::-webkit-inner-spin-button,
+.entry-set__field :where(input[type="number"])::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.entry-set__done {
+  color: var(--color-muted);
+  font-size: 0;
+}
+
+.entry-set__done::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0.38rem;
+  height: 0.38rem;
+  border: 1px solid currentColor;
+  border-radius: 0;
+  content: "";
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.entry-set__done:hover,
+.entry-set__done:focus-visible {
+  color: var(--color-oxide);
+}
+
+.entry-set__done:hover::before,
+.entry-set__done:focus-visible::before {
+  border-color: var(--color-oxide);
+}
+
+.entry-set__done[aria-pressed="true"],
+.entry-set[data-complete="true"] .entry-set__done {
+  color: var(--color-page);
+}
+
+.entry-set__done[aria-pressed="true"]::before,
+.entry-set[data-complete="true"] .entry-set__done::before {
+  background: var(--color-oxide);
+  border-color: var(--color-oxide);
+}
+
+.entry-set__done[aria-pressed="true"]::after,
+.entry-set[data-complete="true"] .entry-set__done::after {
+  width: auto;
+  height: auto;
+  border: 0;
+  content: "✓";
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.entry-set__remove {
+  position: relative;
+  display: inline-grid;
+  width: var(--entry-control);
+  min-width: var(--entry-control);
+  height: var(--entry-control);
+  padding: 0;
+  place-items: center;
+  color: color-mix(in srgb, var(--color-muted) 76%, transparent);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.68rem;
+}
+
+.entry-set__remove::before {
+  border-color: transparent;
+}
+
+.entry-set__remove:hover,
+.entry-set__remove:focus-visible {
+  color: var(--color-oxide-hot);
+}
+
+.entry-set__remove:hover::before,
+.entry-set__remove:focus-visible::before {
+  background: color-mix(in srgb, var(--color-oxide-hot) 4%, transparent);
+  border-color: var(--color-hairline);
+}
+
+/* The active row opens a compact set console. Load presets choose a target,
+   equal steps adjust it, and RIR remains a one-tap instrument rather than a
+   keyboard or modal picker. */
+.entry-load-dock[data-entry-load-dock] {
+  min-width: 0;
+  width: 100%;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  gap: 0.28rem;
+  margin-top: 0.18rem;
+  padding: 0.42rem 0 0.08rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-ink) 12%, var(--color-hairline));
+}
+
+.entry-load-dock[data-entry-load-dock]:not([hidden]) {
+  display: grid;
+}
+
+.entry-load-dock[data-entry-load-dock]:focus-visible {
+  outline: 2px solid var(--color-oxide-hot);
+  outline-offset: 2px;
+}
+
+.entry-load-presets,
+.entry-load-steps {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  gap: 1px;
+  background: var(--color-hairline);
+  border: 1px solid var(--color-hairline);
+  border-radius: calc(var(--entry-radius) / 2);
+}
+
+.entry-load-presets {
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  grid-template-rows: 1fr;
+}
+
+.entry-load-presets[hidden] {
+  display: none;
+}
+
+.entry-load-steps {
+  grid-template-columns: repeat(4, minmax(var(--entry-control), 1fr));
+}
+
+.entry-load-preset,
+.entry-load-step {
+  min-width: 0;
+  min-height: var(--entry-control);
+  padding: 0.22rem 0.34rem;
+  color: var(--color-ink2);
+  background: color-mix(in srgb, var(--color-page) 90%, var(--color-card));
+  border: 0;
+  border-radius: 0;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.entry-load-preset {
+  display: grid;
+  grid-template-rows: auto auto;
+  align-content: center;
+  gap: 0.08rem;
+  text-align: left;
+}
+
+.entry-load-preset__kind {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.48rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.065em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.entry-load-preset__value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 0.76rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-load-step {
+  display: inline-grid;
+  place-items: center;
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.entry-load-preset:hover,
+.entry-load-preset:focus-visible,
+.entry-load-step:hover,
+.entry-load-step:focus-visible {
+  color: var(--color-oxide);
+  background: color-mix(in srgb, var(--color-oxide) 6%, var(--color-page));
+}
+
+.entry-load-preset:focus-visible,
+.entry-load-step:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 0 0 2px var(--color-oxide-hot);
+}
+
+.entry-load-preset[aria-pressed="true"] {
+  color: var(--color-oxide);
+  background: color-mix(in srgb, var(--color-oxide) 9%, var(--color-page));
+  box-shadow: inset 0 -2px var(--color-oxide);
+}
+
+.entry-load-preset[aria-pressed="true"]:focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--color-oxide-hot),
+    inset 0 -2px var(--color-oxide);
+}
+
+.entry-load-preset[aria-pressed="true"] .entry-load-preset__kind,
+.entry-load-preset[aria-pressed="true"] .entry-load-preset__value {
+  color: currentColor;
+}
+
+.entry-load-preset:disabled,
+.entry-load-step:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.entry-rir-picker {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  /* Only the option rail may scroll; focused radios must not shift this frame. */
+  overflow: hidden;
+  overflow: clip;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  background: var(--color-hairline);
+  border: 1px solid var(--color-hairline);
+  border-radius: calc(var(--entry-radius) / 2);
+}
+
+.entry-rir-picker[data-overflow-left]::before,
+.entry-rir-picker[data-overflow-right]::after {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  width: 0.42rem;
+  content: "";
+  pointer-events: none;
+}
+
+.entry-rir-picker[data-overflow-left]::before {
+  left: 2.25rem;
+  background: linear-gradient(to right, rgb(0 0 0 / 0.12), transparent);
+}
+
+.entry-rir-picker[data-overflow-right]::after {
+  right: 0;
+  background: linear-gradient(to left, rgb(0 0 0 / 0.12), transparent);
+}
+
+.entry-rir-picker__label {
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  color: var(--color-muted);
+  background: color-mix(in srgb, var(--color-card) 88%, var(--color-page));
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.5rem;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: 0.06em;
+}
+
+.entry-rir-options {
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: none;
+  scroll-padding-inline: 1px;
+  scroll-snap-type: inline proximity;
+  scrollbar-width: none;
+}
+
+.entry-rir-options::-webkit-scrollbar {
+  display: none;
+}
+
+.entry-rir-option {
+  position: relative;
+  display: grid;
+  min-width: var(--entry-control);
+  min-height: var(--entry-control);
+  padding: 0.2rem;
+  flex: 0 0 var(--entry-control);
+  color: var(--color-ink2);
+  background: color-mix(in srgb, var(--color-page) 90%, var(--color-card));
+  border: 0;
+  border-left: 1px solid var(--color-hairline);
+  border-radius: 0;
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  place-items: center;
+  scroll-snap-align: start;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.entry-rir-option:hover,
+.entry-rir-option:has(.entry-rir-option__control:focus-visible) {
+  color: var(--color-oxide);
+  background: color-mix(in srgb, var(--color-oxide) 6%, var(--color-page));
+}
+
+.entry-rir-option:has(.entry-rir-option__control:focus-visible) {
+  outline: 0;
+  box-shadow: inset 0 0 0 2px var(--color-oxide-hot);
+}
+
+.entry-rir-option:has(.entry-rir-option__control:checked) {
+  color: var(--color-oxide);
+  background: color-mix(in srgb, var(--color-oxide) 9%, var(--color-page));
+  box-shadow: inset 0 -2px var(--color-oxide);
+}
+
+.entry-rir-option:has(.entry-rir-option__control:checked:focus-visible) {
+  box-shadow:
+    inset 0 0 0 2px var(--color-oxide-hot),
+    inset 0 -2px var(--color-oxide);
+}
+
+.entry-exercise > .entry-fork__add {
+  position: relative;
+  display: grid;
+  width: max-content;
+  min-height: var(--entry-control);
+  height: var(--entry-control);
+  margin: 0.08rem 0.52rem 0.45rem auto;
+  padding: 0 0.7rem;
+  color: var(--color-ink2);
+  background: transparent;
+  border: 0;
+  font-size: 0.62rem;
+  font-weight: 600;
+}
+
+.entry-exercise > .entry-fork__add::before {
+  position: absolute;
+  top: 50%;
+  right: 0.2rem;
+  left: 0.2rem;
+  height: var(--entry-affordance);
+  background: color-mix(in srgb, var(--color-page) 76%, transparent);
+  border: 1px dashed var(--color-hairline);
+  border-radius: calc(var(--entry-radius) / 2);
+  content: "";
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.entry-exercise > .entry-fork__add:hover,
+.entry-exercise > .entry-fork__add:focus-visible {
+  color: var(--color-page);
+  background: transparent;
+}
+
+.entry-exercise > .entry-fork__add:hover::before,
+.entry-exercise > .entry-fork__add:focus-visible::before {
+  background: var(--color-oxide);
+  border-color: var(--color-oxide);
+}
+
+.entry-set__record,
+.entry-set__note {
+  grid-column: 2 / -1;
+  margin: 0.2rem 0 0.15rem;
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.61rem;
+  line-height: 1.4;
+}
+
+.entry-set__record {
+  padding-left: 0.45rem;
+  color: var(--color-brass);
+  border-left: 2px solid var(--color-brass);
+}
+
+.entry-set__note {
+  color: var(--color-muted);
+  font-style: italic;
+}
+
+.entry-set-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.55rem 0.45rem 0.15rem;
+  border-top: 1px solid var(--color-hairline);
+}
+
+.entry-set-actions :where(button, a),
+.entry-button {
+  display: inline-flex;
+  min-height: var(--entry-control);
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 0.8rem;
+  color: var(--color-ink2);
+  background: transparent;
+  border: 1px dashed var(--color-hairline);
+  border-radius: var(--entry-radius);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.68rem;
+  text-decoration: none;
+}
+
+.entry-set-actions :where(button, a):hover,
+.entry-set-actions :where(button, a):focus-visible,
+.entry-button:hover,
+.entry-button:focus-visible {
+  color: var(--color-oxide);
+  border-color: var(--color-oxide);
+}
+
+.entry-button--primary {
+  color: var(--color-page);
+  background: var(--color-oxide);
+  border-color: var(--color-oxide);
+  border-style: solid;
+  font-weight: 700;
+}
+
+.entry-button--primary:hover,
+.entry-button--primary:focus-visible {
+  color: var(--color-page);
+  background: var(--color-oxide-hot);
+  border-color: var(--color-oxide-hot);
+}
+
+/* The signature decision surface. The stem is neutral history; each branch
+   takes the color of its strategy: oxide follows today's line deeper, patina
+   turns toward the under-covered week. */
+.entry-fork {
+  margin-top: 0.75rem;
+  padding: 0.7rem;
+  background: var(--color-card);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--entry-radius);
+}
+
+.entry-fork__heading {
+  margin: 0.1rem 0 0;
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1.02rem;
+  font-weight: 750;
+  line-height: 1.18;
+}
+
+.entry-fork__intro {
+  max-width: 42rem;
+  margin: 0.25rem 0 0;
+  color: var(--color-ink2);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.entry-fork__lanes {
+  position: relative;
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+  padding-left: 1.25rem;
+}
+
+.entry-fork > .entry-fork__lanes:first-child {
+  margin-top: 0;
+}
+
+.entry-fork__lanes::before {
+  position: absolute;
+  top: 1.2rem;
+  bottom: 1.2rem;
+  left: 0.3rem;
+  width: 2px;
+  background: linear-gradient(
+    to bottom,
+    var(--color-oxide) 0 44%,
+    var(--color-hairline) 44% 56%,
+    var(--color-patina) 56% 100%
+  );
+  content: "";
+}
+
+.entry-fork__lane {
+  --entry-lane: var(--color-ink2);
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 4.75rem;
+  align-items: center;
+  gap: 0.32rem 0.55rem;
+  padding: 0.55rem;
+  background: color-mix(in srgb, var(--entry-lane) 5%, var(--color-page));
+  border: 1px solid color-mix(in srgb, var(--entry-lane) 38%, var(--color-hairline));
+  border-left: 2px solid var(--entry-lane);
+  border-radius: var(--entry-radius);
+}
+
+.entry-fork__lane::before {
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  width: 0.95rem;
+  border-top: 2px solid var(--entry-lane);
+  content: "";
+}
+
+.entry-fork__lane[data-lane="deepen"] {
+  --entry-lane: var(--color-oxide);
+}
+
+.entry-fork__lane[data-lane="expand"] {
+  --entry-lane: var(--color-patina);
+}
+
+.entry-fork__lane-label {
+  grid-column: 1;
+  color: var(--entry-lane);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.entry-fork__choice {
+  grid-column: 1;
+  min-width: 0;
+  margin-top: -0.15rem;
+  overflow-wrap: anywhere;
+  color: var(--color-ink);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 0.96rem;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.entry-fork__reason {
+  grid-column: 1;
+  margin-top: -0.2rem;
+  color: var(--color-ink2);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.61rem;
+  line-height: 1.4;
+}
+
+.entry-fork__add {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  display: inline-grid;
+  min-width: var(--entry-control);
+  height: var(--entry-control);
+  padding: 0 0.65rem;
+  place-items: center;
+  align-self: center;
+  color: var(--entry-lane, var(--color-oxide));
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: var(--entry-radius);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.entry-fork__add:hover,
+.entry-fork__add:focus-visible {
+  color: var(--color-page);
+  background: var(--entry-lane, var(--color-oxide));
+}
+
+.entry-fork__more {
+  display: flex;
+  width: 100%;
+  min-height: var(--entry-control);
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--color-ink2);
+  background: transparent;
+  border: 1px dashed var(--color-hairline);
+  border-radius: var(--entry-radius);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.67rem;
+  text-decoration: none;
+}
+
+.entry-fork__more:hover,
+.entry-fork__more:focus-visible {
+  color: var(--color-oxide);
+  border-color: var(--color-oxide);
+}
+
+.entry-side .entry-fork {
+  margin-top: 0;
+}
+
+.entry-side {
+  margin-top: 0.75rem;
+}
+
+.entry-workout:has([data-entry-exercises]:empty) + .entry-side {
+  margin-top: 0;
+}
+
+.entry-queue {
+  margin-bottom: 0.75rem;
+  padding: 0.72rem;
+  background: color-mix(in srgb, var(--color-card) 86%, var(--color-page));
+  border: 1px solid var(--color-hairline);
+}
+
+.entry-queue__header {
+  margin-bottom: 0.55rem;
+}
+
+.entry-queue__title {
+  margin: 0.12rem 0 0;
+  font-family: "Zilla Slab", Georgia, serif;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.entry-queue__list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.entry-receipt {
+  padding: 0.68rem;
+  background: var(--color-page);
+  border: 1px dashed var(--color-hairline);
+  outline: none;
+}
+
+.entry-receipt[data-state="pending"] {
+  border-color: color-mix(in srgb, var(--color-brass) 62%, var(--color-hairline));
+}
+
+.entry-receipt[data-state="failed"] {
+  border-color: color-mix(in srgb, var(--color-oxide) 70%, var(--color-hairline));
+}
+
+.entry-receipt[data-state="saved"] {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--color-patina) 70%, var(--color-hairline));
+}
+
+.entry-receipt:focus-visible {
+  outline: 2px solid var(--color-oxide);
+  outline-offset: 2px;
+}
+
+.entry-receipt__header,
+.entry-receipt__actions {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.entry-receipt__state {
+  margin: 0;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.entry-receipt__title {
+  margin: 0.12rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+
+.entry-receipt__copy,
+.entry-receipt__link {
+  margin: 0.48rem 0 0;
+  color: var(--color-ink2);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.62rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.entry-receipt__link {
+  color: var(--color-brass);
+}
+
+.entry-receipt__action,
+.entry-receipt__dismiss {
+  flex: none;
+  min-height: 2rem;
+  padding: 0.25rem 0.45rem;
+  color: var(--color-oxide);
+  background: transparent;
+  border: 0;
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.63rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.entry-receipt__dismiss {
+  color: var(--color-muted);
+  font-size: 1rem;
+  text-decoration: none;
+}
+
+.entry-receipt__share {
+  display: block;
+  width: 100%;
+  margin-top: 0.58rem;
+  padding: 0.52rem;
+  resize: vertical;
+  color: var(--color-ink2);
+  background: var(--color-card);
+  border: 1px solid var(--color-hairline);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.6rem;
+  line-height: 1.45;
+}
+
+.entry-receipt__actions {
+  justify-content: flex-start;
+  margin-top: 0.55rem;
+}
+
+.entry-receipt__actions .entry-button {
+  min-height: 2.2rem;
+}
+
+.entry-fork:not([hidden]) + .entry-quick {
+  margin-top: 0.5rem;
+}
+
+/* Native dialog, shaped as a bottom sheet. The platform retains focus trap,
+   Escape, inert background, and focus return; only the surface is custom. */
+.fitness-entry dialog.entry-sheet {
+  width: 100%;
+  max-width: none;
+  height: min(92dvh, 48rem);
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px));
+  margin: auto 0 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  background: var(--color-page);
+  border: 1px solid var(--color-oxide);
+  border-bottom: 0;
+  border-radius: 0.45rem 0.45rem 0 0;
+  box-shadow: 0 -1.2rem 3rem rgb(0 0 0 / 32%);
+}
+
+.fitness-entry dialog.entry-sheet::backdrop {
+  background: rgb(8 12 7 / 66%);
+  backdrop-filter: blur(1.5px) saturate(0.72);
+}
+
+.fitness-entry dialog.entry-sheet[open] {
+  animation: entry-sheet-in 180ms ease-out;
+}
+
+.entry-sheet__panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.entry-sheet__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--entry-control);
+  min-height: 3.65rem;
+  flex: none;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem var(--entry-edge);
+  background: var(--color-page);
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.entry-sheet__title {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1.12rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-sheet__close {
+  display: inline-grid;
+  width: var(--entry-control);
+  height: var(--entry-control);
+  padding: 0;
+  place-items: center;
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--entry-radius);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 1rem;
+}
+
+.entry-sheet__close:hover,
+.entry-sheet__close:focus-visible {
+  color: var(--color-oxide);
+  border-color: var(--color-hairline);
+}
+
+.entry-sheet__body {
+  min-height: 0;
+  flex: 1;
+  overflow-x: clip;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.8rem var(--entry-edge) 1.2rem;
+  scrollbar-color: var(--color-hairline) transparent;
+}
+
+.entry-sheet__body [data-entry-review-status]:empty {
+  display: none;
+}
+
+.entry-sheet__actions {
+  display: flex;
+  flex: none;
+  gap: 0.55rem;
+  padding:
+    0.6rem
+    var(--entry-edge)
+    calc(0.6rem + env(safe-area-inset-bottom, 0px));
+  background: var(--color-page);
+  border-top: 1px solid var(--color-hairline);
+}
+
+.entry-sheet__actions > * {
+  flex: 1;
+}
+
+.entry-picker-search {
+  position: sticky;
+  top: -0.8rem;
+  z-index: 2;
+  padding-block: 0.8rem 0.65rem;
+  background: var(--color-page);
+}
+
+.entry-picker-search :where(input) {
+  display: block;
+  width: 100%;
+  min-height: var(--entry-control);
+  padding: 0.55rem 0.7rem;
+  color: var(--color-ink);
+  background: var(--color-card);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--entry-radius);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.entry-review-field {
+  display: block;
+  margin-top: 0.9rem;
+}
+
+.entry-review-field :where(input, textarea) {
+  display: block;
+  width: 100%;
+  min-height: var(--entry-control);
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.7rem;
+  resize: vertical;
+  color: var(--color-ink);
+  background: var(--color-card);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--entry-radius);
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.entry-review-field :where(input, textarea):focus {
+  border-color: var(--color-oxide);
+}
+
+.entry-picker-search :where(input)::placeholder {
+  color: var(--color-muted);
+}
+
+.entry-picker-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entry-picker-option {
+  --entry-option: var(--color-hairline);
+  display: grid;
+  width: 100%;
+  min-height: 3.5rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  padding: 0.6rem 0.7rem;
+  color: var(--color-ink);
+  background: var(--color-card);
+  border: 1px solid var(--entry-option);
+  border-radius: var(--entry-radius);
+  text-align: left;
+}
+
+.entry-picker-option[data-lane="deepen"] {
+  --entry-option: color-mix(in srgb, var(--color-oxide) 52%, var(--color-hairline));
+}
+
+.entry-picker-option[data-lane="expand"] {
+  --entry-option: color-mix(in srgb, var(--color-patina) 52%, var(--color-hairline));
+}
+
+.entry-picker-option__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: "Fira Sans", "Segoe UI", sans-serif;
+  font-size: 0.94rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.entry-picker-option__reason {
+  grid-column: 1;
+  color: var(--color-muted);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.6rem;
+  line-height: 1.35;
+}
+
+.entry-picker-option__action {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--color-oxide);
+  font-family: "Fira Mono", "Courier New", monospace;
+  font-size: 0.67rem;
+}
+
+.entry-picker-option:hover,
+.entry-picker-option:focus-visible {
+  background: color-mix(in srgb, var(--color-oxide) 5%, var(--color-card));
+  border-color: var(--color-oxide);
+}
+
+@media (width < 23rem) {
+  .entry-header {
+    grid-template-columns: var(--entry-control) minmax(0, 1fr) auto;
+  }
+
+  .entry-timer {
+    display: none;
+  }
+
+  .entry-status {
+    max-width: 7.5rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .entry-prs__list {
+    grid-auto-columns: minmax(7.25rem, 72%);
+    grid-template-columns: none;
+  }
+
+  .entry-set-head,
+  .entry-set {
+    grid-template-columns:
+      3.5rem
+      minmax(3.25rem, 1fr)
+      minmax(2.8rem, 0.72fr)
+      minmax(2.7rem, 0.62fr)
+      var(--entry-control);
+    column-gap: 0.16rem;
+  }
+
+  .entry-set-head > :last-child {
+    display: none;
+  }
+
+  .entry-set__ordinal {
+    width: 3.5rem;
+    min-width: 3.5rem;
+    height: var(--entry-control);
+  }
+
+  .entry-set__done {
+    width: var(--entry-control);
+    min-width: var(--entry-control);
+    height: var(--entry-control);
+  }
+
+  .entry-set__remove {
+    width: var(--entry-control);
+    min-width: var(--entry-control);
+    grid-column: 2 / -1;
+    grid-row: 2;
+    justify-self: end;
+  }
+
+  .entry-set:has(> .entry-load-dock[data-entry-load-dock]:not([hidden]))
+    > .entry-set__remove {
+    grid-row: 3;
+  }
+}
+
+/* Wide screens keep the active set stack comfortably narrow and give the
+   route fork a persistent strategy rail. */
+@media (width >= 56rem) {
+  .entry-shell {
+    max-width: 76rem;
+    border-inline: 1px solid var(--color-hairline);
+  }
+
+  .entry-header,
+  .entry-strip {
+    padding-inline: 1.25rem;
+  }
+
+  .entry-status {
+    max-width: 30rem;
+  }
+
+  .entry-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(19rem, 22rem);
+    align-items: start;
+    gap: 1.25rem;
+    padding: 1.25rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .entry-main:has([data-entry-exercises]:empty) {
+    grid-template-columns: minmax(0, 46rem);
+    justify-content: center;
+  }
+
+  .entry-main:has([data-entry-exercises]:empty) .entry-workout {
+    display: none;
+  }
+
+  .entry-main:has([data-entry-exercises]:empty) .entry-side {
+    position: static;
+    grid-column: 1;
+  }
+
+  .entry-workout:only-child {
+    width: 100%;
+    max-width: 46rem;
+    grid-column: 1 / -1;
+    justify-self: center;
+  }
+
+  .entry-side {
+    position: sticky;
+    top: 1.25rem;
+    margin-top: 0;
+  }
+
+  .entry-prs__list {
+    grid-auto-columns: auto;
+    grid-auto-flow: row;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    overflow-x: visible;
+    padding-bottom: 0;
+  }
+
+  .fitness-entry dialog.entry-sheet {
+    width: min(44rem, calc(100vw - 3rem));
+    height: min(46rem, calc(100dvh - 3rem));
+    margin-inline: auto;
+  }
+}
+
+@keyframes entry-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes entry-sheet-in {
+  from {
+    opacity: 0.75;
+    transform: translateY(1.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fitness-entry *,
+  .fitness-entry *::before,
+  .fitness-entry *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
+}

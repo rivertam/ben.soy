@@ -1,0 +1,3 @@
+[mcp_servers.railway]
+command = "/home/benji/.bun/install/global/node_modules/@railway/cli/bin/railway"
+args = ["mcp"]

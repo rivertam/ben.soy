@@ -3,6 +3,7 @@ mod diary;
 mod diary_sync;
 mod favicon;
 mod feed;
+mod fitness_entry_sync;
 mod home;
 mod interests;
 mod llms;
