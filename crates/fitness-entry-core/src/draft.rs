@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::guidance::{Derived, GuidanceContext, GuideConfig, derive};
 use crate::queue::{OutboxState, QueuedWorkout};
 use crate::text::{
-    effort_to_hundredths, hundredths_text, js_trim, normalize_title, pounds_to_milli, reps_value,
-    safe_local_id, truncate_utf16, valid_set_type, valid_text, weight_text,
+    SetType, effort_to_hundredths, hundredths_text, js_trim, normalize_title, pounds_to_milli,
+    reps_value, safe_local_id, truncate_utf16, valid_text, weight_text,
 };
 use crate::{
     MAX_DURATION_SECONDS, MAX_EFFORT_HUNDREDTHS, MAX_EXERCISES, MAX_REPS, MAX_SETS,
@@ -43,7 +43,11 @@ pub struct DraftSet {
     pub reps: String,
     /// Canonical RPE text. The page presents its inverse as reps in reserve.
     pub effort: String,
-    pub set_type: String,
+    /// True failure is the endpoint beyond numeric RPE 10 on the same effort
+    /// axis. It is mutually exclusive with `effort`.
+    #[serde(default)]
+    pub failure: bool,
+    pub set_type: SetType,
     pub done: bool,
 }
 
@@ -70,6 +74,8 @@ pub struct FinalizedSet {
     pub weight_milli: Option<i64>,
     pub reps: u64,
     pub effort_hundredths: Option<u64>,
+    #[serde(default)]
+    pub failure: bool,
     pub set_type: String,
 }
 
@@ -126,7 +132,7 @@ pub enum Action {
     SetType {
         exercise_id: String,
         set_id: String,
-        set_type: String,
+        set_type: SetType,
     },
     ToggleSet {
         exercise_id: String,
@@ -136,7 +142,7 @@ pub enum Action {
         exercise_id: String,
         set_id: String,
         weight_milli: Option<i64>,
-        set_type: Option<String>,
+        set_type: Option<SetType>,
     },
     AdjustWeight {
         exercise_id: String,
@@ -147,6 +153,8 @@ pub enum Action {
         exercise_id: String,
         set_id: String,
         effort_hundredths: Option<u64>,
+        #[serde(default)]
+        failure: bool,
     },
     Discard {
         now_utc: String,
@@ -384,24 +392,35 @@ fn sanitize_draft(value: Value) -> Option<Draft> {
                 .and_then(Value::as_str)
                 .map(|value| truncate_utf16(value, 24))
                 .unwrap_or_default();
-            let effort = raw_set
+            let mut effort = raw_set
                 .get("effort")
                 .and_then(Value::as_str)
                 .map(|value| truncate_utf16(value, 24))
                 .unwrap_or_default();
-            let set_type = raw_set
+            let raw_set_type = raw_set
                 .get("set_type")
                 .or_else(|| raw_set.get("setType"))
                 .and_then(Value::as_str)
-                .filter(|value| valid_set_type(value))
-                .unwrap_or("NORMAL_SET")
-                .to_string();
-            let valid = valid_draft_set(&weight, &reps, &effort).is_ok();
+                .unwrap_or("NORMAL_SET");
+            let legacy_failure = raw_set_type == "FAILURE_SET";
+            let failure = raw_set
+                .get("failure")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || legacy_failure;
+            if failure {
+                // A restored legacy row may carry both FAILURE_SET and a
+                // numeric RPE. Failure is authoritative on this axis.
+                effort.clear();
+            }
+            let set_type = raw_set_type.parse().unwrap_or_default();
+            let valid = valid_draft_set(&weight, &reps, &effort, failure).is_ok();
             sets.push(DraftSet {
                 id: set_id,
                 weight,
                 reps,
                 effort,
+                failure,
                 set_type,
                 done: raw_set
                     .get("done")
@@ -455,7 +474,8 @@ impl DraftSet {
             weight: String::new(),
             reps: String::new(),
             effort: String::new(),
-            set_type: "NORMAL_SET".to_string(),
+            failure: false,
+            set_type: SetType::Normal,
             done: false,
         }
     }
@@ -466,7 +486,8 @@ impl DraftSet {
             weight: previous.weight.clone(),
             reps: String::new(),
             effort: previous.effort.clone(),
-            set_type: previous.set_type.clone(),
+            failure: previous.failure,
+            set_type: previous.set_type,
             done: false,
         }
     }
@@ -606,9 +627,16 @@ fn apply_action(
             match field {
                 DraftField::Weight => set.weight = value,
                 DraftField::Reps => set.reps = value,
-                DraftField::Effort => set.effort = value,
+                DraftField::Effort => {
+                    set.effort = value;
+                    if !js_trim(&set.effort).is_empty() {
+                        set.failure = false;
+                    }
+                }
             }
-            if set.done && valid_draft_set(&set.weight, &set.reps, &set.effort).is_err() {
+            if set.done
+                && valid_draft_set(&set.weight, &set.reps, &set.effort, set.failure).is_err()
+            {
                 set.done = false;
             }
             Ok(ActionEffect::None)
@@ -618,9 +646,6 @@ fn apply_action(
             set_id,
             set_type,
         } => {
-            if !valid_set_type(&set_type) {
-                return Err(ActionError::message("That set type is not supported."));
-            }
             find_set_mut(draft, &exercise_id, &set_id)?.set_type = set_type;
             Ok(ActionEffect::Render)
         }
@@ -631,7 +656,9 @@ fn apply_action(
             let set = find_set_mut(draft, &exercise_id, &set_id)?;
             if set.done {
                 set.done = false;
-            } else if let Err(field) = valid_draft_set(&set.weight, &set.reps, &set.effort) {
+            } else if let Err(field) =
+                valid_draft_set(&set.weight, &set.reps, &set.effort, set.failure)
+            {
                 return Err(set_error(&exercise_id, &set_id, field));
             } else {
                 set.done = true;
@@ -650,12 +677,6 @@ fn apply_action(
                 return Err(ActionError::message(
                     "That load is outside the supported range.",
                 ));
-            }
-            if set_type
-                .as_deref()
-                .is_some_and(|value| !valid_set_type(value))
-            {
-                return Err(ActionError::message("That set type is not supported."));
             }
             let set = find_set_mut(draft, &exercise_id, &set_id)?;
             set.weight = weight_milli.map(weight_text).unwrap_or_default();
@@ -705,14 +726,21 @@ fn apply_action(
             exercise_id,
             set_id,
             effort_hundredths,
+            failure,
         } => {
+            if failure && effort_hundredths.is_some() {
+                return Err(ActionError::message(
+                    "Failure cannot also carry a numeric RIR choice.",
+                ));
+            }
             if effort_hundredths.is_some_and(|value| {
                 !(MIN_EFFORT_HUNDREDTHS..=MAX_EFFORT_HUNDREDTHS).contains(&value) || value % 50 != 0
             }) {
                 return Err(ActionError::message("That RIR choice is not supported."));
             }
-            find_set_mut(draft, &exercise_id, &set_id)?.effort =
-                effort_hundredths.map(hundredths_text).unwrap_or_default();
+            let set = find_set_mut(draft, &exercise_id, &set_id)?;
+            set.effort = effort_hundredths.map(hundredths_text).unwrap_or_default();
+            set.failure = failure;
             Ok(ActionEffect::Render)
         }
         Action::Discard { now_utc } => {
@@ -775,7 +803,12 @@ fn find_set_mut<'a>(
         .ok_or_else(|| ActionError::message("That set is no longer available."))
 }
 
-fn valid_draft_set(weight: &str, reps: &str, effort: &str) -> Result<(), &'static str> {
+fn valid_draft_set(
+    weight: &str,
+    reps: &str,
+    effort: &str,
+    failure: bool,
+) -> Result<(), &'static str> {
     if reps_value(reps).is_none() {
         return Err("reps");
     }
@@ -783,6 +816,9 @@ fn valid_draft_set(weight: &str, reps: &str, effort: &str) -> Result<(), &'stati
         return Err("weight");
     }
     if !js_trim(effort).is_empty() && effort_to_hundredths(effort).is_none() {
+        return Err("effort");
+    }
+    if failure && !js_trim(effort).is_empty() {
         return Err("effort");
     }
     Ok(())
@@ -857,7 +893,7 @@ fn build_finalized(draft: &Draft, ended_at_utc: &str) -> Result<FinalizedWorkout
             if !set.done {
                 continue;
             }
-            if let Err(field) = valid_draft_set(&set.weight, &set.reps, &set.effort) {
+            if let Err(field) = valid_draft_set(&set.weight, &set.reps, &set.effort, set.failure) {
                 return Err(set_error(&exercise.id, &set.id, field));
             }
             sets.push(FinalizedSet {
@@ -872,7 +908,8 @@ fn build_finalized(draft: &Draft, ended_at_utc: &str) -> Result<FinalizedWorkout
                 } else {
                     effort_to_hundredths(&set.effort)
                 },
-                set_type: set.set_type.clone(),
+                failure: set.failure,
+                set_type: set.set_type.to_string(),
             });
             total += 1;
         }
@@ -956,7 +993,15 @@ pub fn validate_finalized(workout: &FinalizedWorkout) -> Result<(), String> {
             }) {
                 return Err(format!("set {sets} has effort outside the supported range"));
             }
-            if !valid_set_type(&set.set_type) {
+            if set.failure && set.effort_hundredths.is_some() {
+                return Err(format!(
+                    "set {sets} cannot contain both failure and numeric effort"
+                ));
+            }
+            // Old durable outbox rows can survive a deploy. Accept their
+            // FAILURE_SET marker here; restore and the server adapter convert
+            // it to the new effort representation.
+            if set.set_type.parse::<SetType>().is_err() && set.set_type != "FAILURE_SET" {
                 return Err(format!("set {sets} has an unsupported set_type"));
             }
         }
@@ -1031,11 +1076,19 @@ pub fn restore_failed(draft: &Draft, queued: &QueuedWorkout, now_utc: &str) -> R
                     id: format!("restore-set-{exercise_index:02}-{set_index:02}-{suffix}"),
                     weight: set.weight_milli.map(weight_text).unwrap_or_default(),
                     reps: set.reps.to_string(),
-                    effort: set
-                        .effort_hundredths
-                        .map(hundredths_text)
-                        .unwrap_or_default(),
-                    set_type: set.set_type.clone(),
+                    effort: if set.failure || set.set_type == "FAILURE_SET" {
+                        String::new()
+                    } else {
+                        set.effort_hundredths
+                            .map(hundredths_text)
+                            .unwrap_or_default()
+                    },
+                    failure: set.failure || set.set_type == "FAILURE_SET",
+                    set_type: if set.set_type == "FAILURE_SET" {
+                        SetType::Normal
+                    } else {
+                        set.set_type.parse().unwrap_or_default()
+                    },
                     done: true,
                 })
                 .collect(),
@@ -1083,7 +1136,8 @@ mod tests {
                     weight: "225.5".into(),
                     reps: "5".into(),
                     effort: "9.5".into(),
-                    set_type: "NORMAL_SET".into(),
+                    failure: false,
+                    set_type: SetType::Normal,
                     done: true,
                 }],
             }],
@@ -1113,7 +1167,7 @@ mod tests {
         assert!(output.restored_start_reset);
         assert_eq!(output.draft.started_at_utc, "2026-09-03 14:00:00");
         assert_eq!(output.draft.exercises.len(), 2);
-        assert_eq!(output.draft.exercises[0].sets[0].set_type, "NORMAL_SET");
+        assert_eq!(output.draft.exercises[0].sets[0].set_type, SetType::Normal);
         assert!(!output.draft.exercises[0].sets[0].done);
     }
 
@@ -1154,6 +1208,41 @@ mod tests {
     }
 
     #[test]
+    fn restoration_moves_legacy_failure_to_effort_and_discards_numeric_rpe() {
+        let raw = serde_json::json!({
+            "version": 1,
+            "started_at_utc": "2026-09-03 13:59:00",
+            "title": "Workout",
+            "notes": "",
+            "exercises": [{
+                "id": "exercise-0001",
+                "name": "Squat",
+                "sets": [{
+                    "id": "set-00000001",
+                    "weight": "225",
+                    "reps": "5",
+                    "effort": "9",
+                    "set_type": "FAILURE_SET",
+                    "done": true
+                }]
+            }]
+        });
+        let output = bootstrap_draft(BootstrapInput {
+            stored_draft: Some(raw),
+            guide: guide(),
+            now_utc: "2026-09-03 14:00:00".into(),
+            context: GuidanceContext::default(),
+        })
+        .unwrap();
+        let set = &output.draft.exercises[0].sets[0];
+        assert_eq!(set.set_type, SetType::Normal);
+        assert!(set.failure);
+        assert!(set.effort.is_empty());
+        assert!(set.done);
+        assert_eq!(output.derived.set_views[0].rir_display, "FAIL");
+    }
+
+    #[test]
     fn actions_keep_completion_and_parsing_in_rust() {
         let mut value = draft();
         let toggled = transition(TransitionInput {
@@ -1191,6 +1280,7 @@ mod tests {
                 exercise_id: "exercise-0001".into(),
                 set_id: "set-00000001".into(),
                 effort_hundredths: Some(950),
+                failure: false,
             },
             context: GuidanceContext::default(),
         });
@@ -1203,12 +1293,27 @@ mod tests {
             action: Action::SetType {
                 exercise_id: "exercise-0001".into(),
                 set_id: "set-00000001".into(),
-                set_type: "DROP_SET".into(),
+                set_type: SetType::Drop,
             },
             context: GuidanceContext::default(),
         });
         assert_eq!(changed.derived.set_views[0].set_type_label, "DROP");
         assert_eq!(changed.derived.set_views[0].set_kind, "drop");
+
+        let failure = transition(TransitionInput {
+            draft: changed.draft,
+            guide: guide(),
+            action: Action::SetRir {
+                exercise_id: "exercise-0001".into(),
+                set_id: "set-00000001".into(),
+                effort_hundredths: None,
+                failure: true,
+            },
+            context: GuidanceContext::default(),
+        });
+        assert!(failure.draft.exercises[0].sets[0].failure);
+        assert!(failure.draft.exercises[0].sets[0].effort.is_empty());
+        assert_eq!(failure.derived.set_views[0].rir_display, "FAIL");
     }
 
     #[test]

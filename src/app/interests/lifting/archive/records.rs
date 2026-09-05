@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use fitness_entry_core::SetType;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     Gold,
@@ -95,24 +97,42 @@ pub struct CurrentBest {
 pub struct SetSource<'a> {
     pub id: &'a str,
     pub exercise_name: &'a str,
-    pub set_type: &'a str,
+    pub set_type: SetType,
     pub weight_milli: Option<i64>,
     pub reps: Option<i64>,
 }
 
-/// Set types that neither earn records nor count as history to beat.
-const EXCLUDED_SET_TYPES: [&str; 1] = ["WARMUP_SET"];
+/// Per-kind lexicographic metric. Max-weight uses reps as its tie-breaker;
+/// every other kind leaves `secondary` at zero. Scale factors are otherwise
+/// free because values compete only within one kind: Epley 1RM
+/// (`w * (1 + reps/30)`) is `w * (30 + reps)` here for exact integer math.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct Metric {
+    primary: i128,
+    secondary: i128,
+}
 
-/// Per-kind comparable metric. Values only ever compete within one kind, so
-/// scale factors are free; Epley 1RM (`w * (1 + reps/30)`) is compared as
-/// `w * (30 + reps)` — same ordering, exact integer math.
-fn metric(kind: Kind, weight_milli: Option<i64>, reps: Option<i64>) -> Option<i128> {
+impl Metric {
+    const fn primary(value: i128) -> Self {
+        Self {
+            primary: value,
+            secondary: 0,
+        }
+    }
+}
+
+fn metric(kind: Kind, weight_milli: Option<i64>, reps: Option<i64>) -> Option<Metric> {
     match kind {
-        Kind::MaxWeight => weight_milli.filter(|weight| *weight >= 0).map(i128::from),
-        Kind::Reps => reps.map(i128::from),
+        Kind::MaxWeight => weight_milli
+            .filter(|weight| *weight >= 0)
+            .map(|weight| Metric {
+                primary: i128::from(weight),
+                secondary: i128::from(reps.unwrap_or(-1)),
+            }),
+        Kind::Reps => reps.map(i128::from).map(Metric::primary),
         Kind::Volume => match (weight_milli, reps) {
             (Some(weight), Some(reps)) if weight >= 0 => {
-                Some(i128::from(weight) * i128::from(reps))
+                Some(Metric::primary(i128::from(weight) * i128::from(reps)))
             }
             _ => None,
         },
@@ -122,9 +142,9 @@ fn metric(kind: Kind, weight_milli: Option<i64>, reps: Option<i64>) -> Option<i1
             // assistance, not resistance, so weight-derived metrics are not
             // meaningful or comparable to older positive-assistance history.
             // Reps remain useful.
-            (Some(weight), Some(reps)) if weight >= 0 && reps >= 1 => {
-                Some(i128::from(weight) * (30 + i128::from(reps)))
-            }
+            (Some(weight), Some(reps)) if weight >= 0 && reps >= 1 => Some(Metric::primary(
+                i128::from(weight) * (30 + i128::from(reps)),
+            )),
             _ => None,
         },
     }
@@ -134,12 +154,12 @@ fn metric(kind: Kind, weight_milli: Option<i64>, reps: Option<i64>) -> Option<i1
 /// podium matters for ranking; a set that fails to medal can never displace
 /// a podium entry (it ranked below all of them).
 #[derive(Clone, Debug, Default)]
-struct Podium(Vec<i128>);
+struct Podium(Vec<Metric>);
 
 impl Podium {
     /// Rank the candidate against the podium (1 = beats everything) and
     /// admit it if it medals. Ties rank below the earlier achiever.
-    fn rank_and_admit(&mut self, candidate: i128) -> Option<Level> {
+    fn rank_and_admit(&mut self, candidate: Metric) -> Option<Level> {
         let beaten_by = self.0.iter().filter(|prior| **prior >= candidate).count();
         let level = Level::from_rank(beaten_by + 1)?;
         self.0.push(candidate);
@@ -158,7 +178,7 @@ pub fn derive<'a>(
     let mut badges: HashMap<String, Vec<Badge>> = HashMap::new();
 
     for set in sets_in_chronological_order {
-        if EXCLUDED_SET_TYPES.contains(&set.set_type) {
+        if set.set_type == SetType::Warmup {
             continue;
         }
         for kind in KIND_ORDER {
@@ -189,11 +209,11 @@ pub fn derive<'a>(
 pub fn current_bests<'a>(
     sets_in_chronological_order: impl IntoIterator<Item = SetSource<'a>>,
 ) -> HashMap<String, Vec<CurrentBest>> {
-    let mut bests: HashMap<String, [Option<(i128, CurrentBest)>; KIND_ORDER.len()]> =
+    let mut bests: HashMap<String, [Option<(Metric, CurrentBest)>; KIND_ORDER.len()]> =
         HashMap::new();
 
     for set in sets_in_chronological_order {
-        if EXCLUDED_SET_TYPES.contains(&set.set_type) {
+        if set.set_type == SetType::Warmup {
             continue;
         }
         for kind in KIND_ORDER {
@@ -249,7 +269,7 @@ mod tests {
         SetSource {
             id,
             exercise_name: exercise,
-            set_type,
+            set_type: set_type.parse().unwrap(),
             weight_milli,
             reps,
         }
@@ -316,6 +336,40 @@ mod tests {
                 .map(|best| best.set_id.as_str()),
             Some("first")
         );
+    }
+
+    #[test]
+    fn max_weight_breaks_equal_loads_by_reps_then_keeps_the_earliest_exact_tie() {
+        let history = [
+            set("two", "Deadlift", "NORMAL_SET", Some(405_000), Some(2)),
+            set("three", "Deadlift", "NORMAL_SET", Some(405_000), Some(3)),
+            set(
+                "three-tie",
+                "Deadlift",
+                "NORMAL_SET",
+                Some(405_000),
+                Some(3),
+            ),
+            set("lighter", "Deadlift", "NORMAL_SET", Some(400_000), Some(20)),
+        ];
+
+        let current = current_bests(history);
+        let max_weight = current["Deadlift"]
+            .iter()
+            .find(|best| best.kind == Kind::MaxWeight)
+            .unwrap();
+        assert_eq!(max_weight.set_id, "three");
+
+        let historical = derive(history);
+        let level = |id: &str| {
+            historical[id]
+                .iter()
+                .find(|badge| badge.kind == Kind::MaxWeight)
+                .map(|badge| badge.level)
+        };
+        assert_eq!(level("two"), Some(Level::Gold));
+        assert_eq!(level("three"), Some(Level::Gold));
+        assert_eq!(level("three-tie"), Some(Level::Silver));
     }
 
     #[test]
@@ -422,9 +476,9 @@ mod tests {
     }
 
     #[test]
-    fn failure_sets_compete() {
+    fn every_non_warmup_structural_type_competes() {
         let derived = derive([
-            set("a", "Curl", "FAILURE_SET", Some(50_000), Some(12)),
+            set("a", "Curl", "DROP_SET", Some(50_000), Some(12)),
             set("b", "Curl", "NORMAL_SET", Some(50_000), Some(12)),
         ]);
         assert_eq!(derived["a"][0].level, Level::Gold);

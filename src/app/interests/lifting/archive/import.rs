@@ -66,6 +66,7 @@ pub struct IncomingSet {
     pub weight_unit: String,
     pub reps: Option<i64>,
     pub effort_hundredths: Option<i64>,
+    pub failure: bool,
     pub distance_milli: Option<i64>,
     pub set_time_seconds: Option<i64>,
     pub set_type: String,
@@ -300,7 +301,27 @@ fn parse_set(value: &Value) -> Result<IncomingSet, String> {
     let Some(set) = value.as_object() else {
         return Err("must be an object".to_string());
     };
-    if !validate::has_only_keys(
+    let current_shape = validate::has_only_keys(
+        set,
+        &[
+            "id",
+            "workout_id",
+            "ordinal",
+            "exercise_name",
+            "raw_exercise_name",
+            "exercise_note",
+            "superset_id",
+            "weight_milli",
+            "weight_unit",
+            "reps",
+            "effort_hundredths",
+            "failure",
+            "distance_milli",
+            "set_time_seconds",
+            "set_type",
+        ],
+    );
+    let legacy_shape = validate::has_only_keys(
         set,
         &[
             "id",
@@ -318,7 +339,8 @@ fn parse_set(value: &Value) -> Result<IncomingSet, String> {
             "set_time_seconds",
             "set_type",
         ],
-    ) {
+    );
+    if !current_shape && !legacy_shape {
         return Err("contains unknown or missing fields".to_string());
     }
     let id = match set.get("id").and_then(Value::as_str) {
@@ -345,19 +367,36 @@ fn parse_set(value: &Value) -> Result<IncomingSet, String> {
         return Err("bad weight_unit".to_string());
     }
     let reps = validate::nullable_integer_value(set.get("reps"), 0, 1_000_000).ok_or("bad reps")?;
-    let effort_hundredths =
+    let mut effort_hundredths =
         validate::nullable_integer_value(set.get("effort_hundredths"), 0, 100_000)
             .ok_or("bad effort_hundredths")?;
+    let mut failure = if current_shape {
+        validate::bool_value(set.get("failure")).ok_or("bad failure")?
+    } else {
+        false
+    };
     let distance_milli =
         validate::nullable_integer_value(set.get("distance_milli"), 0, 1_000_000_000)
             .ok_or("bad distance_milli")?;
     let set_time_seconds =
         validate::nullable_integer_value(set.get("set_time_seconds"), 0, 604_800)
             .ok_or("bad set_time_seconds")?;
+    let legacy_failure = set.get("set_type").and_then(Value::as_str) == Some("FAILURE_SET");
     let set_type = match set.get("set_type").and_then(Value::as_str) {
+        // Compatibility for an older sync client during rollout. Failure is
+        // authoritative, so any numeric effort beside the legacy marker is
+        // deliberately discarded rather than reconciled.
+        Some("FAILURE_SET") => {
+            failure = true;
+            effort_hundredths = None;
+            "NORMAL_SET"
+        }
         Some(set_type) if validate::valid_set_type(set_type) => set_type,
         _ => return Err("bad set_type".to_string()),
     };
+    if current_shape && failure && effort_hundredths.is_some() && !legacy_failure {
+        return Err("failure cannot also have effort_hundredths".to_string());
+    }
     Ok(IncomingSet {
         id: id.to_string(),
         workout_id: workout_id.to_string(),
@@ -370,6 +409,7 @@ fn parse_set(value: &Value) -> Result<IncomingSet, String> {
         weight_unit: "lbs".to_string(),
         reps,
         effort_hundredths,
+        failure,
         distance_milli,
         set_time_seconds,
         set_type: set_type.to_string(),
@@ -423,6 +463,7 @@ mod tests {
             "weight_unit": "lbs",
             "reps": 5,
             "effort_hundredths": null,
+            "failure": false,
             "distance_milli": null,
             "set_time_seconds": null,
             "set_type": "NORMAL_SET"
@@ -445,6 +486,26 @@ mod tests {
         assert_eq!(w.eastern_offset_minutes, -240);
         assert!(!parsed.sets[0].incomplete, "reps recorded");
         assert_eq!(parsed.exercises[0].tags.len(), 2);
+    }
+
+    #[test]
+    fn legacy_failure_wins_over_numeric_effort_but_current_input_must_be_unambiguous() {
+        let mut legacy = payload();
+        legacy["sets"][0].as_object_mut().unwrap().remove("failure");
+        legacy["sets"][0]["set_type"] = Value::from("FAILURE_SET");
+        legacy["sets"][0]["effort_hundredths"] = Value::from(900);
+        let parsed = parse_import_payload(&legacy).unwrap();
+        assert_eq!(parsed.sets[0].set_type, "NORMAL_SET");
+        assert!(parsed.sets[0].failure);
+        assert_eq!(parsed.sets[0].effort_hundredths, None);
+
+        let mut current = payload();
+        current["sets"][0]["failure"] = Value::from(true);
+        current["sets"][0]["effort_hundredths"] = Value::from(900);
+        assert_eq!(
+            parse_import_payload(&current).unwrap_err(),
+            "sets[0]: failure cannot also have effort_hundredths"
+        );
     }
 
     #[test]

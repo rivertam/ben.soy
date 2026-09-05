@@ -25,7 +25,9 @@ pub use queue::{
     apply_response, classify_response, dismiss_receipt, ordered_outbox, pending_outbox,
     publication,
 };
-pub use text::{hundredths_text, js_trim, pounds_to_milli, utf16_len, valid_set_type, weight_text};
+pub use text::{
+    SetType, hundredths_text, js_trim, pounds_to_milli, utf16_len, valid_set_type, weight_text,
+};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const PUBLISH_PATH: &str = "/fitness/entry/publish";

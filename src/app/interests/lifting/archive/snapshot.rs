@@ -165,21 +165,30 @@ pub fn build(
             .then_with(|| a.workout_id.cmp(&b.workout_id))
             .then_with(|| a.ordinal.cmp(&b.ordinal))
     });
-    let badges = records::derive(chronological.iter().map(|row| SetSource {
-        id: &row.id,
-        exercise_name: &row.exercise_name,
-        set_type: &row.set_type,
-        weight_milli: row.weight_milli,
-        reps: row.reps,
-    }));
-    let current_bests_by_exercise =
-        records::current_bests(chronological.iter().map(|row| SetSource {
+    let badges = records::derive(chronological.iter().map(|row| {
+        SetSource {
             id: &row.id,
             exercise_name: &row.exercise_name,
-            set_type: &row.set_type,
+            set_type: row
+                .set_type
+                .parse()
+                .expect("archive set_type was validated"),
             weight_milli: row.weight_milli,
             reps: row.reps,
-        }));
+        }
+    }));
+    let current_bests_by_exercise = records::current_bests(chronological.iter().map(|row| {
+        SetSource {
+            id: &row.id,
+            exercise_name: &row.exercise_name,
+            set_type: row
+                .set_type
+                .parse()
+                .expect("archive set_type was validated"),
+            weight_milli: row.weight_milli,
+            reps: row.reps,
+        }
+    }));
 
     let mut sets_by_workout: HashMap<&str, Vec<&LiftSet>> = HashMap::new();
     for row in &chronological {
@@ -210,6 +219,7 @@ pub fn build(
                     weight_unit: set.weight_unit.clone(),
                     reps: set.reps.map(to_u64),
                     effort_hundredths: set.effort_hundredths.map(to_u64),
+                    failure: set.failure,
                     distance_milli: set.distance_milli.map(to_u64),
                     set_time_seconds: set.set_time_seconds.map(to_u64),
                     set_type: set.set_type.clone(),
@@ -485,7 +495,11 @@ fn build_calendar(version: i64, workouts: &[SnapWorkout]) -> api::Calendar {
     let mut by_date: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
     for workout in workouts {
         for set in &workout.sets {
-            let points = scoring::set_volume_points(&set.wire.set_type, set.wire.effort_hundredths);
+            let points = scoring::set_volume_points(
+                &set.wire.set_type,
+                set.wire.effort_hundredths,
+                set.wire.failure,
+            );
             *by_date.entry(workout.local_date.as_str()).or_default() += points;
         }
     }
@@ -549,6 +563,7 @@ impl Snapshot {
                     exercise_name: set.wire.exercise_name.as_str(),
                     set_type: set.wire.set_type.as_str(),
                     effort_hundredths: set.wire.effort_hundredths,
+                    failure: set.wire.failure,
                     tags: self
                         .tags_by_exercise
                         .get(&set.wire.exercise_name)
@@ -575,8 +590,11 @@ impl Snapshot {
         for workout in &self.workouts {
             for set in &workout.sets {
                 if self.matches(filters, needle.as_deref(), workout, set) {
-                    let points =
-                        scoring::set_volume_points(&set.wire.set_type, set.wire.effort_hundredths);
+                    let points = scoring::set_volume_points(
+                        &set.wire.set_type,
+                        set.wire.effort_hundredths,
+                        set.wire.failure,
+                    );
                     *by_date.entry(workout.local_date.as_str()).or_default() += points;
                 }
             }
@@ -681,6 +699,7 @@ impl Snapshot {
                     volume_points = volume_points.saturating_add(scoring::set_volume_points(
                         set.wire.set_type.as_str(),
                         set.wire.effort_hundredths,
+                        set.wire.failure,
                     ));
                     if seen.insert(set.wire.exercise_name.as_str()) {
                         exercises.push(set.wire.exercise_name.clone());
@@ -1009,6 +1028,7 @@ mod tests {
             weight_unit: "lbs".into(),
             reps,
             effort_hundredths: Some(800),
+            failure: false,
             distance_milli: None,
             set_time_seconds: None,
             set_type: "NORMAL_SET".into(),

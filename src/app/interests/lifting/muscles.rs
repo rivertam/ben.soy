@@ -538,6 +538,7 @@ mod tests {
                     weight_unit: "lbs".into(),
                     reps: Some(5),
                     effort_hundredths: None,
+                    failure: false,
                     distance_milli: None,
                     set_time_seconds: None,
                     set_type: "NORMAL_SET".into(),

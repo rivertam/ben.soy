@@ -57,7 +57,8 @@ self.addEventListener("message", (event) => {
   const port = event.ports?.[0];
   if (!port) return;
   const request = event.data;
-  const work = enqueueOperation(() => dispatch(request));
+  const sourceClientId = event.source?.id || null;
+  const work = enqueueOperation(() => dispatch(request, sourceClientId));
   event.waitUntil(
     work.then(
       (value) => {
@@ -127,7 +128,7 @@ async function wasm() {
   }
 }
 
-async function dispatch(request) {
+async function dispatch(request, sourceClientId) {
   if (
     !request ||
     request.protocol !== self.FITNESS_ENTRY_WASM.protocol ||
@@ -142,28 +143,30 @@ async function dispatch(request) {
 
   switch (request.method) {
     case "bootstrap":
-      return bootstrap(module, db, payload);
+      return bootstrap(module, db, payload, sourceClientId);
     case "snapshot":
     case "derive":
       return snapshot(module, db, payload.context);
     case "transition":
-      return transitionDraft(module, db, payload);
+      return transitionDraft(module, db, payload, sourceClientId);
     case "finalize":
-      return finalizeDraft(module, db, payload);
+      return finalizeDraft(module, db, payload, sourceClientId);
     case "flush":
-      return flushAndSnapshot(module, db, payload.context);
+      return flushAndSnapshot(module, db, payload.context, sourceClientId);
     case "flush_only":
-      return flushOutbox(db);
+      return flushOutbox(db, sourceClientId);
+    case "draft_status":
+      return draftStatus(db);
     case "restore":
-      return restoreWorkout(module, db, payload);
+      return restoreWorkout(module, db, payload, sourceClientId);
     case "dismiss":
-      return dismissReceipt(module, db, payload);
+      return dismissReceipt(module, db, payload, sourceClientId);
     default:
       throw new Error("Fitness entry request names an unknown operation.");
   }
 }
 
-async function bootstrap(module, db, payload) {
+async function bootstrap(module, db, payload, sourceClientId) {
   const stored = await readState(db);
   const output = decode(
     module.fitness_bootstrap(
@@ -180,7 +183,7 @@ async function bootstrap(module, db, payload) {
     restored_start_reset: output.restored_start_reset,
     legacy_storage_key: LEGACY_STORAGE_KEY,
   });
-  await broadcastChange();
+  await broadcastChange(sourceClientId);
   return value;
 }
 
@@ -194,7 +197,7 @@ async function snapshot(module, db, context = {}) {
   return composeSnapshot(db, state.draft, state.guide, derived);
 }
 
-async function transitionDraft(module, db, payload) {
+async function transitionDraft(module, db, payload, sourceClientId) {
   const state = await requireState(db);
   const output = decode(
     module.fitness_transition(
@@ -211,11 +214,11 @@ async function transitionDraft(module, db, payload) {
     effect: output.effect,
     error: output.error,
   });
-  await broadcastChange();
+  await broadcastChange(sourceClientId);
   return value;
 }
 
-async function finalizeDraft(module, db, payload) {
+async function finalizeDraft(module, db, payload, sourceClientId) {
   const state = await requireState(db);
   const queueId = localId();
   const output = decode(
@@ -242,8 +245,8 @@ async function finalizeDraft(module, db, payload) {
   // Arm browser-managed retry while this foreground enqueue is known to
   // exist. A sync event itself must never re-register its firing tag.
   await registerBackgroundSync();
-  await broadcastChange();
-  const flush = await flushOutbox(db);
+  await broadcastChange(sourceClientId);
+  const flush = await flushOutbox(db, sourceClientId);
   const derived = decode(
     module.fitness_derive(
       JSON.stringify({
@@ -259,14 +262,14 @@ async function finalizeDraft(module, db, payload) {
   });
 }
 
-async function flushAndSnapshot(module, db, context = {}) {
-  const flush = await flushOutbox(db);
+async function flushAndSnapshot(module, db, context = {}, sourceClientId = null) {
+  const flush = await flushOutbox(db, sourceClientId);
   const value = await snapshot(module, db, context);
   value.flush = flush;
   return value;
 }
 
-async function restoreWorkout(module, db, payload) {
+async function restoreWorkout(module, db, payload, sourceClientId) {
   const state = await requireState(db);
   const queued = await readOutbox(db, payload.queue_id);
   if (!queued) throw new Error("That queued workout no longer exists.");
@@ -294,21 +297,21 @@ async function restoreWorkout(module, db, payload) {
     effect: "reset",
     restored_start_reset: output.restored_start_reset,
   });
-  await broadcastChange();
+  await broadcastChange(sourceClientId);
   return value;
 }
 
-async function dismissReceipt(module, db, payload) {
+async function dismissReceipt(module, db, payload, sourceClientId) {
   const queued = await readOutbox(db, payload.queue_id);
   if (!queued) throw new Error("That Workout Receipt no longer exists.");
   module.fitness_dismiss(JSON.stringify(queued));
   await deleteOutbox(db, queued.queue_id);
   const value = await snapshot(module, db, payload.context);
-  await broadcastChange();
+  await broadcastChange(sourceClientId);
   return value;
 }
 
-async function flushOutbox(db) {
+async function flushOutbox(db, sourceClientId = null) {
   const module = await wasm();
   const pending = decode(
     module.fitness_pending_outbox(JSON.stringify(await readAllOutbox(db))),
@@ -361,12 +364,23 @@ async function flushOutbox(db) {
 
   const stillPending =
     decode(module.fitness_pending_outbox(JSON.stringify(await readAllOutbox(db)))).length > 0;
-  if (changed) await broadcastChange();
+  if (changed) await broadcastChange(sourceClientId);
   return {
     auth_blocked: authBlocked,
     retry_pending: retryPending,
     pending: stillPending,
   };
+}
+
+async function draftStatus(db) {
+  const { draft } = await readState(db);
+  const hasDraft = Boolean(
+    draft &&
+      (draft.title !== "Workout" ||
+        (typeof draft.notes === "string" && draft.notes.trim() !== "") ||
+        (Array.isArray(draft.exercises) && draft.exercises.length > 0)),
+  );
+  return { has_draft: hasDraft };
 }
 
 async function composeSnapshot(db, draft, guide, derived, extras = {}) {
@@ -388,9 +402,10 @@ async function registerBackgroundSync() {
   }
 }
 
-async function broadcastChange() {
+async function broadcastChange(excludeClientId = null) {
   const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   for (const client of clients) {
+    if (client.id === excludeClientId) continue;
     client.postMessage({
       protocol: self.FITNESS_ENTRY_WASM.protocol,
       type: "fitness-entry-changed",

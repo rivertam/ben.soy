@@ -94,6 +94,9 @@ async function start(root) {
           if (generation !== searchGeneration) return;
           snapshot = value;
           renderGuidance(value);
+          if (value.derived.search.length > 0) {
+            requestAnimationFrame(scrollSearchIntoView);
+          }
         }, reportFailure);
         return;
       }
@@ -276,6 +279,7 @@ async function start(root) {
           set_id: control.dataset.setId,
           effort_hundredths:
             control.dataset.effortHundredths === "" ? null : Number(control.dataset.effortHundredths),
+          failure: control.dataset.failure === "true",
         },
         { exercises: true },
       );
@@ -697,12 +701,17 @@ async function start(root) {
     for (const option of row.querySelectorAll("[data-entry-rir-option]")) {
       const raw = option.dataset.effortHundredths;
       const effort = raw === "" ? null : Number(raw);
-      const selected = set.effort === "" ? effort === null : view.effort_hundredths === effort;
+      const failure = option.dataset.failure === "true";
+      const selected = failure
+        ? view.failure
+        : !view.failure && (set.effort === "" ? effort === null : view.effort_hundredths === effort);
       option.name = `entry-rir-${set.id}`;
       option.checked = selected;
       option.setAttribute(
         "aria-label",
-        effort === null
+        failure
+          ? `Failure, set ${setNumber}`
+          : effort === null
           ? `Do not record reps in reserve for set ${setNumber}`
           : `${1000 - effort === 50 ? "Half a" : String((1000 - effort) / 100)} reps in reserve, set ${setNumber}`,
       );
@@ -726,7 +735,7 @@ async function start(root) {
     });
 
     const directions = root.querySelector("[data-entry-directions]");
-    if (directions) directions.hidden = value.derived.has_completed_set || context.query.trim() !== "";
+    if (directions) directions.hidden = value.derived.has_active_exercise || context.query.trim() !== "";
     for (const button of directions?.querySelectorAll("[data-direction]") || []) {
       const active = button.dataset.direction === context.direction;
       button.setAttribute("aria-pressed", String(active));
@@ -751,7 +760,7 @@ async function start(root) {
     if (starters) starters.hidden = value.derived.starters.length === 0 || context.query.trim() !== "";
 
     const fork = root.querySelector("[data-entry-fork]");
-    if (fork) fork.hidden = !value.derived.has_completed_set;
+    if (fork) fork.hidden = !value.derived.has_active_exercise;
     renderLane("deepen", value.derived.deepen);
     renderLane("expand", value.derived.expand);
 
@@ -798,6 +807,16 @@ async function start(root) {
     node.querySelector("[data-entry-suggestion-choice]").textContent = suggestion.name;
     node.querySelector("[data-entry-suggestion-reason]").textContent = suggestion.reason;
     node.querySelector("[data-entry-suggestion-mark]").textContent = suggestion.mark;
+  }
+
+  function scrollSearchIntoView() {
+    const scroller = root.querySelector(".entry-scroll");
+    const search = root.querySelector("[data-entry-picker-search]");
+    if (!scroller || !search || context.query.trim() === "") return;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const searchRect = search.getBoundingClientRect();
+    const target = scroller.scrollTop + searchRect.top - scrollerRect.top;
+    scroller.scrollTo({ top: Math.max(0, target), behavior: "auto" });
   }
 
   function renderQueue(value) {

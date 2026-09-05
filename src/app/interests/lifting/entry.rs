@@ -10,7 +10,9 @@ use std::{
 };
 
 use benjisponge::data::Data;
-use fitness_entry_core::{ExerciseGuide, FinalizedWorkout, GuideConfig, GuideMark, LoadPreset};
+use fitness_entry_core::{
+    ExerciseGuide, FinalizedWorkout, GuideConfig, GuideMark, LoadPreset, SetType,
+};
 use jiff::ToSpan;
 use topcoat::{
     Result,
@@ -50,24 +52,32 @@ const LOGIN_REDIRECT: &str = "/login?next=%2Ffitness%2Fentry";
 const BODY_LIMIT_BYTES: usize = 64 * 1024;
 const NO_STORE: &str = "no-store";
 const ENTRY_JS: Asset = asset!("./entry.js");
-const RIR_OPTIONS: [(&str, &str); 10] = [
-    ("", "—"),
-    ("1000", "0"),
-    ("950", "0.5"),
-    ("900", "1"),
-    ("850", "1.5"),
-    ("800", "2"),
-    ("750", "2.5"),
-    ("700", "3"),
-    ("650", "3.5"),
-    ("600", "4"),
+const RIR_OPTIONS: [(&str, &str, bool); 11] = [
+    ("", "—", false),
+    ("", "FAIL", true),
+    ("1000", "0", false),
+    ("950", "0.5", false),
+    ("900", "1", false),
+    ("850", "1.5", false),
+    ("800", "2", false),
+    ("750", "2.5", false),
+    ("700", "3", false),
+    ("650", "3.5", false),
+    ("600", "4", false),
+];
+const SET_TYPE_OPTIONS: [(SetType, &str); 5] = [
+    (SetType::Normal, "work"),
+    (SetType::Warmup, "warm"),
+    (SetType::Drop, "drop"),
+    (SetType::PartialReps, "partial"),
+    (SetType::NegativeReps, "negative"),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LoadHistorySet {
     weight_milli: Option<i64>,
     reps: Option<u64>,
-    set_type: String,
+    set_type: SetType,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -580,12 +590,9 @@ async fn set_template() -> Result {
                     <span class="entry-set__number" data-entry-set-number="">"1"</span>
                     <span class="entry-set__type" data-entry-set-type="">"work"</span>
                     <select data-entry-field="setType" aria-label="Set type">
-                        <option value="NORMAL_SET">"work"</option>
-                        <option value="WARMUP_SET">"warm"</option>
-                        <option value="FAILURE_SET">"fail"</option>
-                        <option value="DROP_SET">"drop"</option>
-                        <option value="PARTIAL_REPS_SET">"partial"</option>
-                        <option value="NEGATIVE_REPS_SET">"negative"</option>
+                        for (set_type, label) in SET_TYPE_OPTIONS {
+                            <option value=(set_type.as_str())>(label)</option>
+                        }
                     </select>
                 </label>
                 <label class="entry-set__field entry-set__field--weight">
@@ -688,7 +695,7 @@ async fn set_template() -> Result {
                     >
                         <span class="entry-rir-picker__label" aria-hidden="true">"RIR"</span>
                         <div class="entry-rir-options">
-                            for (effort_hundredths, label) in RIR_OPTIONS {
+                            for (effort_hundredths, label, failure) in RIR_OPTIONS {
                                 <label class="entry-rir-option">
                                     <input
                                         type="radio"
@@ -697,6 +704,7 @@ async fn set_template() -> Result {
                                         data-action="set-rir"
                                         data-entry-rir-option=""
                                         data-effort-hundredths=(effort_hundredths)
+                                        data-failure=(failure)
                                         data-set-action=""
                                         aria-label=(label)
                                     />
@@ -755,7 +763,10 @@ async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, S
                 .push(LoadHistorySet {
                     weight_milli: set.weight_milli,
                     reps: set.reps,
-                    set_type: set.set_type.clone(),
+                    set_type: set
+                        .set_type
+                        .parse()
+                        .expect("snapshot set type was validated"),
                 });
         }
         for (name, sets) in session_sets {
@@ -814,6 +825,7 @@ async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, S
         let bodyweight = tags
             .iter()
             .any(|(kind, value)| kind == "equipment" && value == "bodyweight");
+        let (high_fatigue, high_axial_load) = fatigue_profile(&name, &movements, tags);
         let marks: Vec<GuideMark> = snapshot
             .exercise_current_bests(&name)
             .iter()
@@ -842,6 +854,8 @@ async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, S
         exercises.push(ExerciseGuide {
             name,
             bodyweight,
+            high_fatigue,
+            high_axial_load,
             last_date: row.last_date.clone(),
             set_count: row.set_count,
             workout_count: row.workout_ids.len(),
@@ -931,36 +945,66 @@ fn load_presets(history: &ExerciseHistory, bodyweight: bool) -> Vec<LoadPreset> 
     let mut presets: Vec<LoadPreset> = warmups
         .into_iter()
         .take(2)
-        .map(|weight_milli| LoadPreset::new("warm", weight_milli, "WARMUP_SET", bodyweight))
+        .map(|weight_milli| LoadPreset::new("warm", weight_milli, SetType::Warmup, bodyweight))
         .collect();
     presets.push(LoadPreset::new(
         "work",
         work_weight,
-        "NORMAL_SET",
+        SetType::Normal,
         bodyweight,
     ));
     presets
 }
 
+fn fatigue_profile(name: &str, movements: &[String], tags: &[(String, String)]) -> (bool, bool) {
+    let name = name.to_ascii_lowercase();
+    let has_movement = |value: &str| movements.iter().any(|movement| movement == value);
+    let has_equipment = |value: &str| {
+        tags.iter()
+            .any(|(kind, candidate)| kind == "equipment" && candidate == value)
+    };
+    let externally_stabilized = has_equipment("machine")
+        || has_equipment("cable")
+        || has_equipment("smith-machine")
+        || name.contains("machine")
+        || name.contains("leg press")
+        || name.contains("hack squat");
+    let named_axial_hinge = name.contains("deadlift") || name.contains("good morning");
+    let named_axial_squat = name.contains("barbell")
+        || name.contains("zercher")
+        || name.contains("front squat")
+        || name.contains("back squat")
+        || name == "full squat";
+    let high_axial_load = !externally_stabilized
+        && (named_axial_hinge || (has_movement("squat-type") && named_axial_squat));
+    let free_loaded = has_equipment("barbell")
+        || has_equipment("sandbag")
+        || has_equipment("landmine")
+        || name.contains("barbell");
+    let major_compound = [
+        "squat-type",
+        "hinge",
+        "horizontal-push",
+        "horizontal-pull",
+        "vertical-push",
+        "vertical-pull",
+    ]
+    .iter()
+    .any(|movement| has_movement(movement));
+    (
+        high_axial_load || (free_loaded && major_compound),
+        high_axial_load,
+    )
+}
+
 fn session_work_load(session: &ExerciseSession) -> Option<Option<i64>> {
-    let normal = modal_load(
+    modal_load(
         session
             .sets
             .iter()
-            .filter(|set| set.set_type == "NORMAL_SET" && set.reps.is_some_and(|reps| reps >= 1))
+            .filter(|set| set.set_type == SetType::Normal && set.reps.is_some_and(|reps| reps >= 1))
             .map(|set| set.weight_milli),
-    );
-    normal.or_else(|| {
-        modal_load(
-            session
-                .sets
-                .iter()
-                .filter(|set| {
-                    set.set_type == "FAILURE_SET" && set.reps.is_some_and(|reps| reps >= 1)
-                })
-                .map(|set| set.weight_milli),
-        )
-    })
+    )
 }
 
 fn modal_load(weights: impl Iterator<Item = Option<i64>>) -> Option<Option<i64>> {
@@ -995,7 +1039,7 @@ fn valid_explicit_warmups(
     let mut warmups: Vec<Option<i64>> = session
         .sets
         .iter()
-        .filter(|set| set.set_type == "WARMUP_SET" && set.reps.is_some_and(|reps| reps >= 1))
+        .filter(|set| set.set_type == SetType::Warmup && set.reps.is_some_and(|reps| reps >= 1))
         .map(|set| set.weight_milli)
         .filter(|weight| valid_warmup(*weight, work_weight, bodyweight))
         .collect();
@@ -1340,7 +1384,7 @@ mod tests {
         LoadHistorySet {
             weight_milli,
             reps,
-            set_type: set_type.to_string(),
+            set_type: set_type.parse().unwrap(),
         }
     }
 
@@ -1359,7 +1403,7 @@ mod tests {
         weight_milli: Option<i64>,
         set_type: &'static str,
     ) -> LoadPreset {
-        LoadPreset::new(label, weight_milli, set_type, false)
+        LoadPreset::new(label, weight_milli, set_type.parse().unwrap(), false)
     }
 
     fn bodyweight_preset(
@@ -1367,7 +1411,7 @@ mod tests {
         weight_milli: Option<i64>,
         set_type: &'static str,
     ) -> LoadPreset {
-        LoadPreset::new(label, weight_milli, set_type, true)
+        LoadPreset::new(label, weight_milli, set_type.parse().unwrap(), true)
     }
 
     #[test]
@@ -1429,6 +1473,9 @@ mod tests {
             "window.addEventListener(\"pageshow\"",
             "document.addEventListener(\"visibilitychange\"",
             "localStorage.removeItem(snapshot.legacy_storage_key)",
+            "requestAnimationFrame(scrollSearchIntoView)",
+            "scroller.scrollTo({ top: Math.max(0, target)",
+            "failure: control.dataset.failure === \"true\"",
         ] {
             assert!(ENTRY_JS_SOURCE.contains(needle), "entry.js lost {needle:?}");
         }
@@ -1468,29 +1515,29 @@ mod tests {
     }
 
     #[test]
-    fn recent_positive_history_uses_session_modes_then_median() {
+    fn recent_positive_history_uses_all_normal_efforts_in_session_modes_then_median() {
         let history = load_history(vec![
             vec![
                 load_set("NORMAL_SET", Some(135_000), Some(8)),
                 load_set("NORMAL_SET", Some(135_000), Some(8)),
                 load_set("NORMAL_SET", Some(140_000), Some(6)),
-                load_set("FAILURE_SET", Some(200_000), Some(2)),
-                load_set("FAILURE_SET", Some(200_000), Some(2)),
-                load_set("FAILURE_SET", Some(200_000), Some(2)),
+                load_set("NORMAL_SET", Some(200_000), Some(2)),
+                load_set("NORMAL_SET", Some(200_000), Some(2)),
+                load_set("NORMAL_SET", Some(200_000), Some(2)),
             ],
             vec![load_set("NORMAL_SET", Some(150_000), Some(5))],
             vec![
                 load_set("NORMAL_SET", Some(225_000), Some(0)),
-                load_set("FAILURE_SET", Some(120_000), Some(10)),
+                load_set("NORMAL_SET", Some(120_000), Some(10)),
             ],
         ]);
 
         assert_eq!(
             load_presets(&history, false),
             vec![
-                preset("warm", Some(70_000), "WARMUP_SET"),
-                preset("warm", Some(100_000), "WARMUP_SET"),
-                preset("work", Some(135_000), "NORMAL_SET"),
+                preset("warm", Some(75_000), "WARMUP_SET"),
+                preset("warm", Some(115_000), "WARMUP_SET"),
+                preset("work", Some(150_000), "NORMAL_SET"),
             ]
         );
 
@@ -1656,21 +1703,51 @@ mod tests {
     }
 
     #[test]
-    fn rir_picker_maps_half_steps_to_canonical_rpe_hundredths() {
+    fn entry_options_cover_effort_axis_and_every_structural_set_type() {
         assert_eq!(
             RIR_OPTIONS,
             [
-                ("", "—"),
-                ("1000", "0"),
-                ("950", "0.5"),
-                ("900", "1"),
-                ("850", "1.5"),
-                ("800", "2"),
-                ("750", "2.5"),
-                ("700", "3"),
-                ("650", "3.5"),
-                ("600", "4"),
+                ("", "—", false),
+                ("", "FAIL", true),
+                ("1000", "0", false),
+                ("950", "0.5", false),
+                ("900", "1", false),
+                ("850", "1.5", false),
+                ("800", "2", false),
+                ("750", "2.5", false),
+                ("700", "3", false),
+                ("650", "3.5", false),
+                ("600", "4", false),
             ]
+        );
+        let mut rendered: Vec<SetType> = SET_TYPE_OPTIONS
+            .iter()
+            .map(|(set_type, _)| *set_type)
+            .collect();
+        rendered.sort_unstable();
+        let mut domain = SetType::ALL.to_vec();
+        domain.sort_unstable();
+        assert_eq!(rendered, domain);
+    }
+
+    #[test]
+    fn fatigue_profiles_separate_axial_compounds_from_stabilized_variants() {
+        let squat = vec!["squat-type".to_string()];
+        let hinge = vec!["hinge".to_string()];
+        let barbell = vec![("equipment".to_string(), "barbell".to_string())];
+        let machine = vec![("equipment".to_string(), "machine".to_string())];
+
+        assert_eq!(
+            fatigue_profile("Full Squat", &squat, &barbell),
+            (true, true)
+        );
+        assert_eq!(
+            fatigue_profile("Sumo Deadlift", &hinge, &barbell),
+            (true, true)
+        );
+        assert_eq!(
+            fatigue_profile("Hack Squat Machine", &squat, &machine),
+            (false, false)
         );
     }
 

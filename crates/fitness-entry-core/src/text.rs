@@ -1,13 +1,98 @@
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
 use crate::{MAX_EFFORT_HUNDREDTHS, MAX_WEIGHT_MILLI, MIN_EFFORT_HUNDREDTHS};
 
-pub const SET_TYPES: [&str; 6] = [
-    "WARMUP_SET",
-    "NORMAL_SET",
-    "FAILURE_SET",
-    "PARTIAL_REPS_SET",
-    "DROP_SET",
-    "NEGATIVE_REPS_SET",
-];
+/// The five structural kinds a set can have. Failure is deliberately absent:
+/// it is an effort endpoint, represented by `failure` beside numeric RPE.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+pub enum SetType {
+    #[serde(rename = "WARMUP_SET")]
+    Warmup,
+    #[default]
+    #[serde(rename = "NORMAL_SET")]
+    Normal,
+    #[serde(rename = "PARTIAL_REPS_SET")]
+    PartialReps,
+    #[serde(rename = "DROP_SET")]
+    Drop,
+    #[serde(rename = "NEGATIVE_REPS_SET")]
+    NegativeReps,
+}
+
+impl SetType {
+    pub const ALL: [Self; 5] = [
+        Self::Warmup,
+        Self::Normal,
+        Self::PartialReps,
+        Self::Drop,
+        Self::NegativeReps,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warmup => "WARMUP_SET",
+            Self::Normal => "NORMAL_SET",
+            Self::PartialReps => "PARTIAL_REPS_SET",
+            Self::Drop => "DROP_SET",
+            Self::NegativeReps => "NEGATIVE_REPS_SET",
+        }
+    }
+
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Warmup => "WARM",
+            Self::Normal => "WORK",
+            Self::PartialReps => "PART",
+            Self::Drop => "DROP",
+            Self::NegativeReps => "NEG",
+        }
+    }
+
+    pub const fn spoken_label(self) -> &'static str {
+        match self {
+            Self::Warmup => "warm-up set",
+            Self::Normal => "working set",
+            Self::PartialReps => "partial-reps set",
+            Self::Drop => "drop set",
+            Self::NegativeReps => "negative-reps set",
+        }
+    }
+
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::Warmup => "warmup",
+            Self::Normal => "working",
+            Self::PartialReps => "partial",
+            Self::Drop => "drop",
+            Self::NegativeReps => "negative",
+        }
+    }
+}
+
+impl FromStr for SetType {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "WARMUP_SET" => Ok(Self::Warmup),
+            "NORMAL_SET" => Ok(Self::Normal),
+            "PARTIAL_REPS_SET" => Ok(Self::PartialReps),
+            "DROP_SET" => Ok(Self::Drop),
+            "NEGATIVE_REPS_SET" => Ok(Self::NegativeReps),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for SetType {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 pub fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
@@ -62,7 +147,7 @@ pub fn truncate_utf16(text: &str, max: usize) -> String {
 }
 
 pub fn valid_set_type(value: &str) -> bool {
-    SET_TYPES.contains(&value)
+    value.parse::<SetType>().is_ok()
 }
 
 pub fn safe_local_id(value: &str) -> bool {
@@ -177,6 +262,33 @@ pub fn hundredths_text(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_type_owns_its_wire_value_and_presentational_kind() {
+        let cases = [
+            (SetType::Warmup, "WARMUP_SET", "WARM", "warmup"),
+            (SetType::Normal, "NORMAL_SET", "WORK", "working"),
+            (SetType::PartialReps, "PARTIAL_REPS_SET", "PART", "partial"),
+            (SetType::Drop, "DROP_SET", "DROP", "drop"),
+            (
+                SetType::NegativeReps,
+                "NEGATIVE_REPS_SET",
+                "NEG",
+                "negative",
+            ),
+        ];
+        for (set_type, wire, label, kind) in cases {
+            assert_eq!(set_type.as_str(), wire);
+            assert_eq!(wire.parse::<SetType>(), Ok(set_type));
+            assert_eq!(set_type.short_label(), label);
+            assert_eq!(set_type.kind(), kind);
+            assert_eq!(
+                serde_json::to_string(&set_type).unwrap(),
+                format!("\"{wire}\"")
+            );
+        }
+        assert!("FAILURE_SET".parse::<SetType>().is_err());
+    }
 
     #[test]
     fn utf16_and_javascript_trim_semantics_are_explicit() {

@@ -26,7 +26,11 @@ async fn lifting(cx: &Cx) -> Result {
                 log_dialogs()
             }
             back_link(href: "/", label: "~")
-            <script type="module" src=(crate::app::interests::running::PWA_JS)></script>
+            <script
+                type="module"
+                src=(crate::app::interests::running::PWA_JS)
+                data-fitness-draft-resume=(can_log)
+            ></script>
         )
     }
 }

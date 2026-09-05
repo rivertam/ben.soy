@@ -17,6 +17,7 @@ body:has(.fitness-entry) {
 .fitness-entry {
   --entry-edge: clamp(0.75rem, 3.5vw, 1.25rem);
   --entry-control: 2.75rem;
+  --entry-delete-target: 3.25rem;
   --entry-affordance: 1.75rem;
   --entry-radius: 0.22rem;
   position: fixed;
@@ -790,7 +791,7 @@ body:has(.fitness-entry) {
     minmax(3.1rem, 0.72fr)
     minmax(3rem, 0.62fr)
     2.75rem
-    2.75rem;
+    var(--entry-delete-target);
   align-items: center;
   column-gap: 0.25rem;
   row-gap: 0;
@@ -933,11 +934,6 @@ body:has(.fitness-entry) {
 
 .entry-set__ordinal:is([data-kind="warm"], [data-kind="warmup"])::before {
   border-style: dashed;
-}
-
-.entry-set__ordinal:is([data-kind="fail"], [data-kind="failure"]) {
-  --entry-set-kind: var(--color-oxide-hot);
-  --entry-set-kind-bg: color-mix(in srgb, var(--color-oxide-hot) 8%, transparent);
 }
 
 .entry-set__ordinal[data-kind="drop"] {
@@ -1095,9 +1091,10 @@ body:has(.fitness-entry) {
 .entry-set__remove {
   position: relative;
   display: inline-grid;
-  width: var(--entry-control);
-  min-width: var(--entry-control);
-  height: var(--entry-control);
+  width: var(--entry-delete-target);
+  min-width: var(--entry-delete-target);
+  height: var(--entry-delete-target);
+  min-height: var(--entry-delete-target);
   padding: 0;
   place-items: center;
   color: color-mix(in srgb, var(--color-muted) 76%, transparent);
@@ -1105,10 +1102,12 @@ body:has(.fitness-entry) {
   border: 0;
   border-radius: 0;
   font-family: "Fira Mono", "Courier New", monospace;
-  font-size: 0.68rem;
+  font-size: 1.05rem;
 }
 
 .entry-set__remove::before {
+  width: 2.55rem;
+  height: 2.55rem;
   border-color: transparent;
 }
 
@@ -2062,8 +2061,8 @@ body:has(.fitness-entry) {
   }
 
   .entry-set__remove {
-    width: var(--entry-control);
-    min-width: var(--entry-control);
+    width: var(--entry-delete-target);
+    min-width: var(--entry-delete-target);
     grid-column: 2 / -1;
     grid-row: 2;
     justify-self: end;

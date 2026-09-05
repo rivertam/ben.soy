@@ -1,6 +1,11 @@
 const FITNESS_ENTRY_PROTOCOL = 1;
 let fitnessRegistration = null;
-let fitnessFlushId = 0;
+let fitnessRequestId = 0;
+const canResumeFitnessDraft = Boolean(
+  document.querySelector("script[data-fitness-draft-resume='true']"),
+);
+const isInstalledFitnessApp =
+  window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 
 if ("serviceWorker" in navigator) {
   fitnessRegistration = navigator.serviceWorker.register("/fitness/sw.js", {
@@ -12,39 +17,68 @@ if ("serviceWorker" in navigator) {
   // `/fitness/entry` owns its richer request/reply status. The landing page
   // still wakes a durable queue after a sign-in, reconnect, or app resume.
   if (location.pathname === "/fitness") {
-    void requestFitnessFlush();
-    window.addEventListener("online", () => void requestFitnessFlush());
-    window.addEventListener("pageshow", () => void requestFitnessFlush());
+    void wakeFitnessApp();
+    window.addEventListener("online", () => void wakeFitnessApp());
+    window.addEventListener("pageshow", () => void wakeFitnessApp());
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") void requestFitnessFlush();
+      if (document.visibilityState === "visible") void wakeFitnessApp();
     });
   }
 }
 
-async function requestFitnessFlush() {
+async function wakeFitnessApp() {
   try {
-    const registration = await fitnessRegistration;
-    const worker = registration?.active;
-    if (!worker) return;
-    const requestId = `fitness-pwa-${++fitnessFlushId}`;
-    const channel = new MessageChannel();
-    const timer = window.setTimeout(() => channel.port1.close(), 30_000);
-    channel.port1.onmessage = () => {
+    if (canResumeFitnessDraft && isInstalledFitnessApp) {
+      const status = await requestFitnessWorker("draft_status");
+      if (status?.has_draft) {
+        location.replace("/fitness/entry");
+        return;
+      }
+    }
+    await requestFitnessFlush();
+  } catch (_error) {
+    // Registration, activation, and Background Sync remain the fallbacks.
+  }
+}
+
+async function requestFitnessFlush() {
+  return requestFitnessWorker("flush_only");
+}
+
+async function requestFitnessWorker(method) {
+  const registration = await fitnessRegistration;
+  const ready = registration?.active ? registration : await navigator.serviceWorker.ready;
+  const worker = ready?.active;
+  if (!worker) throw new Error("Fitness worker is not active.");
+  const requestId = `fitness-pwa-${++fitnessRequestId}`;
+  const channel = new MessageChannel();
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      channel.port1.close();
+      reject(new Error("Fitness worker did not respond."));
+    }, 30_000);
+    channel.port1.onmessage = (event) => {
       window.clearTimeout(timer);
+      const reply = event.data;
+      if (reply?.protocol !== FITNESS_ENTRY_PROTOCOL || reply?.request_id !== requestId) {
+        reject(new Error("Fitness worker returned a mismatched reply."));
+      } else if (!reply.ok) {
+        reject(new Error(reply.error || "Fitness worker request failed."));
+      } else {
+        resolve(reply.value);
+      }
       channel.port1.close();
     };
     worker.postMessage(
       {
         protocol: FITNESS_ENTRY_PROTOCOL,
         request_id: requestId,
-        method: "flush_only",
+        method,
         payload: {},
       },
       [channel.port2],
     );
-  } catch (_error) {
-    // Registration, activation, and Background Sync remain the fallbacks.
-  }
+  });
 }
 
 const installRegion = document.querySelector("[data-fitness-install]");

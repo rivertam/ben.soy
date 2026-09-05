@@ -180,7 +180,7 @@ fn effort_popover_id(workout_path: &str, ordinal: u32) -> String {
 }
 
 fn set_volume_points(set: &fitness::Set) -> u32 {
-    super::archive::scoring::set_volume_points(&set.set_type, set.effort_hundredths)
+    super::archive::scoring::set_volume_points(&set.set_type, set.effort_hundredths, set.failure)
 }
 
 fn prescription(set: &fitness::Set) -> String {
@@ -208,10 +208,7 @@ fn prescription(set: &fitness::Set) -> String {
 
 fn set_details(set: &fitness::Set) -> String {
     let mut details = Vec::new();
-    if !matches!(
-        set.set_type.as_str(),
-        "NORMAL_SET" | "WARMUP_SET" | "FAILURE_SET" | ""
-    ) {
+    if !matches!(set.set_type.as_str(), "NORMAL_SET" | "WARMUP_SET" | "") {
         details.push(set_type_label(&set.set_type));
     }
     let load_or_reps_is_primary = set.weight_milli.is_some() || set.reps.is_some();
@@ -292,6 +289,7 @@ mod tests {
             weight_unit: "lbs".to_string(),
             reps: None,
             effort_hundredths: None,
+            failure: false,
             distance_milli: None,
             set_time_seconds: None,
             set_type: "NORMAL_SET".to_string(),

@@ -86,6 +86,12 @@ DEFINE FIELD OVERWRITE weight_milli ON sets TYPE option<int>;
 DEFINE FIELD OVERWRITE weight_unit ON sets TYPE string;
 DEFINE FIELD OVERWRITE reps ON sets TYPE option<int>;
 DEFINE FIELD OVERWRITE effort_hundredths ON sets TYPE option<int>;
+-- True failure is the endpoint beyond numeric RPE 10 on the effort axis.
+-- Application writes keep this mutually exclusive with effort_hundredths;
+-- migration 8 moves the legacy FAILURE_SET representation here.
+-- Optional at the storage boundary so schema reconciliation can run before
+-- the forward migration fills existing rows. Current writers always send it.
+DEFINE FIELD OVERWRITE failure ON sets TYPE option<bool>;
 DEFINE FIELD OVERWRITE distance_milli ON sets TYPE option<int>;
 DEFINE FIELD OVERWRITE set_time_seconds ON sets TYPE option<int>;
 DEFINE FIELD OVERWRITE set_type ON sets TYPE string;

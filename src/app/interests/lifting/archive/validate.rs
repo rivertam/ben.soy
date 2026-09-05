@@ -107,17 +107,8 @@ pub fn valid_tag_value(value: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-pub const SET_TYPES: [&str; 6] = [
-    "WARMUP_SET",
-    "NORMAL_SET",
-    "FAILURE_SET",
-    "PARTIAL_REPS_SET",
-    "DROP_SET",
-    "NEGATIVE_REPS_SET",
-];
-
 pub fn valid_set_type(value: &str) -> bool {
-    SET_TYPES.contains(&value)
+    value.parse::<fitness_entry_core::SetType>().is_ok()
 }
 
 pub const TAG_KINDS: [&str; 3] = ["movement", "muscle", "equipment"];

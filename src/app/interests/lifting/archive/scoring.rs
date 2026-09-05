@@ -5,10 +5,20 @@
 //! exact lockstep (it used to be mirrored between the Worker's SQL and two
 //! Rust view helpers).
 
-pub use fitness_entry_core::set_volume_points;
+use fitness_entry_core::SetType;
+
+/// Parse the persisted/wire boundary once before applying the typed domain
+/// score. Archive construction validates this value, so an unknown kind is a
+/// broken invariant rather than a sixth fallback type.
+pub fn set_volume_points(set_type: &str, effort_hundredths: Option<u64>, failure: bool) -> u32 {
+    let set_type = set_type
+        .parse::<SetType>()
+        .expect("archive set_type was validated");
+    fitness_entry_core::set_volume_points(set_type, effort_hundredths, failure)
+}
 
 pub fn effort_points(effort_hundredths: Option<u64>) -> u32 {
-    set_volume_points("NORMAL_SET", effort_hundredths)
+    set_volume_points("NORMAL_SET", effort_hundredths, false)
 }
 
 /// Weighted muscle credit for one set, in centi-points: the set's volume
@@ -19,9 +29,10 @@ pub fn effort_points(effort_hundredths: Option<u64>) -> u32 {
 pub fn muscle_credit_centi(
     set_type: &str,
     effort_hundredths: Option<u64>,
+    failure: bool,
     ratio_hundredths: u32,
 ) -> u32 {
-    set_volume_points(set_type, effort_hundredths).saturating_mul(ratio_hundredths)
+    set_volume_points(set_type, effort_hundredths, failure).saturating_mul(ratio_hundredths)
 }
 
 #[cfg(test)]
@@ -30,22 +41,28 @@ mod tests {
 
     #[test]
     fn matches_the_documented_scale() {
-        assert_eq!(set_volume_points("FAILURE_SET", Some(500)), 6);
-        assert_eq!(set_volume_points("WARMUP_SET", Some(1000)), 0);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(1000)), 5);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(900)), 4);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(800)), 3);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(750)), 2);
-        assert_eq!(set_volume_points("NORMAL_SET", None), 2);
-        assert_eq!(set_volume_points("DROP_SET", Some(1000)), 5);
+        assert_eq!(set_volume_points("NORMAL_SET", None, true), 6);
+        assert_eq!(set_volume_points("WARMUP_SET", Some(1000), true), 0);
+        assert_eq!(set_volume_points("NORMAL_SET", Some(1000), false), 5);
+        assert_eq!(set_volume_points("NORMAL_SET", Some(900), false), 4);
+        assert_eq!(set_volume_points("NORMAL_SET", Some(800), false), 3);
+        assert_eq!(set_volume_points("NORMAL_SET", Some(750), false), 2);
+        assert_eq!(set_volume_points("NORMAL_SET", None, false), 2);
+        assert_eq!(set_volume_points("DROP_SET", Some(1000), false), 5);
     }
 
     #[test]
     fn muscle_credit_scales_points_by_ratio_exactly() {
-        assert_eq!(muscle_credit_centi("NORMAL_SET", Some(1000), 100), 500);
-        assert_eq!(muscle_credit_centi("NORMAL_SET", Some(1000), 80), 400);
-        assert_eq!(muscle_credit_centi("FAILURE_SET", None, 50), 300);
-        assert_eq!(muscle_credit_centi("WARMUP_SET", Some(1000), 100), 0);
-        assert_eq!(muscle_credit_centi("NORMAL_SET", None, 33), 66);
+        assert_eq!(
+            muscle_credit_centi("NORMAL_SET", Some(1000), false, 100),
+            500
+        );
+        assert_eq!(
+            muscle_credit_centi("NORMAL_SET", Some(1000), false, 80),
+            400
+        );
+        assert_eq!(muscle_credit_centi("NORMAL_SET", None, true, 50), 300);
+        assert_eq!(muscle_credit_centi("WARMUP_SET", Some(1000), false, 100), 0);
+        assert_eq!(muscle_credit_centi("NORMAL_SET", None, false, 33), 66);
     }
 }

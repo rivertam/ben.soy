@@ -150,6 +150,7 @@ struct FitnessSet {
     weight_unit: String,
     reps: Option<i64>,
     effort_hundredths: Option<i64>,
+    failure: bool,
     distance_milli: Option<i64>,
     set_time_seconds: Option<i64>,
     set_type: String,
@@ -527,7 +528,7 @@ fn parse_reader<R: Read>(reader: R) -> Result<Export, String> {
             row,
             "Exercise",
         )?;
-        let set_type = contextual(
+        let mut set_type = contextual(
             required_display(get(columns.set_type, "Set Type")?, "set type"),
             row,
             "Set Type",
@@ -546,12 +547,19 @@ fn parse_reader<R: Read>(reader: R) -> Result<Export, String> {
             "Weight",
         )?;
         let reps = contextual(optional_decimal(get(columns.reps, "Reps")?, 0), row, "Reps")?;
-        let effort_hundredths = contextual(
+        let mut effort_hundredths = contextual(
             optional_decimal(get(columns.effort, "RIR/RPE")?, 2),
             row,
             "RIR/RPE",
         )?
         .map(normalize_effort_to_rpe);
+        let failure = set_type == "FAILURE_SET";
+        if failure {
+            // The legacy set kind is authoritative. A numeric RPE alongside
+            // it describes the same axis and is intentionally discarded.
+            set_type = "NORMAL_SET".to_string();
+            effort_hundredths = None;
+        }
         let distance_milli = contextual(
             optional_decimal(get(columns.distance, "Distance")?, 3),
             row,
@@ -612,6 +620,7 @@ fn parse_reader<R: Read>(reader: R) -> Result<Export, String> {
             weight_unit: "lbs".to_string(),
             reps,
             effort_hundredths,
+            failure,
             distance_milli,
             set_time_seconds,
             set_type,
@@ -1251,6 +1260,7 @@ mod tests {
                     weight_unit: "lbs".to_string(),
                     reps: None,
                     effort_hundredths: None,
+                    failure: false,
                     distance_milli: None,
                     set_time_seconds: None,
                     set_type: String::new(),

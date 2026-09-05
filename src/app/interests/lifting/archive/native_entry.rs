@@ -101,6 +101,7 @@ pub(crate) fn build_native_entry(
                 )));
             }
             let ordinal = incoming_sets.len() + 1;
+            let failure = set.failure || set.set_type == "FAILURE_SET";
             incoming_sets.push(IncomingSet {
                 id: format!("{workout_id}:{ordinal:04}"),
                 workout_id: workout_id.clone(),
@@ -112,10 +113,19 @@ pub(crate) fn build_native_entry(
                 weight_milli: set.weight_milli,
                 weight_unit: "lbs".to_string(),
                 reps: Some(set.reps as i64),
-                effort_hundredths: set.effort_hundredths.map(|value| value as i64),
+                effort_hundredths: if failure {
+                    None
+                } else {
+                    set.effort_hundredths.map(|value| value as i64)
+                },
+                failure,
                 distance_milli: None,
                 set_time_seconds: None,
-                set_type: set.set_type,
+                set_type: if set.set_type == "FAILURE_SET" {
+                    "NORMAL_SET".to_string()
+                } else {
+                    set.set_type
+                },
                 incomplete: false,
             });
         }
@@ -181,6 +191,7 @@ mod tests {
                 weight_unit: "lbs".into(),
                 reps: Some(5),
                 effort_hundredths: Some(800),
+                failure: false,
                 distance_milli: None,
                 set_time_seconds: None,
                 set_type: "NORMAL_SET".into(),
@@ -206,6 +217,7 @@ mod tests {
             weight_milli: Some(235_000),
             reps: 5,
             effort_hundredths: Some(900),
+            failure: false,
             set_type: "NORMAL_SET".into(),
         }
     }

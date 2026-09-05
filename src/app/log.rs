@@ -975,6 +975,7 @@ mod tests {
                     weight_unit: "lbs".to_string(),
                     reps: Some(8),
                     effort_hundredths: Some(1_000),
+                    failure: false,
                     distance_milli: None,
                     set_time_seconds: None,
                     set_type: "NORMAL_SET".to_string(),

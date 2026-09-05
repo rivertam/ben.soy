@@ -88,6 +88,7 @@ pub async fn load_archive(
                          weight_unit,
                          reps,
                          effort_hundredths,
+                         failure ?? false AS failure,
                          distance_milli,
                          set_time_seconds,
                          set_type,
@@ -975,6 +976,7 @@ async fn existing_manual_outcome(
                      weight_unit,
                      reps,
                      effort_hundredths,
+                     failure ?? false AS failure,
                      distance_milli,
                      set_time_seconds,
                      set_type,
@@ -1073,6 +1075,7 @@ async fn create_manual_workout_attempt(
             weight_unit: set.weight_unit.clone(),
             reps: set.reps,
             effort_hundredths: set.effort_hundredths,
+            failure: set.failure,
             distance_milli: set.distance_milli,
             set_time_seconds: set.set_time_seconds,
             set_type: set.set_type.clone(),
@@ -1144,6 +1147,7 @@ fn same_manual_workout(workout: &Workout, sets: &[LiftSet], payload: &Payload) -
             && stored.weight_unit == incoming.weight_unit
             && stored.reps == incoming.reps
             && stored.effort_hundredths == incoming.effort_hundredths
+            && stored.failure == incoming.failure
             && stored.distance_milli == incoming.distance_milli
             && stored.set_time_seconds == incoming.set_time_seconds
             && stored.set_type == incoming.set_type
@@ -1559,6 +1563,7 @@ pub async fn apply_import(
             weight_unit: set.weight_unit.clone(),
             reps: set.reps,
             effort_hundredths: set.effort_hundredths,
+            failure: set.failure,
             distance_milli: set.distance_milli,
             set_time_seconds: set.set_time_seconds,
             set_type: set.set_type.clone(),
@@ -1669,6 +1674,7 @@ mod tests {
                 weight_unit: "lbs".into(),
                 reps: Some(6),
                 effort_hundredths: Some(900),
+                failure: false,
                 distance_milli: None,
                 set_time_seconds: None,
                 set_type: "NORMAL_SET".into(),
@@ -1707,6 +1713,7 @@ mod tests {
                 weight_unit: set.weight_unit.clone(),
                 reps: set.reps,
                 effort_hundredths: set.effort_hundredths,
+                failure: set.failure,
                 distance_milli: set.distance_milli,
                 set_time_seconds: set.set_time_seconds,
                 set_type: set.set_type.clone(),

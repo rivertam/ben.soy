@@ -7,7 +7,7 @@
 
 use super::Db;
 
-const CURRENT_SCHEMA_EPOCH: u16 = 7;
+const CURRENT_SCHEMA_EPOCH: u16 = 8;
 
 struct Migration {
     epoch: u16,
@@ -42,6 +42,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         epoch: 7,
         sql: include_str!("schema_migrations/0007_exercise_aliases.surql"),
+    },
+    Migration {
+        epoch: 8,
+        sql: include_str!("schema_migrations/0008_failure_effort_axis.surql"),
     },
 ];
 
@@ -182,7 +186,7 @@ mod tests {
 
         assert_eq!(
             applied_epochs(&db).await.unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7]
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
         );
         db.query("INFO FOR INDEX workouts_started_at_utc ON workouts")
             .await
@@ -317,6 +321,55 @@ mod tests {
             .check()
             .unwrap();
         assert!(response.take::<Vec<String>>(0).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failure_migration_moves_the_axis_and_discards_legacy_numeric_rpe() {
+        let db = db().await;
+        db.query(
+            "CREATE type::record('sets', 'legacy-failure') CONTENT {
+                 id: 'legacy-failure', workout_id: 'workout', exercise_name: 'Squat',
+                 raw_exercise_name: 'Squat', ordinal: 1, exercise_note: NONE,
+                 superset_id: NONE, weight_milli: 225000, weight_unit: 'lbs',
+                 reps: 5, effort_hundredths: 900, distance_milli: NONE,
+                 set_time_seconds: NONE, set_type: 'FAILURE_SET', incomplete: false
+             };
+             CREATE type::record('sets', 'ordinary') CONTENT {
+                 id: 'ordinary', workout_id: 'workout', exercise_name: 'Squat',
+                 raw_exercise_name: 'Squat', ordinal: 2, exercise_note: NONE,
+                 superset_id: NONE, weight_milli: 225000, weight_unit: 'lbs',
+                 reps: 5, effort_hundredths: 900, distance_milli: NONE,
+                 set_time_seconds: NONE, set_type: 'NORMAL_SET', incomplete: false
+             };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        // Production reconciles the current schema before applying pending
+        // migrations, so the optional boundary field must tolerate old rows.
+        db.query(SCHEMA).await.unwrap().check().unwrap();
+        apply(&db).await.unwrap();
+        apply(&db).await.unwrap();
+
+        let mut response = db
+            .query(
+                "SELECT record::id(id) AS id, set_type, effort_hundredths, failure
+                 FROM sets ORDER BY id;",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+        assert_eq!(rows[0]["id"], "legacy-failure");
+        assert_eq!(rows[0]["set_type"], "NORMAL_SET");
+        assert_eq!(rows[0]["effort_hundredths"], serde_json::Value::Null);
+        assert_eq!(rows[0]["failure"], true);
+        assert_eq!(rows[1]["id"], "ordinary");
+        assert_eq!(rows[1]["effort_hundredths"], 900);
+        assert_eq!(rows[1]["failure"], false);
     }
 
     #[test]

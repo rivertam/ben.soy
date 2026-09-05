@@ -225,6 +225,18 @@ mod tests {
             "a firing sync event must not re-register its own tag"
         );
         assert!(FITNESS_SW_JS.contains("case \"flush_only\""));
+        for needle in [
+            "const sourceClientId = event.source?.id || null",
+            "broadcastChange(sourceClientId)",
+            "if (client.id === excludeClientId) continue",
+            "case \"draft_status\"",
+            "return draftStatus(db)",
+        ] {
+            assert!(
+                FITNESS_SW_JS.contains(needle),
+                "Fitness worker lost {needle:?}"
+            );
+        }
         assert!(FITNESS_PWA_JS.contains(&format!(
             "const FITNESS_ENTRY_PROTOCOL = {};",
             fitness_entry_core::PROTOCOL_VERSION
@@ -234,6 +246,9 @@ mod tests {
             "window.addEventListener(\"online\"",
             "window.addEventListener(\"pageshow\"",
             "document.addEventListener(\"visibilitychange\"",
+            "requestFitnessWorker(\"draft_status\")",
+            "location.replace(\"/fitness/entry\")",
+            "display-mode: standalone",
         ] {
             assert!(
                 FITNESS_PWA_JS.contains(trigger),

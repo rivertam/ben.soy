@@ -74,6 +74,7 @@ pub struct LiftSet {
     pub weight_unit: String,
     pub reps: Option<i64>,
     pub effort_hundredths: Option<i64>,
+    pub failure: bool,
     pub distance_milli: Option<i64>,
     pub set_time_seconds: Option<i64>,
     pub set_type: String,

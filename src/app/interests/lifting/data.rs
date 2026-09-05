@@ -384,6 +384,7 @@ mod tests {
                 weight_unit: "lbs".into(),
                 reps: Some(5),
                 effort_hundredths: None,
+                failure: false,
                 distance_milli: None,
                 set_time_seconds: None,
                 set_type: "NORMAL_SET".into(),
@@ -450,6 +451,7 @@ mod tests {
                   "raw_exercise_name": "Squat", "exercise_note": null,
                   "superset_id": null, "weight_milli": 102500, "weight_unit": "lbs", "reps": 5,
                   "effort_hundredths": null, "distance_milli": null,
+                  "failure": false,
                   "set_time_seconds": null, "set_type": "NORMAL_SET",
                   "records": [{"level": "gold", "kind": "volume"}]
                 }]
@@ -464,6 +466,7 @@ mod tests {
         assert_eq!(page.workouts[0].sets[0].weight_milli, Some(102_500));
         assert_eq!(page.workouts[0].sets[0].weight_unit, "lbs");
         assert_eq!(page.workouts[0].sets[0].effort_hundredths, None);
+        assert!(!page.workouts[0].sets[0].failure);
         assert_eq!(page.workouts[0].sets[0].records[0].kind, "volume");
     }
 

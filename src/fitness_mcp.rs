@@ -132,9 +132,13 @@ const SET_FIELDS: &[(&str, &str)] = &[
     ("weight_unit", "string"),
     ("reps", "optional int"),
     ("effort_hundredths", "optional int; 100 = one RPE point"),
+    ("failure", "bool; mutually exclusive with numeric effort"),
     ("distance_milli", "optional int; 1000 = one distance unit"),
     ("set_time_seconds", "optional int"),
-    ("set_type", "string"),
+    (
+        "set_type",
+        "enum string: WARMUP_SET | NORMAL_SET | PARTIAL_REPS_SET | DROP_SET | NEGATIVE_REPS_SET",
+    ),
     ("incomplete", "bool"),
 ];
 const META_FIELDS: &[(&str, &str)] = &[("id", "string record key"), ("k", "string"), ("v", "int")];

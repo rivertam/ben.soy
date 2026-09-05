@@ -1,12 +1,12 @@
-//! Copy/paste sharing for one workout: a plain-text rendition of the
-//! set log plus the workout's permanent URL, in the spirit of the
-//! Strong/Lyfta share sheets.
+//! Copy/paste sharing for one workout, rendered by the same canonical
+//! application formatter as Podrick.
 //!
 //! The text is rendered server-side into a `<details>` disclosure whose
 //! readonly `<textarea>` is always selectable — that is the
 //! no-JavaScript path. `share.js` progressively reveals a clipboard
 //! button, exactly like `auto-filter.js` upgrades the log filter chrome.
 
+use benjisponge::workout_text::{self, Set as TextSet, Workout as TextWorkout};
 use topcoat::{
     Result,
     asset::{Asset, asset},
@@ -15,11 +15,7 @@ use topcoat::{
     view::{component, view},
 };
 
-use super::{
-    data as fitness,
-    format::{format_integer, format_scaled, plural},
-    results::WorkoutCard,
-};
+use super::data as fitness;
 
 pub(super) const SHARE_JS: Asset = asset!("./share.js");
 
@@ -61,71 +57,47 @@ pub(super) fn request_origin(cx: &Cx) -> Option<String> {
     Some(format!("{scheme}://{host}"))
 }
 
-/// The plain-text share sheet: title, meta line, every set grouped by
-/// exercise the way the page shows them, then the permanent URL.
+/// Adapt the archive API model into the canonical workout text model and add
+/// the permanent URL for the current request origin.
 pub(super) fn share_text(workout: &fitness::Workout, origin: Option<&str>) -> String {
-    let card = WorkoutCard::from(workout);
-    let volume_points: u32 = card
-        .blocks
-        .iter()
-        .flat_map(|block| block.groups.iter())
-        .map(|group| group.volume_points)
-        .sum();
-
-    let mut lines = Vec::new();
-    lines.push(card.title.to_string());
-    lines.push(format!(
-        "{} · {} · {} · {} {} · {} volume points",
-        card.date,
-        card.time_range,
-        card.duration,
-        card.set_count,
-        plural(card.set_count, "set", "sets"),
-        format_integer(volume_points),
-    ));
-    if let Some(description) = card.description {
-        lines.push(String::new());
-        lines.push(description.to_string());
-    }
-    if let Some(notes) = card.notes {
-        lines.push(String::new());
-        lines.push(notes.to_string());
-    }
-
-    for block in &card.blocks {
-        for group in &block.groups {
-            lines.push(String::new());
-            match block.superset_id {
-                Some(id) => lines.push(format!("{} · superset {id}", group.name)),
-                None => lines.push(group.name.to_string()),
-            }
-            for (index, row) in group.rows.iter().enumerate() {
-                let mut line = format!("{}. {}", index + 1, row.prescription);
-                if row.set.set_type == "WARMUP_SET" {
-                    line.push_str(" · warm-up");
-                } else if row.set.set_type == "FAILURE_SET" {
-                    line.push_str(" · failure");
-                }
-                if let Some(effort) = row.set.effort_hundredths {
-                    line.push_str(&format!(" @ RPE {}", format_scaled(effort, 100)));
-                }
-                if !row.details.is_empty() {
-                    line.push_str(&format!(" · {}", row.details));
-                }
-                if let Some(record) = &row.record {
-                    line.push_str(&format!(" — {record}"));
-                }
-                lines.push(line);
-            }
-        }
-    }
-
-    lines.push(String::new());
-    match origin {
-        Some(origin) => lines.push(format!("{origin}{}", card.href)),
-        None => lines.push(card.href.clone()),
-    }
-    lines.join("\n")
+    let permalink = format!("/fitness/lift/{}", workout.path);
+    let permalink = origin.map_or(permalink.clone(), |origin| format!("{origin}{permalink}"));
+    let workout = TextWorkout {
+        title: workout.title.clone(),
+        started_at_local: workout.started_at_local.clone(),
+        ended_at_local: workout.ended_at_local.clone(),
+        duration_seconds: i64::try_from(workout.duration_seconds)
+            .expect("validated workout duration fits i64"),
+        description: workout.description.clone(),
+        notes: workout.notes.clone(),
+        sets: workout
+            .sets
+            .iter()
+            .map(|set| TextSet {
+                exercise_name: set.exercise_name.clone(),
+                set_type: set.set_type.clone(),
+                superset_id: set
+                    .superset_id
+                    .map(|id| i64::try_from(id).expect("validated id")),
+                weight_milli: set.weight_milli,
+                weight_unit: set.weight_unit.clone(),
+                reps: set
+                    .reps
+                    .map(|reps| i64::try_from(reps).expect("validated reps")),
+                effort_hundredths: set
+                    .effort_hundredths
+                    .map(|effort| i64::try_from(effort).expect("validated effort")),
+                failure: set.failure,
+                distance_milli: set
+                    .distance_milli
+                    .map(|distance| i64::try_from(distance).expect("validated distance")),
+                set_time_seconds: set
+                    .set_time_seconds
+                    .map(|seconds| i64::try_from(seconds).expect("validated set time")),
+            })
+            .collect(),
+    };
+    workout_text::format(&workout, &permalink, None)
 }
 
 /// The disclosure a workout page renders. `text` is prebuilt by the page
@@ -184,6 +156,7 @@ mod tests {
         reps: Option<u64>,
         effort: Option<u64>,
         set_type: &str,
+        failure: bool,
     ) -> fitness::Set {
         fitness::Set {
             id: format!("s{ordinal}"),
@@ -196,6 +169,7 @@ mod tests {
             weight_unit: "lbs".into(),
             reps,
             effort_hundredths: effort,
+            failure,
             distance_milli: None,
             set_time_seconds: None,
             set_type: set_type.into(),
@@ -225,6 +199,7 @@ mod tests {
                     Some(10),
                     None,
                     "WARMUP_SET",
+                    false,
                 ),
                 set(
                     2,
@@ -233,6 +208,7 @@ mod tests {
                     Some(3),
                     Some(800),
                     "NORMAL_SET",
+                    false,
                 ),
                 set(
                     3,
@@ -240,7 +216,8 @@ mod tests {
                     Some(25_000),
                     Some(9),
                     None,
-                    "FAILURE_SET",
+                    "NORMAL_SET",
+                    true,
                 ),
             ],
         }
@@ -250,14 +227,14 @@ mod tests {
     fn share_text_lists_sets_and_ends_with_the_permalink() {
         let text = share_text(&workout(), Some("https://ben.soy"));
         let expected = "\
-I missed 9am gym
-Jul 21, 2026 · 10:39 AM–11:14 AM · 35m 10s · 3 sets · 9 volume points
+**I missed 9am gym**
+Jul 21, 2026 · 10:39 AM–11:14 AM · 35m 10s · 2 working sets
 
-Incline Bench Press
-1. 45 lbs × 10 · warm-up
-2. 145 lbs × 3 @ RPE 8
+I. Incline Bench Press
+W. 45 lbs × 10
+1. 145 lbs × 3 @ RPE 8
 
-Cable Crossover
+II. Cable Crossover
 1. 25 lbs × 9 · failure
 
 https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00";
@@ -275,11 +252,11 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00";
         let mut workout = workout();
         workout.sets[0].weight_milli = Some(-45_000);
         let text = share_text(&workout, None);
-        assert!(text.contains("1. -45 lbs × 10 · warm-up"));
+        assert!(text.contains("W. -45 lbs × 10"));
     }
 
     #[test]
-    fn workout_notes_and_records_ride_along() {
+    fn workout_notes_ride_along_and_records_stay_on_the_permalink() {
         let mut workout = workout();
         workout.description = Some("Deload week".into());
         workout.sets[1].records = vec![
@@ -298,8 +275,7 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00";
         }];
         let text = share_text(&workout, None);
         assert!(text.contains("\nDeload week\n"));
-        assert!(text.contains("2. 145 lbs × 3 @ RPE 8 — PR: 1RM"));
-        // Runner-up podium places never reach the share text.
-        assert!(!text.contains('#') && !text.contains("failure —"));
+        assert!(text.contains("1. 145 lbs × 3 @ RPE 8"));
+        assert!(!text.contains("PR") && !text.contains("gold") && !text.contains("silver"));
     }
 }

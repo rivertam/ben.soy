@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::MAX_WEIGHT_MILLI;
 use crate::draft::{ActionError, Draft, DraftSet};
 use crate::text::{
-    effort_to_hundredths, hundredths_text, js_trim, pounds_to_milli, reps_value, valid_set_type,
+    SetType, effort_to_hundredths, hundredths_text, js_trim, pounds_to_milli, reps_value,
 };
 
 const COVERAGE_LIMIT: usize = 4;
@@ -27,6 +27,11 @@ pub struct GuideConfig {
 pub struct ExerciseGuide {
     pub name: String,
     pub bodyweight: bool,
+    /// Coarse fatigue metadata used only to avoid redundant recommendations.
+    #[serde(default)]
+    pub high_fatigue: bool,
+    #[serde(default)]
+    pub high_axial_load: bool,
     pub last_date: String,
     pub set_count: usize,
     pub workout_count: usize,
@@ -52,17 +57,22 @@ pub struct GuideMark {
 pub struct LoadPreset {
     pub label: String,
     pub weight_milli: Option<i64>,
-    pub set_type: String,
+    pub set_type: SetType,
     pub display: String,
     pub spoken: String,
 }
 
 impl LoadPreset {
-    pub fn new(label: &str, weight_milli: Option<i64>, set_type: &str, bodyweight: bool) -> Self {
+    pub fn new(
+        label: &str,
+        weight_milli: Option<i64>,
+        set_type: SetType,
+        bodyweight: bool,
+    ) -> Self {
         Self {
             label: label.to_string(),
             weight_milli,
-            set_type: set_type.to_string(),
+            set_type,
             display: load_display(weight_milli, bodyweight),
             spoken: load_spoken(weight_milli, bodyweight),
         }
@@ -95,10 +105,9 @@ impl GuideConfig {
                 .iter()
                 .any(|(name, ratio)| name.is_empty() || !(1..=100).contains(ratio))
                 || exercise.loads.iter().any(|load| {
-                    !valid_set_type(&load.set_type)
-                        || load.weight_milli.is_some_and(|weight| {
-                            !(-MAX_WEIGHT_MILLI..=MAX_WEIGHT_MILLI).contains(&weight)
-                        })
+                    load.weight_milli.is_some_and(|weight| {
+                        !(-MAX_WEIGHT_MILLI..=MAX_WEIGHT_MILLI).contains(&weight)
+                    })
                 })
             {
                 return Err(ActionError::message(
@@ -124,6 +133,8 @@ impl ExerciseGuide {
         Self {
             name: name.into(),
             bodyweight: false,
+            high_fatigue: false,
+            high_axial_load: false,
             last_date: "2026-08-20".into(),
             set_count: 20,
             workout_count: 4,
@@ -154,6 +165,7 @@ pub struct Derived {
     pub unfinished_rows: usize,
     pub finish_enabled: bool,
     pub has_completed_set: bool,
+    pub has_active_exercise: bool,
     pub coverage: Vec<Coverage>,
     pub starters: Vec<Suggestion>,
     pub deepen: Option<Suggestion>,
@@ -195,6 +207,7 @@ pub struct SetView {
     pub reps_valid: bool,
     pub effort_valid: bool,
     pub effort_hundredths: Option<u64>,
+    pub failure: bool,
     pub rir_display: String,
     pub rir_spoken: String,
     pub set_type_label: String,
@@ -231,12 +244,13 @@ pub fn derive(draft: &Draft, guide: &GuideConfig, context: &GuidanceContext) -> 
     let coverage = coverage(&session);
     let query = js_trim(&context.query).to_lowercase();
     let has_completed_set = completed_count > 0;
-    let starters = if !has_completed_set && query.is_empty() {
+    let has_active_exercise = !draft.exercises.is_empty();
+    let starters = if !has_active_exercise && query.is_empty() {
         starter_suggestions(draft, guide, &context.direction)
     } else {
         Vec::new()
     };
-    let (deepen, expand) = if has_completed_set {
+    let (deepen, expand) = if has_active_exercise {
         next_suggestions(draft, guide, &session)
     } else {
         (None, None)
@@ -244,7 +258,7 @@ pub fn derive(draft: &Draft, guide: &GuideConfig, context: &GuidanceContext) -> 
     let (search, search_feedback) = search(draft, guide, &query);
     let quick_empty = if !query.is_empty() && search.is_empty() {
         "No matches.".to_string()
-    } else if !has_completed_set
+    } else if !has_active_exercise
         && !context.direction.is_empty()
         && query.is_empty()
         && starters.is_empty()
@@ -261,6 +275,7 @@ pub fn derive(draft: &Draft, guide: &GuideConfig, context: &GuidanceContext) -> 
         unfinished_rows: total_rows.saturating_sub(completed_count),
         finish_enabled: completed_count > 0,
         has_completed_set,
+        has_active_exercise,
         coverage,
         starters,
         deepen,
@@ -279,14 +294,17 @@ fn set_view(set: &DraftSet) -> SetView {
     let reps_valid = reps_value(&set.reps).is_some();
     let effort_blank = js_trim(&set.effort).is_empty();
     let effort_hundredths = effort_to_hundredths(&set.effort);
-    let effort_valid = effort_blank || effort_hundredths.is_some();
-    let (rir_display, rir_spoken) = match (effort_blank, effort_hundredths) {
-        (true, _) => ("—".to_string(), "Not rated".to_string()),
-        (false, Some(effort)) => {
+    let effort_valid = (effort_blank || effort_hundredths.is_some())
+        && !(set.failure && effort_hundredths.is_some());
+    let (rir_display, rir_spoken) = match (set.failure, effort_blank, effort_hundredths) {
+        (true, true, _) => ("FAIL".to_string(), "Reached failure".to_string()),
+        (true, false, _) => ("?".to_string(), "Invalid failure effort".to_string()),
+        (false, true, _) => ("—".to_string(), "Not rated".to_string()),
+        (false, false, Some(effort)) => {
             let rir = 1_000 - effort;
             (hundredths_text(rir), rir_spoken(effort))
         }
-        (false, None) => ("?".to_string(), "Invalid reps in reserve".to_string()),
+        (false, false, None) => ("?".to_string(), "Invalid reps in reserve".to_string()),
     };
     SetView {
         id: set.id.clone(),
@@ -295,59 +313,27 @@ fn set_view(set: &DraftSet) -> SetView {
         reps_valid,
         effort_valid,
         effort_hundredths,
+        failure: set.failure,
         rir_display,
         rir_spoken,
-        set_type_label: set_type_label(&set.set_type).to_string(),
-        set_type_spoken: set_type_spoken(&set.set_type).to_string(),
-        set_kind: set_kind(&set.set_type).to_string(),
-        can_complete: weight_valid && reps_valid && effort_valid && valid_set_type(&set.set_type),
-        volume_points: set_volume_points(&set.set_type, effort_hundredths),
+        set_type_label: set.set_type.short_label().to_string(),
+        set_type_spoken: set.set_type.spoken_label().to_string(),
+        set_kind: set.set_type.kind().to_string(),
+        can_complete: weight_valid && reps_valid && effort_valid,
+        volume_points: set_volume_points(set.set_type, effort_hundredths, set.failure),
     }
 }
 
-pub fn set_volume_points(set_type: &str, effort_hundredths: Option<u64>) -> u32 {
+pub fn set_volume_points(set_type: SetType, effort_hundredths: Option<u64>, failure: bool) -> u32 {
     match set_type {
-        "FAILURE_SET" => 6,
-        "WARMUP_SET" => 0,
+        SetType::Warmup => 0,
+        _ if failure => 6,
         _ => match effort_hundredths {
             Some(1_000) => 5,
             Some(900) => 4,
             Some(800) => 3,
             _ => 2,
         },
-    }
-}
-
-fn set_type_label(value: &str) -> &'static str {
-    match value {
-        "WARMUP_SET" => "WARM",
-        "FAILURE_SET" => "FAIL",
-        "DROP_SET" => "DROP",
-        "PARTIAL_REPS_SET" => "PART",
-        "NEGATIVE_REPS_SET" => "NEG",
-        _ => "WORK",
-    }
-}
-
-fn set_type_spoken(value: &str) -> &'static str {
-    match value {
-        "WARMUP_SET" => "warm-up set",
-        "FAILURE_SET" => "failure set",
-        "DROP_SET" => "drop set",
-        "PARTIAL_REPS_SET" => "partial-reps set",
-        "NEGATIVE_REPS_SET" => "negative-reps set",
-        _ => "working set",
-    }
-}
-
-fn set_kind(value: &str) -> &'static str {
-    match value {
-        "WARMUP_SET" => "warmup",
-        "FAILURE_SET" => "failure",
-        "DROP_SET" => "drop",
-        "PARTIAL_REPS_SET" => "partial",
-        "NEGATIVE_REPS_SET" => "negative",
-        _ => "working",
     }
 }
 
@@ -368,6 +354,10 @@ struct SessionContext {
     movements: BTreeSet<String>,
     coarse: BTreeSet<String>,
     exercise_count: usize,
+    high_fatigue_count: usize,
+    high_axial_count: usize,
+    high_fatigue_movements: BTreeSet<String>,
+    high_fatigue_coarse: BTreeSet<String>,
 }
 
 fn session_context(
@@ -380,23 +370,30 @@ fn session_context(
         let Some(item) = guide.exercise(&exercise.name) else {
             continue;
         };
-        let completed: Vec<&SetView> = exercise
+        let active: Vec<&SetView> = exercise
             .sets
             .iter()
-            .filter(|set| set.done)
             .filter_map(|set| views.get(set.id.as_str()).copied())
-            .filter(|view| view.can_complete)
             .collect();
-        if completed.is_empty() {
-            continue;
-        }
         context.exercise_count += 1;
         context.movements.extend(item.movements.iter().cloned());
         context.coarse.extend(item.coarse_muscles.iter().cloned());
-        let volume: u32 = completed.iter().map(|view| view.volume_points).sum();
-        if volume == 0 {
-            continue;
+        if item.high_fatigue {
+            context.high_fatigue_count += 1;
+            context
+                .high_fatigue_movements
+                .extend(item.movements.iter().cloned());
+            context
+                .high_fatigue_coarse
+                .extend(item.coarse_muscles.iter().cloned());
         }
+        if item.high_axial_load {
+            context.high_axial_count += 1;
+        }
+        // A selected exercise affects recommendations immediately, and every
+        // added row increases its planned session dose. Blank working rows use
+        // the archive's unrated two-point baseline; warm-ups remain zero.
+        let volume: u32 = active.iter().map(|view| view.volume_points).sum();
         for (muscle, ratio) in &item.muscles {
             *context.muscle_load.entry(muscle.clone()).or_default() +=
                 volume.saturating_mul(*ratio);
@@ -668,6 +665,26 @@ fn score_candidate<'a>(
         .filter(|movement| context.movements.contains(*movement))
         .count();
     let complement = complement_score(item, context);
+    let shared_fatigue_movements = item
+        .movements
+        .iter()
+        .filter(|movement| context.high_fatigue_movements.contains(*movement))
+        .count();
+    let shared_fatigue_regions = item
+        .coarse_muscles
+        .iter()
+        .filter(|group| context.high_fatigue_coarse.contains(*group))
+        .count();
+    let fatigue_penalty = if item.high_fatigue && context.high_fatigue_count > 0 {
+        shared_fatigue_movements as f64 * 150.0 + shared_fatigue_regions as f64 * 90.0
+    } else {
+        0.0
+    };
+    let axial_penalty = if item.high_axial_load && context.high_axial_count > 0 {
+        600.0
+    } else {
+        0.0
+    };
     let staleness = days_since(&guide.today, &item.last_date)
         .unwrap_or(30)
         .min(30) as f64
@@ -682,12 +699,16 @@ fn score_candidate<'a>(
             + complement * 80.0
             + need * 18.0
             + familiarity
+            - fatigue_penalty
+            - axial_penalty
     };
     let expand_score = need * 96.0 * breadth
         + novel as f64 * 34.0 * breadth
         + staleness * 15.0
         + familiarity * 1.5
-        - overlap * 0.08;
+        - overlap * 0.08
+        - fatigue_penalty
+        - axial_penalty;
     Scored {
         item,
         deep_score,
@@ -969,6 +990,8 @@ mod tests {
         ExerciseGuide {
             name: name.into(),
             bodyweight: false,
+            high_fatigue: false,
+            high_axial_load: false,
             last_date: last.into(),
             set_count: workouts * 4,
             workout_count: workouts,
@@ -1050,7 +1073,8 @@ mod tests {
                     weight: "100".into(),
                     reps: "5".into(),
                     effort: "9".into(),
-                    set_type: "NORMAL_SET".into(),
+                    failure: false,
+                    set_type: SetType::Normal,
                     done: true,
                 }],
             }],
@@ -1059,12 +1083,12 @@ mod tests {
 
     #[test]
     fn volume_points_match_the_archive_scale() {
-        assert_eq!(set_volume_points("WARMUP_SET", Some(1_000)), 0);
-        assert_eq!(set_volume_points("FAILURE_SET", None), 6);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(1_000)), 5);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(900)), 4);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(800)), 3);
-        assert_eq!(set_volume_points("NORMAL_SET", Some(750)), 2);
+        assert_eq!(set_volume_points(SetType::Warmup, Some(1_000), true), 0);
+        assert_eq!(set_volume_points(SetType::Normal, None, true), 6);
+        assert_eq!(set_volume_points(SetType::Normal, Some(1_000), false), 5);
+        assert_eq!(set_volume_points(SetType::Normal, Some(900), false), 4);
+        assert_eq!(set_volume_points(SetType::Normal, Some(800), false), 3);
+        assert_eq!(set_volume_points(SetType::Normal, Some(750), false), 2);
     }
 
     #[test]
@@ -1120,17 +1144,97 @@ mod tests {
     }
 
     #[test]
+    fn recommendations_open_for_planned_exercises_and_recompute_for_added_rows() {
+        let mut draft = draft_with("Bench Press");
+        draft.exercises[0].sets[0].done = false;
+        draft.exercises[0].sets[0].reps.clear();
+
+        let one_row = derive(&draft, &guide(), &GuidanceContext::default());
+        assert!(one_row.has_active_exercise);
+        assert!(!one_row.has_completed_set);
+        assert_eq!(one_row.deepen.as_ref().unwrap().name, "Triceps Extension");
+
+        let mut second = draft.exercises[0].sets[0].clone();
+        second.id = "set-00000002".into();
+        draft.exercises[0].sets.push(second);
+        let two_rows = derive(&draft, &guide(), &GuidanceContext::default());
+        assert!(
+            two_rows.deepen.as_ref().unwrap().score > one_row.deepen.as_ref().unwrap().score,
+            "another planned set should increase the session-overlap score"
+        );
+    }
+
+    #[test]
+    fn an_axial_compound_is_not_recommended_after_another_axial_compound() {
+        let mut guide = GuideConfig {
+            version: 1,
+            today: "2026-09-03".into(),
+            weekly_pace_tenths: 20,
+            muscle_needs: BTreeMap::from([("spinal-erectors".into(), 1_000)]),
+            exercises: vec![
+                item(
+                    "Full Squat",
+                    20,
+                    "2026-09-01",
+                    &[("quads", 100), ("spinal-erectors", 25)],
+                    &["squat-type"],
+                    &["legs"],
+                ),
+                item(
+                    "Sumo Deadlift",
+                    30,
+                    "2026-09-01",
+                    &[("spinal-erectors", 100), ("hamstrings", 75)],
+                    &["hinge"],
+                    &["legs", "back"],
+                ),
+                item(
+                    "Back Extension",
+                    5,
+                    "2026-08-01",
+                    &[("spinal-erectors", 100)],
+                    &["hinge"],
+                    &["back"],
+                ),
+                item(
+                    "Leg Curl",
+                    4,
+                    "2026-08-01",
+                    &[("hamstrings", 100)],
+                    &["knee-flexion"],
+                    &["legs"],
+                ),
+            ],
+        };
+        for name in ["Full Squat", "Sumo Deadlift"] {
+            let exercise = guide
+                .exercises
+                .iter_mut()
+                .find(|exercise| exercise.name == name)
+                .unwrap();
+            exercise.high_fatigue = true;
+            exercise.high_axial_load = true;
+        }
+        let mut draft = draft_with("Full Squat");
+        draft.exercises[0].sets[0].done = false;
+
+        let derived = derive(&draft, &guide, &GuidanceContext::default());
+        assert_ne!(derived.deepen.as_ref().unwrap().name, "Sumo Deadlift");
+        assert_ne!(derived.expand.as_ref().unwrap().name, "Sumo Deadlift");
+    }
+
+    #[test]
     fn load_presentations_keep_null_zero_and_assistance_distinct() {
         assert_eq!(
-            LoadPreset::new("work", None, "NORMAL_SET", true).display,
+            LoadPreset::new("work", None, SetType::Normal, true).display,
             "BW"
         );
         assert_eq!(
-            LoadPreset::new("work", Some(0), "NORMAL_SET", true).display,
+            LoadPreset::new("work", Some(0), SetType::Normal, true).display,
             "0 lb"
         );
         assert_eq!(
-            LoadPreset::new("work", Some(-40_000), "NORMAL_SET", true).display,
+            LoadPreset::new("work", Some(-40_000), SetType::Normal, true).display,
             "−40 lb"
         );
     }

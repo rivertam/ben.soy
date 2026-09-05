@@ -109,10 +109,13 @@ reuse the local sync token or expose unrestricted SurrealQL.
   granular muscle. Load rows link to the log through the granular→coarse
   tag mapping (`muscle_taxonomy::coarse_tag_for`) because the `muscle`
   facet deliberately keeps the original 13-value tag vocabulary.
-- Workout pages also render a plain-text share block (`share.rs` +
-  `share.js`): a Strong-style set list ending in the workout's permanent
-  URL, built from the request's Host/`x-forwarded-proto` like the planes
-  receipt QR. The text lives in a readonly `<textarea>` — selectable
+- Workout pages and Podrick use the one canonical application formatter in
+  `src/workout_text.rs`: Podrick's bold title, facts line, Roman-numbered
+  exercise headings, independent working-set numbering, `W.` warm-ups, and
+  permanent URL. `share.rs` supplies the page's absolute-or-relative URL;
+  Podrick supplies an absolute URL and its 2,000-character transport cap.
+  Neither rendition includes PR badges; the linked workout owns those. The
+  page text lives in a readonly `<textarea>` — selectable
   without JavaScript, and on the em-dash layer's skip list
   (`src/emdash.rs`) so user-authored em dashes stay plain text;
   `share.js` only reveals the clipboard button.
@@ -163,16 +166,23 @@ reuse the local sync token or expose unrestricted SurrealQL.
   and shows the current e1RM/load/volume/reps winners derived at snapshot
   build with the archive's normal record rules. The fixed app header is a
   sibling of the dedicated workout scroller, so focus panning and scroll
-  restoration cannot move it above the viewport. Before the first completed
-  set, Push/Pull/Squat/Hinge/Arms/Shoulders directions come first; choosing one
+  restoration cannot move it above the viewport. Before the first exercise is
+  added, Push/Pull/Squat/Hinge/Arms/Shoulders directions come first; choosing
+  one
   exposes a familiar exercise and a stale or under-paced option from that
-  movement family, followed by inline search as the fallback. Once a set is
-  complete those starter directions collapse into two next-exercise lanes,
+  movement family, followed by inline search as the fallback. Once an exercise
+  is added those starter directions collapse into two next-exercise lanes,
   again followed by search. “Deepen” rewards muscles and movement patterns
   already worked plus missing isolation complements (for example direct
   triceps after pressing), while “expand” rewards stale or under-paced muscles
-  and new body regions. The breadth reward increases as the trailing 21-day
-  workout pace falls below roughly 3.5 sessions/week.
+  and new body regions. Every selected exercise and every added set row enters
+  the active-session load immediately, so the lanes are recomputed as the
+  draft changes rather than waiting for completion. Repeating a high-fatigue
+  compound in the same movement/body region is strongly penalized, and a
+  second high-axial-load compound is penalized more strongly; for example,
+  Full Squat prevents Sumo Deadlift from surfacing merely to add spinal-erector
+  work. The breadth reward increases as the trailing 21-day workout pace falls
+  below roughly 3.5 sessions/week.
   Archive deficits reuse training focus's regularity and today/yesterday
   recovery gates, and a need stops boosting “expand” once that muscle enters
   the in-progress workout.
@@ -186,23 +196,31 @@ reuse the local sync token or expose unrestricted SurrealQL.
   rounded 50%/75% loads), and choosing one also chooses warm/work set type.
   Bodyweight and negative-assistance histories are never percentage-scaled.
   Four relative controls adjust the current load by -10/-5/+5/+10 lb, while
-  direct decimal entry and the exact six-value set-type selector remain
-  available. The effort cell is presented as reps in reserve rather than RPE:
-  the active set exposes one-tap `0` through `4` choices in half-rep steps plus
-  an explicit unrated choice. Drafts retain their canonical RPE text and
-  publishing still sends exact RPE hundredths using
-  `RPE = 10 - RIR` (`0 RIR = 1000`, `0.5 = 950`, ... `4 = 600`), so existing
-  drafts and the archive wire shape do not change. A non-half-step value in an
-  older draft remains exact and is shown as its corresponding RIR until it is
-  replaced. These suggestions add no draft or publish fields.
+  direct decimal entry and the five structural set types remain available:
+  normal, warm-up, partial reps, negative reps, and drop. `SetType` in
+  `fitness-entry-core` owns their wire values, labels, and UI kinds; strings
+  exist only at storage/JSON boundaries. Failure is not a set type. The effort
+  cell is presented as reps in reserve rather than RPE: the active set exposes
+  one-tap failure, `0` through `4` choices in half-rep steps, and an explicit
+  unrated choice. Drafts retain canonical RPE text or a mutually exclusive
+  `failure` marker, and publishing sends exact RPE hundredths using
+  `RPE = 10 - RIR` (`0 RIR = 1000`, `0.5 = 950`, ... `4 = 600`). A
+  non-half-step value in an older draft remains exact and is shown as its
+  corresponding RIR until it is replaced. A restored legacy `FAILURE_SET`
+  draft becomes a normal structural set with `failure=true`; any numeric RPE
+  attached to that marker is discarded. Numeric edits update their existing
+  DOM row, preserving focus so multi-digit input is uninterrupted. Search
+  completion scrolls the dedicated workout container to put the search field
+  at its top and reveal results.
   Only explicitly completed set rows publish. The strict JSON
   `POST /fitness/entry/publish` repeats exact-admin and same-origin checks,
-  accepts RPE 6.00-10.00 and existing set types, derives all IDs/Eastern
-  projections/taxonomy server-side, and commits the whole workout through the
-  existing create-only manual write. A valid 200 response contains
+  accepts RPE 6.00-10.00 or failure plus the five structural set types,
+  derives all IDs/Eastern projections/taxonomy server-side, and commits the
+  whole workout through the existing create-only manual write. A valid 200
+  response contains
   `{location,duplicate,share_text}`; `share_text` is generated from the
-  freshly rebuilt stored workout, so aliases, timing, volume, and PR labels
-  match its page exactly for both a new write and an idempotent replay.
+  freshly rebuilt stored workout through `src/workout_text.rs`, so aliases and
+  timing match its page exactly for both a new write and an idempotent replay.
   An empty restored draft always takes a
   fresh start time; any other mutable draft at least four hours old keeps its
   entered content but rebases its start when it is restored. Finish atomically
@@ -392,7 +410,10 @@ reuse the local sync token or expose unrestricted SurrealQL.
 - Records (`/fitness/lift/*` badges) are derived from full set history when the
   in-memory snapshot is rebuilt, never stored or imported. Negative assisted
   sets earn reps records only: assistance alone is not the resistance moved,
-  and it is not comparable to older positive-assistance history.
+  and it is not comparable to older positive-assistance history. A load PR
+  compares weight first and reps second: only reps performed at the exact
+  all-time maximum load break that load's tie. Thus a higher-rep repeat at the
+  maximum load becomes the new load record; a lighter high-rep set does not.
 - Run metrics use integer milliseconds and millimeters. Pace is always derived
   at render time; it is never stored. Garmin supplies an absolute source start
   instant; manual entry uses the first write's server timestamp. Both project
@@ -422,12 +443,12 @@ Public reads are `Cache-Control: no-store` and include
   `{id,path,title,raw_title,started_at_local,ended_at_local,eastern_offset_minutes,end_eastern_offset_minutes,duration_seconds,duration_suspicious,notes,description,sets}`.
   `id` stays an opaque UTC-derived stable identifier; `path` is the canonical
   public path segment. Reader responses do not expose a `started_at_utc`
-  field; all user-facing times are Eastern.
-  each set is
-  `{id,ordinal,exercise_name,raw_exercise_name,exercise_note,superset_id,weight_milli,weight_unit,reps,effort_hundredths,distance_milli,set_time_seconds,set_type,records}`;
+  field; all user-facing times are Eastern. Each set is
+  `{id,ordinal,exercise_name,raw_exercise_name,exercise_note,superset_id,weight_milli,weight_unit,reps,effort_hundredths,failure,distance_milli,set_time_seconds,set_type,records}`;
   `weight_milli` is a signed integer or `null`, with negatives representing
-  assistance;
-  each record is `{level,kind}` (derived, see above). Pagination is by whole
+  assistance. `failure` is a boolean, is mutually exclusive with numeric
+  `effort_hundredths`, and never appears in `set_type`. Each record is
+  `{level,kind}` (derived, see above). Pagination is by whole
   workout, so a workout's matching sets are never split across pages.
   `total_sets` and `total_workouts` cover the entire filtered result, not just
   the page.
@@ -506,7 +527,8 @@ The write path is `POST /api/fitness/import`, protected by the
   }],
   sets: [{
     id, workout_id, ordinal, exercise_name, raw_exercise_name, exercise_note,
-    superset_id, weight_milli, weight_unit: "lbs", reps, effort_hundredths, distance_milli,
+    superset_id, weight_milli, weight_unit: "lbs", reps, effort_hundredths,
+    failure, distance_milli,
     set_time_seconds, set_type
   }]
 }
@@ -515,7 +537,11 @@ The write path is `POST /api/fitness/import`, protected by the
 A payload that includes a `records` key is rejected — records are derived,
 never imported. Nullable fields must be explicit JSON `null`. IDs,
 cross-references, UTC source dates, ordinals, scaled integers, enum values,
-and every string/array bound are validated before any write. `weight_milli`
+and every string/array bound are validated before any write. New payloads must
+not combine `failure=true` with numeric effort. During rollout, the previous
+payload shape and its `FAILURE_SET` value remain accepted; that legacy marker
+becomes `failure=true` + `NORMAL_SET`, and any legacy numeric effort is
+discarded. `weight_milli`
 is bounded to `-1_000_000_000..=1_000_000_000`; the other set quantities are
 non-negative. The server
 derives the Eastern fields; callers never supply them. The response is
@@ -677,6 +703,11 @@ sync endpoint continues to accept only
   on the exercise page. On a clean database the alias rows exist before the
   first import; on an existing archive the pullover rename migrates sets,
   taxonomy, and muscle weights in the same transaction.
+- Site schema migration 8 moves historical `FAILURE_SET` rows onto the effort
+  axis as `failure=true` + `NORMAL_SET`. If such a row also has numeric RPE,
+  the migration clears it rather than inventing a reconciliation. It fills
+  every other historical row with `failure=false` and bumps the fitness
+  version only when legacy failures changed.
 - `just reset-fitness-local` deliberately preserves aliases. The following
   CSV re-import therefore creates/uses the canonical exercise even though the
   export still says `Barbell Pullover Crunches`.

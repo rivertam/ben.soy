@@ -37,6 +37,7 @@ pub(super) struct TrainingSet<'a> {
     pub(super) exercise_name: &'a str,
     pub(super) set_type: &'a str,
     pub(super) effort_hundredths: Option<u64>,
+    pub(super) failure: bool,
     pub(super) tags: Option<&'a [(String, String)]>,
     /// `(granular muscle id, ratio_hundredths)` in canonical order, from
     /// `Snapshot::exercise_weight_map`.
@@ -146,7 +147,7 @@ pub(super) fn derive<'a>(
         } else {
             continue;
         };
-        let points = scoring::set_volume_points(set.set_type, set.effort_hundredths);
+        let points = scoring::set_volume_points(set.set_type, set.effort_hundredths, set.failure);
         if points == 0 {
             continue;
         }
@@ -171,8 +172,12 @@ pub(super) fn derive<'a>(
             .extend(&movements);
 
         for (muscle, ratio) in weights {
-            let centi_points =
-                scoring::muscle_credit_centi(set.set_type, set.effort_hundredths, *ratio);
+            let centi_points = scoring::muscle_credit_centi(
+                set.set_type,
+                set.effort_hundredths,
+                set.failure,
+                *ratio,
+            );
             by_muscle
                 .entry(*muscle)
                 .or_default()
@@ -630,6 +635,7 @@ mod tests {
         exercise: &'static str,
         set_type: &'static str,
         effort: Option<u64>,
+        failure: bool,
         tags: Vec<(String, String)>,
         weights: Vec<(&'static str, u32)>,
     }
@@ -641,6 +647,7 @@ mod tests {
                 exercise_name: self.exercise,
                 set_type: self.set_type,
                 effort_hundredths: self.effort,
+                failure: self.failure,
                 tags: Some(&self.tags),
                 weights: Some(&self.weights),
             }
@@ -657,8 +664,16 @@ mod tests {
             exercise: "Bench Press",
             set_type,
             effort,
+            failure: false,
             tags: vec![tag("movement", "horizontal-push")],
             weights: vec![("mid-chest", 100), ("triceps", 50)],
+        }
+    }
+
+    fn failure_bench(date: &'static str) -> OwnedSet {
+        OwnedSet {
+            failure: true,
+            ..bench(date, "NORMAL_SET", None)
         }
     }
 
@@ -668,6 +683,7 @@ mod tests {
             exercise: "Full Squat",
             set_type: "NORMAL_SET",
             effort: Some(1000),
+            failure: false,
             tags: vec![tag("movement", "squat-type")],
             weights: vec![("quads", 100), ("glute-max", 100)],
         }
@@ -679,6 +695,7 @@ mod tests {
             exercise,
             set_type: "NORMAL_SET",
             effort: Some(1000),
+            failure: false,
             tags: vec![tag("movement", movement)],
             weights: vec![("lateral-delts", 100)],
         }
@@ -690,6 +707,7 @@ mod tests {
             exercise,
             set_type: "NORMAL_SET",
             effort: Some(1000),
+            failure: false,
             tags: Vec::new(),
             weights: vec![(muscle, 100)],
         }
@@ -715,7 +733,7 @@ mod tests {
         let focus = derive_owned(&[
             bench("2026-07-29", "NORMAL_SET", Some(1000)),
             bench("2026-07-29", "WARMUP_SET", Some(1000)),
-            bench("2026-07-23", "FAILURE_SET", None),
+            failure_bench("2026-07-23"),
         ]);
 
         // 5 + 0 + 6 = 11 points; mid-chest rides at 100, triceps at 50.
@@ -730,8 +748,8 @@ mod tests {
             bench("2026-07-23", "NORMAL_SET", Some(800)),
             bench("2026-07-22", "NORMAL_SET", Some(900)),
             bench("2026-05-28", "NORMAL_SET", Some(1000)),
-            bench("2026-05-27", "FAILURE_SET", None),
-            bench("2026-07-30", "FAILURE_SET", None),
+            failure_bench("2026-05-27"),
+            failure_bench("2026-07-30"),
         ]);
 
         assert_eq!(muscle(&focus, "mid-chest").recent_centi_points, 300);
@@ -750,7 +768,7 @@ mod tests {
             bench("2026-07-02", "NORMAL_SET", Some(800)),
             bench("2026-07-16", "NORMAL_SET", Some(800)),
             // Chest is already ahead of its baseline pace; quads/glutes are not.
-            bench("2026-07-27", "FAILURE_SET", None),
+            failure_bench("2026-07-27"),
         ];
         let focus = derive_owned(&sets);
         let recommendation = focus.recommendation.expect("recommendation");
@@ -871,8 +889,9 @@ mod tests {
         let unweighted = [OwnedSet {
             date: "2026-07-29",
             exercise: "Mystery lift",
-            set_type: "FAILURE_SET",
+            set_type: "NORMAL_SET",
             effort: None,
+            failure: true,
             tags: Vec::new(),
             weights: Vec::new(),
         }];

@@ -48,6 +48,8 @@ pub struct Set {
     pub weight_unit: String,
     pub reps: Option<u64>,
     pub effort_hundredths: Option<u64>,
+    /// True failure is mutually exclusive with numeric RPE.
+    pub failure: bool,
     pub distance_milli: Option<u64>,
     pub set_time_seconds: Option<u64>,
     pub set_type: String,

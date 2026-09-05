@@ -146,6 +146,14 @@ saved Workout Receipts in `outbox`. It loads the dedicated Rust/Wasm core,
 serializes state changes behind a versioned `MessageChannel` protocol, and
 publishes oldest-first in the background. `Service-Worker-Allowed: /fitness`
 lets the script below the path control the exact `/fitness` start URL.
+When that installed standalone app opens `/fitness`, the signed-in owner page
+asks the worker whether its device-local Workout Draft has content and replaces
+the landing URL with `/fitness/entry` when it does. Anonymous visitors and
+ordinary browser navigations stay on `/fitness`; the server never learns draft
+contents. Worker mutation broadcasts exclude the requesting client, whose RPC
+reply already contains the new snapshot, so typing a numeric field does not
+replace its focused DOM row after each digit. Other controlled tabs still
+receive the change notification.
 
 The phone Fitness tab always navigates to canonical `/fitness`, rather than
 the home deck's `/#fitness` fragment, so the browser sees that manifest before

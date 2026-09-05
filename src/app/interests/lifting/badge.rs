@@ -23,13 +23,15 @@ enum Badge {
 }
 
 fn badge_for(set: &fitness::Set) -> Badge {
-    match set.set_type.as_str() {
-        "WARMUP_SET" => Badge::Warmup,
-        "FAILURE_SET" => Badge::Failure,
-        _ => Badge::Points {
+    if set.set_type == "WARMUP_SET" {
+        Badge::Warmup
+    } else if set.failure {
+        Badge::Failure
+    } else {
+        Badge::Points {
             points: effort_points(set.effort_hundredths),
             show_ordinal: set.effort_hundredths.is_none(),
-        },
+        }
     }
 }
 
@@ -178,7 +180,7 @@ pub(super) async fn set_badge(set: &fitness::Set, effort_popover_id: &str) -> Re
 mod tests {
     use super::*;
 
-    fn set(set_type: &str, effort_hundredths: Option<u64>) -> fitness::Set {
+    fn set(set_type: &str, effort_hundredths: Option<u64>, failure: bool) -> fitness::Set {
         fitness::Set {
             id: "fitness:2026-07-21T21:03:00:0001".to_string(),
             ordinal: 1,
@@ -190,6 +192,7 @@ mod tests {
             weight_unit: "lbs".to_string(),
             reps: None,
             effort_hundredths,
+            failure,
             distance_milli: None,
             set_time_seconds: None,
             set_type: set_type.to_string(),
@@ -199,10 +202,13 @@ mod tests {
 
     #[test]
     fn badge_kind_is_decided_by_the_set_data() {
-        assert_eq!(badge_for(&set("WARMUP_SET", Some(1_000))), Badge::Warmup);
-        assert_eq!(badge_for(&set("FAILURE_SET", None)), Badge::Failure);
         assert_eq!(
-            badge_for(&set("NORMAL_SET", Some(1_000))),
+            badge_for(&set("WARMUP_SET", Some(1_000), false)),
+            Badge::Warmup
+        );
+        assert_eq!(badge_for(&set("NORMAL_SET", None, true)), Badge::Failure);
+        assert_eq!(
+            badge_for(&set("NORMAL_SET", Some(1_000), false)),
             Badge::Points {
                 points: 5,
                 show_ordinal: false
@@ -210,7 +216,7 @@ mod tests {
         );
         // A working set without recorded effort keeps its ordinal visible.
         assert_eq!(
-            badge_for(&set("NORMAL_SET", None)),
+            badge_for(&set("NORMAL_SET", None, false)),
             Badge::Points {
                 points: 2,
                 show_ordinal: true
@@ -218,7 +224,7 @@ mod tests {
         );
         // Unknown set kinds fall through to the working-set dial.
         assert_eq!(
-            badge_for(&set("DROP_SET", Some(900))),
+            badge_for(&set("DROP_SET", Some(900), false)),
             Badge::Points {
                 points: 4,
                 show_ordinal: false

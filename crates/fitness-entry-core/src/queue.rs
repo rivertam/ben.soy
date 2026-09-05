@@ -197,6 +197,7 @@ mod tests {
                         weight_milli: Some(225_000),
                         reps: 5,
                         effort_hundredths: Some(900),
+                        failure: false,
                         set_type: "NORMAL_SET".into(),
                     }],
                 }],

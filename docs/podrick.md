@@ -193,15 +193,14 @@ origin doing its job, not a bug to fix.
 - **Message text escapes markdown.** Workout titles are user input as far as
   the channel is concerned, and `allowed_mentions` is empty so a title can
   never ping a server that isn't mine.
-- **The message is a plain set list, never a highlight reel.** `announce.rs`
-  deliberately mirrors `lifting/share.rs::share_text` line for line — same meta
-  line, same `1. 135 lbs × 6 @ RPE 8` grammar, same blank-line grouping — with
-  two deliberate divergences: personal records are omitted entirely (the
-  permalink shows them properly, and four record categories per exercise is
-  noise in a channel), and Discord needs a bold title, escaped markdown, and a
-  2000-character cap. It is a separate implementation only because `share_text`
-  reaches `WorkoutCard` → `filters` → the snapshot engine, none of which
-  belongs in a bot. Change one format and consider the other.
+- **The message is a plain set list, never a highlight reel.**
+  `src/workout_text.rs` is the single application formatter used by both
+  `announce.rs` and `lifting/share.rs`; its canonical output is Podrick's bold
+  title, facts line, Roman exercise headings, `W.` warm-ups, independently
+  numbered working sets, notes, and permalink. Personal records are omitted
+  entirely (the permalink shows them properly, and four record categories per
+  exercise is noise in a channel). Podrick alone supplies the absolute origin
+  and Discord's 2,000-character cap.
 - **Oversized workouts drop whole exercise blocks, never half of one**, and
   always keep the title, the facts line, and the permalink.
 - **Pants history is source facts, not mutable claim totals.**

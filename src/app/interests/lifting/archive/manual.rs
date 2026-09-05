@@ -500,12 +500,16 @@ fn parse_set_line(
     }
 
     let mut set_type = "NORMAL_SET";
+    let mut failure = false;
     let mut side = None;
     for annotation in annotations {
         let normalized = annotation.to_ascii_lowercase();
         let candidate = match normalized.as_str() {
             "warm up" | "warm-up" | "warmup" => Some("WARMUP_SET"),
-            "failure" => Some("FAILURE_SET"),
+            "failure" => {
+                failure = true;
+                None
+            }
             "drop set" | "dropset" => Some("DROP_SET"),
             "partial reps" => Some("PARTIAL_REPS_SET"),
             "negative reps" => Some("NEGATIVE_REPS_SET"),
@@ -544,7 +548,8 @@ fn parse_set_line(
         weight_milli: Some(weight_milli),
         weight_unit: "lbs".to_string(),
         reps: Some(reps),
-        effort_hundredths: effort,
+        effort_hundredths: if failure { None } else { effort },
+        failure,
         distance_milli: None,
         set_time_seconds: None,
         set_type: set_type.to_string(),
@@ -753,7 +758,9 @@ https://lyfta.app/wk/5";
         assert_eq!(parsed.payload.sets[0].set_type, "WARMUP_SET");
         assert_eq!(parsed.payload.sets[2].effort_hundredths, Some(900));
         assert_eq!(parsed.payload.sets[3].effort_hundredths, Some(1_000));
-        assert_eq!(parsed.payload.sets[8].set_type, "FAILURE_SET");
+        assert_eq!(parsed.payload.sets[8].set_type, "NORMAL_SET");
+        assert!(parsed.payload.sets[8].failure);
+        assert_eq!(parsed.payload.sets[8].effort_hundredths, None);
         assert_eq!(
             parsed.payload.sets[11].id,
             "fitness:2026-07-24T14:38:00:0012"

@@ -53,6 +53,12 @@ must diff clean, byte-for-byte where possible**:
 6. **`/api/*/ids` array order** — `SELECT id FROM ...` with no ordering;
    storage order differs between D1 and the current store. Compare as sets (the
    sync CLIs already do).
+7. **Fitness failure representation** — the current API adds a boolean
+   `failure` field to every set and normalizes captured `FAILURE_SET` rows to
+   `set_type="NORMAL_SET", failure=true`; numeric effort on such a legacy row
+   is cleared. The frozen Worker fixtures predate that model correction.
+   Accordingly, the historical `sets_settype` request for `FAILURE_SET` now
+   returns the normal invalid-set-type 400 instead of its captured result.
 
 Statuses in `manifest.tsv` must match exactly, including the 400/401/404
 split and the exact `{"error": "..."}` message bodies (note

@@ -69,7 +69,6 @@ pub(super) const EQUIPMENT: &[(&str, &str)] = &[
 pub(super) const SET_TYPES: &[(&str, &str)] = &[
     ("NORMAL_SET", "working"),
     ("WARMUP_SET", "warm-up"),
-    ("FAILURE_SET", "failure"),
     ("PARTIAL_REPS_SET", "partial reps"),
     ("NEGATIVE_REPS_SET", "negative reps"),
     ("DROP_SET", "drop set"),
