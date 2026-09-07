@@ -165,9 +165,7 @@ pub fn pounds_to_milli(raw: &str) -> Option<i64> {
     let (negative, unsigned) = value
         .strip_prefix('-')
         .map_or((false, value), |rest| (true, rest));
-    let (whole, fraction) = unsigned
-        .split_once('.')
-        .unwrap_or((unsigned, ""));
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
     if whole.is_empty()
         || whole.len() > 7
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
