@@ -17,9 +17,10 @@
 //!    public TTL and serve that viewer's page (and email) to everyone.
 //!    Keying on cookie PRESENCE, not validity: a garbage `__Host-viewer`
 //!    curl'd at the site must fail closed to uncacheable, and deciding must
-//!    not require the encrypted jar. The one exemption is by RESPONSE — the
-//!    `immutable` hashed assets, shared bytes worth caching in signed-in
-//!    browsers. Never exempt by request path: `/_topcoat/junk` falls through
+//!    not require the encrypted jar. The one exemption is by RESPONSE —
+//!    `immutable` shared bytes such as hashed assets and versioned workout
+//!    cards remain worth caching in signed-in browsers. Never exempt by
+//!    request path: `/_topcoat/junk` falls through
 //!    to the catch-all 404, which renders the personalized shell under its
 //!    public default TTL (a review caught exactly that hole).
 //! 2. **Native-share privacy.** Every `/fitness/share` response (and its
@@ -111,10 +112,11 @@ fn names_viewer_cookie(headers: &HeaderMap) -> bool {
         .any(|(name, _)| name.trim() == VIEWER_COOKIE_BROWSER_NAME)
 }
 
-/// Whether the response already declared itself `immutable` — true only of
-/// the hashed `/_topcoat/` assets, whose bytes are shared and never
-/// personalized. Everything else a signed-in request produces, including any
-/// 404 fallback, must not outlive the request in a cache.
+/// Whether the response already declared itself `immutable`. Those responses
+/// are shared and never personalized: hashed `/_topcoat/` assets and workout
+/// cards whose query names the exact fitness snapshot. Everything else a
+/// signed-in request produces, including any 404 fallback, must not outlive
+/// the request in a cache.
 fn immutable(cache_control: Option<&HeaderValue>) -> bool {
     cache_control
         .and_then(|value| value.to_str().ok())

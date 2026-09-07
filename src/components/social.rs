@@ -36,6 +36,15 @@ pub struct PageMeta {
     title: String,
     description: String,
     canonical_path: String,
+    image: Option<PageImage>,
+}
+
+struct PageImage {
+    path: String,
+    content_type: String,
+    width: u32,
+    height: u32,
+    alt: String,
 }
 
 impl PageMeta {
@@ -44,6 +53,7 @@ impl PageMeta {
             title: title.into(),
             description: String::new(),
             canonical_path: String::new(),
+            image: None,
         }
     }
 
@@ -54,6 +64,28 @@ impl PageMeta {
 
     pub fn canonical_path(mut self, canonical_path: impl Into<String>) -> Self {
         self.canonical_path = canonical_path.into();
+        self
+    }
+
+    /// Use a page-specific social image instead of the registry photo or
+    /// general site card. The path may be site-relative or an absolute HTTP
+    /// URL; callers supply the exact raster dimensions crawlers need before
+    /// downloading it.
+    pub fn image(
+        mut self,
+        path: impl Into<String>,
+        content_type: impl Into<String>,
+        width: u32,
+        height: u32,
+        alt: impl Into<String>,
+    ) -> Self {
+        self.image = Some(PageImage {
+            path: path.into(),
+            content_type: content_type.into(),
+            width,
+            height,
+            alt: alt.into(),
+        });
         self
     }
 
@@ -84,7 +116,7 @@ pub(super) struct SocialMeta {
     pub image_type: String,
     pub image_width: u32,
     pub image_height: u32,
-    pub image_alt: &'static str,
+    pub image_alt: String,
     pub object_type: &'static str,
     pub published_time: Option<&'static str>,
     pub article_tags: &'static [&'static str],
@@ -109,18 +141,35 @@ pub(super) fn metadata(cx: &Cx, page: &PageMeta) -> SocialMeta {
         page.description.trim().to_string()
     };
 
-    let (image, image_width, image_height, image_alt) = post.and_then(|post| post.photo).map_or(
-        (DEFAULT_SOCIAL_IMAGE, 1200, 630, DEFAULT_IMAGE_ALT),
-        |photo| (photo.src, photo.width, photo.height, photo.alt),
-    );
     let assets = asset_config(cx);
-    let resolved_image = assets.resolve(image);
-    let image_url = absolute_asset_url(&origin, &resolved_image);
-    let image_type = assets
-        .get(image)
-        .expect("declared social image is present in the asset bundle")
-        .content_type()
-        .to_string();
+    let (image_url, image_type, image_width, image_height, image_alt) =
+        if let Some(image) = &page.image {
+            (
+                absolute_asset_url(&origin, &image.path),
+                image.content_type.clone(),
+                image.width,
+                image.height,
+                image.alt.clone(),
+            )
+        } else {
+            let (image, width, height, alt) = post.and_then(|post| post.photo).map_or(
+                (DEFAULT_SOCIAL_IMAGE, 1200, 630, DEFAULT_IMAGE_ALT),
+                |photo| (photo.src, photo.width, photo.height, photo.alt),
+            );
+            let resolved_image = assets.resolve(image);
+            let content_type = assets
+                .get(image)
+                .expect("declared social image is present in the asset bundle")
+                .content_type()
+                .to_string();
+            (
+                absolute_asset_url(&origin, &resolved_image),
+                content_type,
+                width,
+                height,
+                alt.to_string(),
+            )
+        };
 
     let title = if page.title.is_empty() {
         SITE_NAME.to_string()
@@ -176,7 +225,7 @@ pub(super) async fn head(cx: &Cx, meta: &SocialMeta) -> Result<View> {
         <meta property="og:image:type" content=(meta.image_type.as_str())>
         <meta property="og:image:width" content=(image_width.as_str())>
         <meta property="og:image:height" content=(image_height.as_str())>
-        <meta property="og:image:alt" content=(meta.image_alt)>
+        <meta property="og:image:alt" content=(meta.image_alt.as_str())>
 
         if let Some(published_time) = meta.published_time {
             <meta property="article:published_time" content=(published_time)>
@@ -190,7 +239,7 @@ pub(super) async fn head(cx: &Cx, meta: &SocialMeta) -> Result<View> {
         <meta name="twitter:title" content=(meta.title.as_str())>
         <meta name="twitter:description" content=(meta.description.as_str())>
         <meta name="twitter:image" content=(meta.image_url.as_str())>
-        <meta name="twitter:image:alt" content=(meta.image_alt)>
+        <meta name="twitter:image:alt" content=(meta.image_alt.as_str())>
     }
 }
 
@@ -328,7 +377,7 @@ mod tests {
             image_type: "image/png".to_string(),
             image_width: 1200,
             image_height: 630,
-            image_alt: DEFAULT_IMAGE_ALT,
+            image_alt: DEFAULT_IMAGE_ALT.to_string(),
             object_type: "article",
             published_time: Some("2026-07-12"),
             article_tags: &["climate", "planes"],
@@ -358,6 +407,29 @@ mod tests {
             assert!(html.contains(needle), "missing {needle} in {html}");
         }
         assert!(html.contains("leisure &amp; what"));
+    }
+
+    #[test]
+    fn page_specific_image_keeps_its_query_and_crawler_contract() {
+        let page = PageMeta::new("Laser Beans · Fitness")
+            .description("A detailed workout.")
+            .canonical_path("/fitness/lift/laser-beans")
+            .image(
+                "/fitness/lift/laser-beans/social.png?v=149",
+                "image/png",
+                1200,
+                630,
+                "Primary: upper chest and quads.",
+            );
+        let image = page.image.as_ref().unwrap();
+
+        assert_eq!(
+            absolute_asset_url("https://ben.soy", &image.path),
+            "https://ben.soy/fitness/lift/laser-beans/social.png?v=149"
+        );
+        assert_eq!(image.content_type, "image/png");
+        assert_eq!((image.width, image.height), (1200, 630));
+        assert_eq!(image.alt, "Primary: upper chest and quads.");
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod muscle_taxonomy;
 mod muscles;
 mod results;
 mod share;
+mod social_card;
 mod taxonomy;
 mod training_focus;
 
@@ -27,8 +28,9 @@ use topcoat::{
     asset::{Asset, asset},
     context::{Cx, app_context},
     router::{
-        HeaderValue, error::not_found, error::redirect, error::redirect_permanent, header, page,
-        parse_query_params, path_param, request::uri, route,
+        Body, HeaderValue, StatusCode, error::not_found, error::redirect,
+        error::redirect_permanent, header, page, parse_query_params, path_param, request::uri,
+        response::Response, route,
     },
     view::{class, component, view},
 };
@@ -201,6 +203,54 @@ async fn workout_upload_form(textarea_id: &str) -> Result {
 
 path_param!(workout_path);
 
+const VERSIONED_SOCIAL_IMAGE_CACHE: &str = "public, max-age=31536000, immutable";
+const UNVERSIONED_SOCIAL_IMAGE_CACHE: &str = "no-cache";
+
+fn social_image_cache(query: Option<&str>, version: i64) -> &'static str {
+    let expected_query = format!("v={version}");
+    if query == Some(expected_query.as_str()) {
+        VERSIONED_SOCIAL_IMAGE_CACHE
+    } else {
+        UNVERSIONED_SOCIAL_IMAGE_CACHE
+    }
+}
+
+/// Raster social card for one workout. A matching snapshot version makes the
+/// URL immutable; direct or stale-version requests still receive the current
+/// image, but must revalidate it instead of pinning mismatched workout data.
+#[route(GET "/fitness/lift/{workout_path}/social.png")]
+async fn lift_social_image(cx: &Cx) -> Result<Response> {
+    let workout_path = path_param::<WorkoutPath>(cx);
+    let (detail, weights) =
+        match fitness::load_workout_by_path(app_context::<FitnessStore>(cx), workout_path).await {
+            Ok(loaded) => loaded,
+            Err(error) if error.is_not_found() => return Err(not_found().into()),
+            Err(error) => {
+                eprintln!("fitness social image fetch failed: {error}");
+                return Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .header("x-content-type-options", "nosniff")
+                    .body(Body::from("fitness data unavailable"))
+                    .expect("fitness social image error uses static headers"));
+            }
+        };
+    let Some(workout) = detail.workout.as_ref() else {
+        return Err(not_found().into());
+    };
+    let involvement = muscles::workout_involvement(workout, &weights);
+    let cache_control = social_image_cache(uri(cx).query(), detail.version);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, social_card::CONTENT_TYPE)
+        .header(header::CACHE_CONTROL, cache_control)
+        .header("x-content-type-options", "nosniff")
+        .body(Body::from(social_card::render_png(workout, &involvement)))
+        .expect("fitness social image response uses static headers"))
+}
+
 #[page("/fitness/lift/{workout_path}")]
 async fn lift_detail(cx: &Cx) -> Result {
     let workout_path = path_param::<WorkoutPath>(cx);
@@ -230,7 +280,25 @@ async fn lift_detail(cx: &Cx) -> Result {
     let page_title = workout
         .map(|workout| format!("{} · {}", workout.title, meta.title))
         .unwrap_or_else(|| meta.title.to_string());
-    let social_description = workout.map(crate::app::feed::workout_description);
+    let social_description = workout.map(|workout| {
+        involvement.as_ref().map_or_else(
+            || crate::app::feed::workout_description(workout),
+            |involvement| social_card::description(workout, involvement),
+        )
+    });
+    let mut page_meta = crate::components::PageMeta::new(page_title.as_str())
+        .description(social_description.as_deref().unwrap_or(""));
+    if let (Some(workout), Some(involvement), Some(detail)) =
+        (workout, involvement.as_ref(), detail)
+    {
+        page_meta = page_meta.image(
+            social_card::image_path(&workout.path, detail.version),
+            social_card::CONTENT_TYPE,
+            social_card::WIDTH,
+            social_card::HEIGHT,
+            social_card::image_alt(workout, involvement),
+        );
+    }
     let page_heading = workout
         .map(|workout| workout.title.as_str())
         .unwrap_or("Workout");
@@ -249,8 +317,7 @@ async fn lift_detail(cx: &Cx) -> Result {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(
-            page: crate::components::PageMeta::new(page_title.as_str())
-                .description(social_description.as_deref().unwrap_or("")),
+            page: page_meta,
             active: "",
             runtime: false,
             fitness_pwa: true,
@@ -637,5 +704,30 @@ async fn set_row(row: &results::SetRow<'_>, divided: bool) -> Result {
                 </span>
             }
         </li>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_matching_social_image_version_is_immutable() {
+        assert_eq!(
+            social_image_cache(Some("v=149"), 149),
+            VERSIONED_SOCIAL_IMAGE_CACHE
+        );
+        assert_eq!(
+            social_image_cache(Some("v=148"), 149),
+            UNVERSIONED_SOCIAL_IMAGE_CACHE
+        );
+        assert_eq!(
+            social_image_cache(Some("v=149&extra=1"), 149),
+            UNVERSIONED_SOCIAL_IMAGE_CACHE
+        );
+        assert_eq!(
+            social_image_cache(None, 149),
+            UNVERSIONED_SOCIAL_IMAGE_CACHE
+        );
     }
 }
