@@ -167,7 +167,7 @@ pub fn pounds_to_milli(raw: &str) -> Option<i64> {
         .map_or((false, value), |rest| (true, rest));
     let (whole, fraction) = unsigned
         .split_once('.')
-        .map_or((unsigned, ""), |parts| parts);
+        .unwrap_or((unsigned, ""));
     if whole.is_empty()
         || whole.len() > 7
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
@@ -210,7 +210,7 @@ pub fn effort_to_hundredths(raw: &str) -> Option<u64> {
     if value.is_empty() {
         return None;
     }
-    let (whole, fraction) = value.split_once('.').map_or((value, ""), |parts| parts);
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
     if whole.is_empty()
         || whole.len() > 2
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
