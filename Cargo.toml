@@ -59,6 +59,7 @@ diary-core = { workspace = true, features = ["view"] }
 eastern-time = { workspace = true }
 fitness-entry-core = { workspace = true }
 form_urlencoded = "1.2.2"
+font8x8 = "0.3.1"
 futures-util = "0.3.33"
 # Same crate topcoat re-exports header types from; needed whole for
 # `http::request::Parts` in the viewer layer.
@@ -73,6 +74,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-webpki-roots",
     "json",
 ] }
+resvg = { version = "0.48.1", default-features = false }
 rmcp = { version = "=3.1.4", features = [
     "macros",
     "schemars",
