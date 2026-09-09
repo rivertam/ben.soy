@@ -195,9 +195,9 @@ origin doing its job, not a bug to fix.
   never ping a server that isn't mine.
 - **The message is a plain set list, never a highlight reel.**
   `src/workout_text.rs` is the single application formatter used by both
-  `announce.rs` and `lifting/share.rs`; its canonical output is Podrick's bold
-  title, facts line, Roman exercise headings, `W.` warm-ups, independently
-  numbered working sets, notes, and permalink. Personal records are omitted
+  `announce.rs` and `lifting/share.rs`; its canonical output is a title wrapped
+  in single asterisks (`*title*`), facts line, Roman exercise headings, `W.`
+  warm-ups, independently numbered working sets, notes, and permalink. Personal records are omitted
   entirely (the permalink shows them properly, and four record categories per
   exercise is noise in a channel). Podrick alone supplies the absolute origin
   and Discord's 2,000-character cap.

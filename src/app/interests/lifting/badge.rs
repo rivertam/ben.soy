@@ -1,142 +1,114 @@
-//! The per-set badge: the small dial at the head of each set row. The badge
-//! kind is decided entirely by the set's data — warm-ups get a dashed W,
-//! failure sets a filled F, and working sets a ring of effort points.
+//! A joined set stamp: the exercise-local number stays centered in its seal,
+//! with inset service bars for effort and the exact label in its banner.
+
+use std::fmt::Write;
 
 use topcoat::{
     Result,
-    view::{class, component, view},
+    view::{Unescaped, component, view},
 };
 
-use super::{data as fitness, format::format_scaled};
+use super::{archive::scoring::set_volume_points, data as fitness, format::format_scaled};
 
-/// Which badge a set earns.
-#[derive(Debug, PartialEq, Eq)]
-enum Badge {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Badge {
     Warmup,
     Failure,
-    /// A working set: 2–5 stars around the dial, scored from recorded effort.
-    /// Without a recorded effort the ordinal shows in the middle of the dial.
-    Points {
-        points: u32,
-        show_ordinal: bool,
-    },
+    Rated,
+    Unrated,
 }
 
-fn badge_for(set: &fitness::Set) -> Badge {
+pub(super) fn badge_for(set: &fitness::Set) -> Badge {
     if set.set_type == "WARMUP_SET" {
         Badge::Warmup
     } else if set.failure {
         Badge::Failure
+    } else if set.effort_hundredths.is_some() {
+        Badge::Rated
     } else {
-        Badge::Points {
-            points: effort_points(set.effort_hundredths),
-            show_ordinal: set.effort_hundredths.is_none(),
-        }
+        Badge::Unrated
     }
 }
 
-/// Missing effort follows the intended low/default branch rather than
-/// JavaScript's surprising `Number(null) == 0` coercion.
-pub(super) use super::archive::scoring::effort_points;
-
-fn star_angles(points: u32) -> Vec<String> {
-    (0..points)
-        .map(|index| format!("--point-angle: {}deg", index * 360 / points))
-        .collect()
+/// The HTML seal and raster share card use these same 36px drawing units.
+/// `paper` is an application-authored CSS color, never workout text.
+pub(super) fn seal_shapes(set: &fitness::Set, paper: &str) -> String {
+    let badge = badge_for(set);
+    let bars = set_volume_points(&set.set_type, set.effort_hundredths, set.failure);
+    let dash = if matches!(badge, Badge::Warmup | Badge::Unrated) {
+        "2 2"
+    } else {
+        "none"
+    };
+    let paint = if badge == Badge::Unrated {
+        r#"fill="none" stroke="currentColor" stroke-width="0.7" opacity="0.65""#
+    } else {
+        r#"fill="currentColor""#
+    };
+    let mut svg = format!(
+        r#"<circle cx="18" cy="18" r="17.75" fill="{paper}"/>
+<circle class="lift-set-ring" cx="18" cy="18" r="17.2" fill="{paper}" stroke="currentColor" stroke-width="0.85" stroke-opacity="0.65" stroke-dasharray="{dash}"/>"#
+    );
+    for index in 0..bars {
+        write!(
+            svg,
+            r#"<rect class="lift-set-bar" x="14.7" y="4.1" width="6.6" height="1.6" rx="0.2" transform="rotate({} 18 18)" {paint}/>"#,
+            index * 360 / bars,
+        )
+        .expect("write to string");
+    }
+    svg
 }
 
-const DIAL: &str = "relative inline-flex size-8 items-center justify-center rounded-full border \
-     font-meta text-[0.69rem] font-bold leading-none tracking-[0.04em]";
-const DIAL_WARMUP: &str =
-    "text-steel border-dashed border-[color-mix(in_srgb,currentColor_38%,transparent)]";
-const DIAL_FAILURE: &str =
-    "text-oxide bg-oxide/8 border-[color-mix(in_srgb,currentColor_38%,transparent)]";
-const DIAL_POINTS: &str = "text-oxide border-oxide/18";
-/// Each star is pinned to the dial's center, then rotated and swung out to
-/// the ring by its `--point-angle`.
-const STAR: &str = "absolute top-1/2 left-1/2 font-body text-[0.6rem] leading-none text-brass \
-     [transform:translate(-50%,-50%)_rotate(var(--point-angle))_translateY(-0.48rem)]";
+fn effort_label(effort: u64) -> String {
+    // The archive accepts historical values beyond the entry form's RPE
+    // range. Preserve those as recorded rather than inventing negative RIR.
+    match 1_000_u64.checked_sub(effort) {
+        Some(rir) => format!("{} RIR", format_scaled(rir, 100)),
+        None => format!("RPE {}", format_scaled(effort, 100)),
+    }
+}
 
 #[component]
-pub(super) async fn set_badge(set: &fitness::Set, effort_popover_id: &str) -> Result {
-    let ordinal = format!("{:02}", set.ordinal);
-    let effort = set.effort_hundredths.map(|value| format_scaled(value, 100));
-    let (dial, text, title, label, angles) = match badge_for(set) {
-        Badge::Warmup => (
-            DIAL_WARMUP,
-            Some("W".to_string()),
-            format!(
-                "Set {ordinal} · warm-up{}",
-                effort
-                    .as_deref()
-                    .map(|value| format!(" · RPE {value}"))
-                    .unwrap_or_default()
-            ),
-            format!(
-                "Set {ordinal}, warm-up{}",
-                effort
-                    .as_deref()
-                    .map(|value| format!(", RPE {value}"))
-                    .unwrap_or_default()
-            ),
-            Vec::new(),
-        ),
-        Badge::Failure => (
-            DIAL_FAILURE,
-            Some("F".to_string()),
-            format!(
-                "Set {ordinal} · failure{}",
-                effort
-                    .as_deref()
-                    .map(|value| format!(" · RPE {value}"))
-                    .unwrap_or_default()
-            ),
-            format!(
-                "Set {ordinal}, failure{}",
-                effort
-                    .as_deref()
-                    .map(|value| format!(", RPE {value}"))
-                    .unwrap_or_default()
-            ),
-            Vec::new(),
-        ),
-        Badge::Points {
-            points,
-            show_ordinal,
-        } => {
-            let effort_label = effort
-                .as_deref()
-                .map(|value| format!("RPE {value}"))
-                .unwrap_or_else(|| "RPE not recorded".to_string());
-            (
-                DIAL_POINTS,
-                show_ordinal.then(|| ordinal.clone()),
-                format!("Set {ordinal} · {effort_label} · {points} of 5 points"),
-                format!("Set {ordinal}, {effort_label}, {points} of 5 points"),
-                star_angles(points),
-            )
-        }
+pub(super) async fn set_badge(
+    set: &fitness::Set,
+    working_number: Option<usize>,
+    effort_popover_id: &str,
+) -> Result {
+    let ordinal = working_number.map(|number| format!("{number:02}"));
+    let number = ordinal.as_deref().unwrap_or("W");
+    let badge = badge_for(set);
+    let (state, banner) = match badge {
+        Badge::Warmup => ("warmup", "warm-up".to_string()),
+        Badge::Failure => ("failure", "failure".to_string()),
+        Badge::Rated => ("rated", effort_label(set.effort_hundredths.unwrap())),
+        Badge::Unrated => ("unrated", "unrated".to_string()),
     };
-
-    let effort_popover = effort;
+    let label = if badge == Badge::Warmup {
+        "Warm-up set".to_string()
+    } else {
+        format!("Set {number}, {banner}")
+    };
+    let title = if badge == Badge::Failure {
+        "Failure, with distinction."
+    } else {
+        label.as_str()
+    };
     let anchor_name = format!("anchor-name: --inline-popover-{effort_popover_id};");
     let position_anchor = format!("position-anchor: --inline-popover-{effort_popover_id};");
 
     view! {
-        if let Some(effort) = effort_popover {
+        if set.effort_hundredths.is_some() || badge == Badge::Failure {
             <button
                 type="button"
-                class=(class!(DIAL, dial, "appearance-none p-0 bg-transparent cursor-help hover:border-oxide focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-oxide focus-visible:outline-offset-2"))
+                class="lift-set-stamp"
+                data-set-effort=(state)
                 popovertarget=(effort_popover_id)
                 style=(anchor_name.as_str())
-                title=(title.as_str())
+                title=(title)
                 aria-label=(label.as_str())
             >
-                for style in angles.iter() {
-                    <span class=(STAR) style=(style.as_str()) aria-hidden="true">
-                        "★"
-                    </span>
-                }
+                stamp_face(set: set, number: number, banner: banner.as_str())
             </button>
             <span
                 id=(effort_popover_id)
@@ -151,28 +123,46 @@ pub(super) async fn set_badge(set: &fitness::Set, effort_popover_id: &str) -> Re
                     popovertargetaction="hide"
                     aria-label="Close popover"
                 >"×"</button>
-                <span class="inline-popover-kicker">"RPE "(effort.as_str())</span>
-                <span class="inline-popover-preview">
-                    "Rate of perceived exertion. Strong values below 6 are treated as reps in reserve and converted to RPE during import."
-                </span>
+                if badge == Badge::Failure {
+                    <span class="inline-popover-kicker">"failure"</span>
+                    <span class="inline-popover-preview lift-set-commendation">"With distinction."</span>
+                } else if let Some(effort) = set.effort_hundredths {
+                    <span class="inline-popover-kicker">"RPE "(format_scaled(effort, 100))</span>
+                    <span class="inline-popover-preview">
+                        if let Some(rir) = 1_000_u64.checked_sub(effort) {
+                            (format!("{} reps in reserve. ", format_scaled(rir, 100)))
+                            "RIR describes how many more reps you could have completed."
+                        } else {
+                            "Rate of perceived exertion, as recorded for this set."
+                        }
+                    </span>
+                }
             </span>
         } else {
-        <span
-            class=(class!(DIAL, dial))
-            role="img"
-            title=(title.as_str())
-            aria-label=(label.as_str())
-        >
-            if let Some(text) = &text {
-                (text.as_str())
-            }
-            for style in angles.iter() {
-                <span class=(STAR) style=(style.as_str()) aria-hidden="true">
-                    "★"
-                </span>
-            }
-        </span>
+            <span
+                class="lift-set-stamp"
+                data-set-effort=(state)
+                role="img"
+                title=(title)
+                aria-label=(label.as_str())
+            >
+                stamp_face(set: set, number: number, banner: banner.as_str())
+            </span>
         }
+    }
+}
+
+#[component]
+async fn stamp_face(set: &fitness::Set, number: &str, banner: &str) -> Result {
+    let seal = seal_shapes(set, "var(--color-page)");
+    view! {
+        <span class="lift-set-number" aria-hidden="true">
+            <svg class="lift-set-seal" viewBox="0 0 36 36" aria-hidden="true" focusable="false">
+                (Unescaped::new_unchecked(seal))
+            </svg>
+            <span class="lift-set-numeral">(number)</span>
+        </span>
+        <span class="lift-set-effort" aria-hidden="true">(banner)</span>
     }
 }
 
@@ -183,7 +173,7 @@ mod tests {
     fn set(set_type: &str, effort_hundredths: Option<u64>, failure: bool) -> fitness::Set {
         fitness::Set {
             id: "fitness:2026-07-21T21:03:00:0001".to_string(),
-            ordinal: 1,
+            ordinal: 6,
             exercise_name: "Bench".to_string(),
             raw_exercise_name: "Bench".to_string(),
             exercise_note: None,
@@ -201,57 +191,75 @@ mod tests {
     }
 
     #[test]
-    fn badge_kind_is_decided_by_the_set_data() {
-        assert_eq!(
-            badge_for(&set("WARMUP_SET", Some(1_000), false)),
-            Badge::Warmup
-        );
-        assert_eq!(badge_for(&set("NORMAL_SET", None, true)), Badge::Failure);
-        assert_eq!(
-            badge_for(&set("NORMAL_SET", Some(1_000), false)),
-            Badge::Points {
-                points: 5,
-                show_ordinal: false
-            }
-        );
-        // A working set without recorded effort keeps its ordinal visible.
-        assert_eq!(
-            badge_for(&set("NORMAL_SET", None, false)),
-            Badge::Points {
-                points: 2,
-                show_ordinal: true
-            }
-        );
-        // Unknown set kinds fall through to the working-set dial.
-        assert_eq!(
-            badge_for(&set("DROP_SET", Some(900), false)),
-            Badge::Points {
-                points: 4,
-                show_ordinal: false
-            }
-        );
+    fn rated_effort_preserves_exact_hundredths_and_historical_values() {
+        assert_eq!(effort_label(1_000), "0 RIR");
+        assert_eq!(effort_label(950), "0.5 RIR");
+        assert_eq!(effort_label(925), "0.75 RIR");
+        assert_eq!(effort_label(800), "2 RIR");
+        assert_eq!(effort_label(600), "4 RIR");
+        assert_eq!(effort_label(1_100), "RPE 11");
     }
 
-    #[test]
-    fn missing_effort_is_not_coerced_to_zero() {
-        assert_eq!(effort_points(None), 2);
-        assert_eq!(effort_points(Some(1_000)), 5);
+    #[tokio::test]
+    async fn working_numbers_remain_visible_for_every_effort_state() {
+        let cx = topcoat::context::Cx::default();
+        let __cx = &cx;
+        for (effort, failure, banner, state, bars) in [
+            (None, false, "unrated", "unrated", 2),
+            (Some(1_000), false, "0 RIR", "rated", 5),
+            (Some(900), false, "1 RIR", "rated", 4),
+            (Some(800), false, "2 RIR", "rated", 3),
+            (Some(700), false, "3 RIR", "rated", 2),
+            (Some(950), false, "0.5 RIR", "rated", 2),
+            (None, true, "failure", "failure", 6),
+        ] {
+            let source = set("NORMAL_SET", effort, failure);
+            let html = view! {
+                set_badge(set: &source, working_number: Some(3), effort_popover_id: "effort-test")
+            }
+            .unwrap()
+            .render(__cx);
+            assert!(html.contains(">03</span>"), "{html}");
+            assert!(
+                html.contains(&format!("aria-label=\"Set 03, {banner}\"")),
+                "{html}"
+            );
+            assert!(
+                html.contains(&format!("data-set-effort=\"{state}\"")),
+                "{html}"
+            );
+            assert!(!html.contains("Set 06") && !html.contains('★'), "{html}");
+            assert_eq!(html.matches("class=\"lift-set-bar\"").count(), bars);
+            if effort.is_some() || failure {
+                assert!(html.contains("popovertarget=\"effort-test\""));
+                assert!(html.contains("id=\"effort-test\""));
+            }
+            if failure {
+                assert!(html.contains("With distinction."));
+                assert!(!html.contains("RPE "));
+            }
+        }
     }
 
-    #[test]
-    fn stars_are_spread_evenly_around_the_dial() {
-        assert_eq!(
-            star_angles(2),
-            vec!["--point-angle: 0deg", "--point-angle: 180deg"]
-        );
-        assert_eq!(
-            star_angles(4),
-            vec![
-                "--point-angle: 0deg",
-                "--point-angle: 90deg",
-                "--point-angle: 180deg",
-                "--point-angle: 270deg"
-            ]
-        );
+    #[tokio::test]
+    async fn warmups_keep_their_letter_and_banner_even_with_recorded_effort() {
+        let cx = topcoat::context::Cx::default();
+        let __cx = &cx;
+        for effort in [None, Some(800)] {
+            let source = set("WARMUP_SET", effort, false);
+            let html = view! {
+                set_badge(set: &source, working_number: None, effort_popover_id: "warmup-test")
+            }
+            .unwrap()
+            .render(__cx);
+            assert!(html.contains(">W</span>"), "{html}");
+            assert!(html.contains(">warm-up</span>"), "{html}");
+            assert!(html.contains("aria-label=\"Warm-up set\""));
+            assert!(!html.contains("Set 01"));
+            assert!(!html.contains("class=\"lift-set-bar\""));
+            if effort.is_some() {
+                assert!(html.contains("RPE 8"));
+            }
+        }
     }
 }

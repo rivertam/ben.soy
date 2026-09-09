@@ -110,15 +110,29 @@ reuse the local sync token or expose unrestricted SurrealQL.
   tag mapping (`muscle_taxonomy::coarse_tag_for`) because the `muscle`
   facet deliberately keeps the original 13-value tag vocabulary.
 - Workout pages and Podrick use the one canonical application formatter in
-  `src/workout_text.rs`: Podrick's bold title, facts line, Roman-numbered
-  exercise headings, independent working-set numbering, `W.` warm-ups, and
+  `src/workout_text.rs`: a title wrapped in single asterisks (`*title*`), a
+  facts line, Roman-numbered exercise headings, independent working-set
+  numbering, `W.` warm-ups, and
   permanent URL. `share.rs` supplies the page's absolute-or-relative URL;
   Podrick supplies an absolute URL and its 2,000-character transport cap.
   Neither rendition includes PR badges; the linked workout owns those. The
   page text lives in a readonly `<textarea>` — selectable
   without JavaScript, and on the em-dash layer's skip list
   (`src/emdash.rs`) so user-authored em dashes stay plain text;
-  `share.js` only reveals the clipboard button.
+  `share.js` enables separate text and PNG clipboard actions. The image preview,
+  `copy image`, and no-JavaScript `save image` link use the exact same PNG URL
+  as the page's Open Graph metadata. Image copying starts its clipboard write
+  within the click gesture with a promised PNG Blob; failures leave the save
+  link available and text copying independent.
+- `/fitness/lift/{path}/social.png` is a compact 1200×600 workout card with
+  muscle maps and up to four exercise groups of numbered set badges. It uses
+  the lift view's grouping/working numbers and `badge::seal_shapes`, including
+  thin inset effort bars, dashed warm-ups, and hollow unrated marks. Extra
+  groups or sets get explicit `+N` counts; the card never silently implies a
+  partial preview is the whole workout. The old volume-points label is gone.
+  Its URL includes both snapshot version and render revision (`v` and `r`).
+  Only an exact match gets immutable caching; bump the render revision for
+  image design changes so previews can refresh even when workout data did not.
 - Public reads and the authenticated import:
   `src/app/interests/lifting/archive/` — `routes.rs` over the engine
   (filters, import validation, in-memory snapshot, store) and `db.rs`
@@ -372,6 +386,20 @@ reuse the local sync token or expose unrestricted SurrealQL.
 - Stable workout and set IDs remain derived from the raw UTC start timestamp
   (and the whole-workout ordinal for sets). Timezone conversion must never
   change identity, deduplication, or import ordering.
+- Entry rows and workout badges display an independent working-set count per
+  exercise (`01`, `02`, …). Warm-ups display `W` and never advance that count;
+  all other set types and failure sets do. Recorded effort never hides the
+  number. These display numbers are derived, separate from stored ordinals,
+  and entry recalculates them when rows or set types change.
+  Lift rows join that number to a banner for warm-up, exact RIR (`10 - RPE`),
+  failure, or unrated. Failure remains distinct from `0 RIR`, and its banner
+  replaces the old separate failure detail. Recorded RPE stays available in
+  the stamp's popover; historical values above 10 display as RPE unchanged.
+  Thin bars sit inside the number's circular rim, evenly spaced around the
+  whole circle. Their count comes from the shared set-log score: failure = 6,
+  RPE 10/9/8 = 5/4/3, other or missing effort = 2, warm-up = 0. Unrated bars
+  are hollow; warm-up and unrated rims are dashed. The banner preserves exact
+  fractional RIR even when it uses the score's existing baseline bucket.
 - `sets.exercise_name` is the current canonical exercise name;
   `raw_exercise_name` remains the source spelling. Both JSON and Lyfta writes
   resolve `exercise_aliases` before idempotency, taxonomy, or set writes, so

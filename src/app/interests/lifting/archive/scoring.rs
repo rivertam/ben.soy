@@ -1,9 +1,8 @@
 //! The set-log effort score.
 //!
 //! Deliberately an effort score, not load x reps. This is the single copy:
-//! the calendar heatmap's daily totals and the per-set badges must stay in
-//! exact lockstep (it used to be mirrored between the Worker's SQL and two
-//! Rust view helpers).
+//! the set badges, calendar heatmap, and muscle credit must stay in
+//! exact lockstep.
 
 use fitness_entry_core::SetType;
 
@@ -15,10 +14,6 @@ pub fn set_volume_points(set_type: &str, effort_hundredths: Option<u64>, failure
         .parse::<SetType>()
         .expect("archive set_type was validated");
     fitness_entry_core::set_volume_points(set_type, effort_hundredths, failure)
-}
-
-pub fn effort_points(effort_hundredths: Option<u64>) -> u32 {
-    set_volume_points("NORMAL_SET", effort_hundredths, false)
 }
 
 /// Weighted muscle credit for one set, in centi-points: the set's volume

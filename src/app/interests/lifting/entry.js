@@ -2,6 +2,23 @@ const root = document.querySelector("[data-fitness-entry]");
 
 if (root) void start(root);
 
+function workingSetNumbers(exercises) {
+  const counts = new Map();
+  const numbers = new Map();
+  for (const exercise of exercises) {
+    for (const set of exercise.sets) {
+      if (set.set_type === "WARMUP_SET") {
+        numbers.set(set.id, null);
+      } else {
+        const number = (counts.get(exercise.name) || 0) + 1;
+        counts.set(exercise.name, number);
+        numbers.set(set.id, number);
+      }
+    }
+  }
+  return numbers;
+}
+
 async function start(root) {
   const protocol = Number(root.dataset.entryProtocol);
   const statusNode = root.querySelector("[data-entry-status]");
@@ -539,14 +556,15 @@ async function start(root) {
   }
 
   function render(value, { exercises = false } = {}) {
-    if (exercises) renderExercises(value);
-    else syncExistingRows(value);
+    const numbers = workingSetNumbers(value.draft.exercises);
+    if (exercises) renderExercises(value, numbers);
+    else syncExistingRows(value, numbers);
     renderGuidance(value);
     renderQueue(value);
     updateTimer();
   }
 
-  function renderExercises(value) {
+  function renderExercises(value, numbers) {
     const exerciseTemplate = root.querySelector("[data-entry-exercise-template]");
     const setTemplate = root.querySelector("[data-entry-set-template]");
     const exercisesNode = root.querySelector("[data-entry-exercises]");
@@ -580,15 +598,13 @@ async function start(root) {
       });
 
       const list = card.querySelector("[data-entry-set-list]");
-      exercise.sets.forEach((set, index) => {
+      exercise.sets.forEach((set) => {
         const setView = setViews.get(set.id);
         if (!setView) return;
         const row = setTemplate.content.firstElementChild.cloneNode(true);
         row.dataset.setId = set.id;
         row.dataset.exerciseId = exercise.id;
-        row.dataset.setNumber = String(index + 1);
         row.dataset.complete = String(set.done);
-        row.querySelector("[data-entry-set-number]").textContent = String(index + 1);
         for (const action of row.querySelectorAll("[data-set-action]")) {
           action.dataset.exerciseId = exercise.id;
           action.dataset.setId = set.id;
@@ -609,8 +625,9 @@ async function start(root) {
           }
           if (input.dataset.entryField === "reps") input.value = set.reps;
         }
-        renderLoadPresets(row, guide, set, setView, index + 1);
-        syncSetRow(row, set, setView, index + 1);
+        const setNumber = numbers.get(set.id);
+        renderLoadPresets(row, guide, set, setView, setNumber);
+        syncSetRow(row, set, setView, setNumber);
         const dock = row.querySelector("[data-entry-load-dock]");
         if (dock) {
           dock.id = `entry-set-tools-${set.id}`;
@@ -637,7 +654,7 @@ async function start(root) {
       button.querySelector("[data-entry-load-preset-value]").textContent = preset.display;
       button.setAttribute(
         "aria-label",
-        `Use ${preset.spoken} as ${preset.set_type === "WARMUP_SET" ? "warm-up" : "working"} set ${setNumber}`,
+        `Use ${preset.spoken} as a ${preset.set_type === "WARMUP_SET" ? "warm-up" : "working"} set`,
       );
       const selectedWeight = set.weight === "" ? null : setView.weight_milli;
       button.setAttribute(
@@ -651,36 +668,46 @@ async function start(root) {
     });
     const rail = row.querySelector("[data-entry-load-presets]");
     if (rail) rail.hidden = visible === 0;
+    const setLabel = setNumber === null ? "warm-up set" : `set ${setNumber}`;
     for (const step of row.querySelectorAll("[data-action='adjust-weight']")) {
       const amount = Number(step.dataset.weightDelta);
       step.setAttribute(
         "aria-label",
-        `${amount < 0 ? "Subtract" : "Add"} ${Math.abs(amount)} pounds ${amount < 0 ? "from" : "to"} set ${setNumber}`,
+        `${amount < 0 ? "Subtract" : "Add"} ${Math.abs(amount)} pounds ${amount < 0 ? "from" : "to"} ${setLabel}`,
       );
     }
   }
 
-  function syncExistingRows(value) {
+  function syncExistingRows(value, numbers) {
     const views = new Map(value.derived.set_views.map((view) => [view.id, view]));
     for (const exercise of value.draft.exercises) {
-      exercise.sets.forEach((set, index) => {
+      const guide = guideByName.get(exercise.name) || { loads: [] };
+      exercise.sets.forEach((set) => {
         const row = findSetRow(set.id);
         const view = views.get(set.id);
-        if (row && view) syncSetRow(row, set, view, index + 1);
+        if (row && view) {
+          const setNumber = numbers.get(set.id);
+          renderLoadPresets(row, guide, set, view, setNumber);
+          syncSetRow(row, set, view, setNumber);
+        }
       });
     }
   }
 
   function syncSetRow(row, set, view, setNumber) {
+    const setLabel = setNumber === null ? "Warm-up set" : `Set ${setNumber}`;
+    row.dataset.setNumber = setNumber === null ? "" : String(setNumber);
+    row.querySelector("[data-entry-set-number]").textContent =
+      setNumber === null ? "W" : String(setNumber).padStart(2, "0");
     row.dataset.complete = String(set.done);
-    row.setAttribute("aria-label", `Set ${setNumber}, ${view.set_type_spoken}`);
+    row.setAttribute("aria-label", `${setLabel}, ${view.set_type_spoken}`);
     const ordinal = row.querySelector("[data-entry-set-ordinal]");
     if (ordinal) ordinal.dataset.kind = view.set_kind;
     row.querySelector("[data-entry-set-type]").textContent = view.set_type_label;
     const select = row.querySelector("[data-entry-field='setType']");
     if (select) {
       select.value = set.set_type;
-      select.setAttribute("aria-label", `Set ${setNumber} type`);
+      select.setAttribute("aria-label", `${setLabel} type`);
     }
     const done = row.querySelector("[data-action='toggle-set']");
     done?.setAttribute("aria-pressed", String(set.done));
@@ -689,14 +716,14 @@ async function start(root) {
     const dock = row.querySelector("[data-entry-load-dock]");
     if (rir) {
       rir.querySelector("[data-entry-rir-value]").textContent = view.rir_display;
-      rir.setAttribute("aria-label", `Set ${setNumber} reps in reserve, ${view.rir_spoken}`);
+      rir.setAttribute("aria-label", `${setLabel} reps in reserve, ${view.rir_spoken}`);
       rir.setAttribute("aria-expanded", String(Boolean(dock && !dock.hidden)));
       if (dock?.id) rir.setAttribute("aria-controls", dock.id);
       rir.toggleAttribute("aria-invalid", !view.effort_valid);
     }
     row.querySelector("[data-entry-rir-picker]")?.setAttribute(
       "aria-label",
-      `Reps in reserve for set ${setNumber}`,
+      `Reps in reserve for ${setLabel.toLowerCase()}`,
     );
     for (const option of row.querySelectorAll("[data-entry-rir-option]")) {
       const raw = option.dataset.effortHundredths;
@@ -710,10 +737,10 @@ async function start(root) {
       option.setAttribute(
         "aria-label",
         failure
-          ? `Failure, set ${setNumber}`
+          ? `Failure, ${setLabel.toLowerCase()}`
           : effort === null
-          ? `Do not record reps in reserve for set ${setNumber}`
-          : `${1000 - effort === 50 ? "Half a" : String((1000 - effort) / 100)} reps in reserve, set ${setNumber}`,
+          ? `Do not record reps in reserve for ${setLabel.toLowerCase()}`
+          : `${1000 - effort === 50 ? "Half a" : String((1000 - effort) / 100)} reps in reserve, ${setLabel.toLowerCase()}`,
       );
     }
   }

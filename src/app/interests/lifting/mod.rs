@@ -207,7 +207,7 @@ const VERSIONED_SOCIAL_IMAGE_CACHE: &str = "public, max-age=31536000, immutable"
 const UNVERSIONED_SOCIAL_IMAGE_CACHE: &str = "no-cache";
 
 fn social_image_cache(query: Option<&str>, version: i64) -> &'static str {
-    let expected_query = format!("v={version}");
+    let expected_query = social_card::image_query(version);
     if query == Some(expected_query.as_str()) {
         VERSIONED_SOCIAL_IMAGE_CACHE
     } else {
@@ -215,9 +215,9 @@ fn social_image_cache(query: Option<&str>, version: i64) -> &'static str {
     }
 }
 
-/// Raster social card for one workout. A matching snapshot version makes the
-/// URL immutable; direct or stale-version requests still receive the current
-/// image, but must revalidate it instead of pinning mismatched workout data.
+/// Raster social card for one workout. Matching snapshot and render versions
+/// make the URL immutable; other requests receive the current image but must
+/// revalidate it instead of pinning mismatched workout data or design.
 #[route(GET "/fitness/lift/{workout_path}/social.png")]
 async fn lift_social_image(cx: &Cx) -> Result<Response> {
     let workout_path = path_param::<WorkoutPath>(cx);
@@ -277,6 +277,12 @@ async fn lift_detail(cx: &Cx) -> Result {
     });
     let share_text =
         workout.map(|workout| share::share_text(workout, share::request_origin(cx).as_deref()));
+    let share_image = workout
+        .zip(detail)
+        .map(|(workout, detail)| social_card::image_path(&workout.path, detail.version));
+    let share_image_alt = workout
+        .zip(involvement.as_ref())
+        .map(|(workout, involvement)| social_card::image_alt(workout, involvement));
     let page_title = workout
         .map(|workout| format!("{} · {}", workout.title, meta.title))
         .unwrap_or_else(|| meta.title.to_string());
@@ -322,7 +328,12 @@ async fn lift_detail(cx: &Cx) -> Result {
             runtime: false,
             fitness_pwa: true,
             if let Some(workout) = workout {
-                lift_detail_head(workout: workout, share_text: share_text.as_deref().unwrap_or(""))
+                lift_detail_head(
+                    workout: workout,
+                    share_text: share_text.as_deref().unwrap_or(""),
+                    image_url: share_image.as_deref().unwrap_or(""),
+                    image_alt: share_image_alt.as_deref().unwrap_or(""),
+                )
             } else {
                 page_head(stamp: "lift", title: page_heading, lede: "")
             }
@@ -438,7 +449,12 @@ pub(super) fn with_raw_query(cx: &Cx, target: &str) -> String {
 }
 
 #[component]
-async fn lift_detail_head(workout: &fitness::Workout, share_text: &str) -> Result {
+async fn lift_detail_head(
+    workout: &fitness::Workout,
+    share_text: &str,
+    image_url: &str,
+    image_alt: &str,
+) -> Result {
     let workout = WorkoutCard::from(workout);
     view! {
         <header class="rail-row mt-16">
@@ -481,7 +497,7 @@ async fn lift_detail_head(workout: &fitness::Workout, share_text: &str) -> Resul
                 ))</dd>
             </div>
             if !share_text.is_empty() {
-                share::share_row(text: share_text)
+                share::share_row(text: share_text, image_url: image_url, image_alt: image_alt)
             }
         </dl>
     }
@@ -583,10 +599,6 @@ async fn workout_detail_block(block: &results::ExerciseBlock<'_>) -> Result {
                                 (group.name)
                             </a>
                         </h2>
-                        <p>(format!(
-                            "{} {}", group.rows.len(), plural(group.rows.len(), "set", "sets"),
-                        ))</p>
-                        <p>(format!("{} volume points", format_integer(group.volume_points)))</p>
                     </div>
                     <ol>
                         for row in group.rows.iter() {
@@ -637,13 +649,6 @@ async fn workout_body_block(block: &results::ExerciseBlock<'_>) -> Result {
                                 (group.name)
                             </a>
                         </h4>
-                        <span class=(META_SMALL)>
-                            (format!(
-                                "{} {} · {} volume points", group.rows.len(), plural(group
-                                .rows.len(), "set", "sets"), format_integer(group
-                                .volume_points),
-                            ))
-                        </span>
                     </div>
                     <ol>
                         for row in group.rows.iter() {
@@ -667,34 +672,34 @@ async fn set_row(row: &results::SetRow<'_>, divided: bool) -> Result {
     view! {
         <li
             class=(class!(
-                "grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] \
-                 items-center gap-x-[0.55rem] gap-y-1 py-[0.38rem] \
-                 sm:gap-2",
+                "lift-set-row",
                 "border-b border-hairline/70 last:border-b-0" if divided,
             ))
         >
-            set_badge(set: row.set, effort_popover_id: row.effort_popover_id.as_str())
-            <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span
-                        class="font-meta text-[0.78rem] font-medium text-ink \
-                             tabular-nums text-left"
-                    >
-                        (row.prescription.as_str())
-                    </span>
-                    if let Some(record) = &row.record {
-                        <span class=(results::RECORD_PR)>(record.as_str())</span>
-                    }
-                </div>
-                if !row.details.is_empty() {
-                    <span
-                        class="block mt-1 min-w-0 font-meta text-[0.65rem] \
-                             leading-[1.45] text-muted"
-                    >
-                        (row.details.as_str())
-                    </span>
+            set_badge(
+                set: row.set,
+                working_number: row.working_number,
+                effort_popover_id: row.effort_popover_id.as_str(),
+            )
+            <div class="lift-set-prescription flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span
+                    class="lift-set-value font-meta text-[0.78rem] font-medium text-ink \
+                         tabular-nums text-left"
+                >
+                    (row.prescription.as_str())
+                </span>
+                if let Some(record) = &row.record {
+                    <span class=(results::RECORD_PR)>(record.as_str())</span>
                 }
             </div>
+            if !row.details.is_empty() {
+                <span
+                    class="col-[2/-1] block min-w-0 font-meta text-[0.65rem] \
+                         leading-[1.45] text-muted"
+                >
+                    (row.details.as_str())
+                </span>
+            }
             if let Some(note) = row.note {
                 <span
                     class="col-[2/-1] font-meta text-[0.67rem] italic \
@@ -714,15 +719,23 @@ mod tests {
     #[test]
     fn only_the_matching_social_image_version_is_immutable() {
         assert_eq!(
-            social_image_cache(Some("v=149"), 149),
+            social_image_cache(Some(&social_card::image_query(149)), 149),
             VERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(
-            social_image_cache(Some("v=148"), 149),
+            social_image_cache(Some(&social_card::image_query(148)), 149),
             UNVERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(
             social_image_cache(Some("v=149&extra=1"), 149),
+            UNVERSIONED_SOCIAL_IMAGE_CACHE
+        );
+        assert_eq!(
+            social_image_cache(Some("v=149"), 149),
+            UNVERSIONED_SOCIAL_IMAGE_CACHE
+        );
+        assert_eq!(
+            social_image_cache(Some("v=149&r=1"), 149),
             UNVERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(

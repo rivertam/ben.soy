@@ -78,7 +78,7 @@ pub fn format(workout: &Workout, permalink: &str, max_chars: Option<usize>) -> S
 }
 
 fn message_header(workout: &Workout) -> Vec<String> {
-    let mut header = vec![format!("**{}**", escape_markdown(&workout.title))];
+    let mut header = vec![format!("*{}*", escape_markdown(&workout.title))];
     let mut facts = Vec::new();
     if let Some(date) = format_date(&workout.started_at_local) {
         facts.push(date);

@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(
             message,
             "\
-**I missed 9am gym**
+*I missed 9am gym*
 Jul 21, 2026 · 10:39 AM–11:14 AM · 35m 10s · 2 working sets
 
 I. Incline Bench Press
@@ -577,7 +577,7 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00"
         let mut workout = workout();
         workout.title = "**Leg** _day_".to_string();
         let message = render(&workout, "p", "https://x.test");
-        assert!(message.starts_with(r"**\*\*Leg\*\* \_day\_**"), "{message}");
+        assert!(message.starts_with(r"*\*\*Leg\*\* \_day\_*"), "{message}");
     }
 
     #[test]
@@ -600,7 +600,7 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00"
             "{} chars",
             message.chars().count()
         );
-        assert!(message.starts_with("**I missed 9am gym**"));
+        assert!(message.starts_with("*I missed 9am gym*"));
         assert!(message.ends_with("https://x.test/fitness/lift/p"));
         assert!(message.contains("… and "), "{message}");
         // Nothing is half-rendered: the last kept block is complete.

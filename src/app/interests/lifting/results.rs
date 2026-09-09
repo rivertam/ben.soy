@@ -1,5 +1,7 @@
 //! View models for workouts, set markers, records, and archive pagination.
 
+use std::collections::BTreeMap;
+
 use super::{
     data as fitness,
     filters::{Filters, SET_TYPES, lookup},
@@ -54,7 +56,6 @@ pub(super) fn workout_url(path: &str) -> String {
 pub(super) struct ExerciseGroup<'a> {
     pub(super) name: &'a str,
     pub(super) superset_id: Option<u64>,
-    pub(super) volume_points: u32,
     pub(super) rows: Vec<SetRow<'a>>,
 }
 
@@ -65,6 +66,7 @@ pub(super) struct ExerciseBlock<'a> {
 
 pub(super) struct SetRow<'a> {
     pub(super) set: &'a fitness::Set,
+    pub(super) working_number: Option<usize>,
     pub(super) effort_popover_id: String,
     pub(super) prescription: String,
     pub(super) details: String,
@@ -120,6 +122,7 @@ pub(super) struct Pager {
 
 fn exercise_blocks<'a>(sets: &'a [fitness::Set], workout_path: &str) -> Vec<ExerciseBlock<'a>> {
     let mut groups = Vec::new();
+    let mut working_counts = BTreeMap::<&str, usize>::new();
     let mut start = 0;
     while start < sets.len() {
         let name = sets[start].exercise_name.as_str();
@@ -135,11 +138,17 @@ fn exercise_blocks<'a>(sets: &'a [fitness::Set], workout_path: &str) -> Vec<Exer
         groups.push(ExerciseGroup {
             name,
             superset_id,
-            volume_points: slice.iter().map(set_volume_points).sum(),
             rows: slice
                 .iter()
                 .map(|set| SetRow {
                     set,
+                    working_number: (set.set_type != "WARMUP_SET").then(|| {
+                        let count = working_counts
+                            .entry(set.exercise_name.as_str())
+                            .or_default();
+                        *count += 1;
+                        *count
+                    }),
                     effort_popover_id: effort_popover_id(workout_path, set.ordinal),
                     prescription: prescription(set),
                     details: set_details(set),
@@ -177,10 +186,6 @@ fn effort_popover_id(workout_path: &str, ordinal: u32) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect();
     format!("lifting-effort-{path_hex}-{ordinal}")
-}
-
-fn set_volume_points(set: &fitness::Set) -> u32 {
-    super::archive::scoring::set_volume_points(&set.set_type, set.effort_hundredths, set.failure)
 }
 
 fn prescription(set: &fitness::Set) -> String {
@@ -456,6 +461,96 @@ mod tests {
         assert_eq!(blocks[0].groups.len(), 1);
         assert_eq!(blocks[1].superset_id, Some(7));
         assert_eq!(blocks[1].groups.len(), 2);
+        assert_eq!(blocks[0].groups[0].rows[0].working_number, Some(1));
+        assert_eq!(blocks[1].groups[0].rows[0].working_number, Some(2));
+        assert_eq!(blocks[1].groups[1].rows[0].working_number, Some(1));
+    }
+
+    #[test]
+    fn working_numbers_skip_warmups_and_restart_for_each_exercise() {
+        let sets: Vec<_> = [
+            ("Pull up", "WARMUP_SET", -55_500, 8, None),
+            ("Pull up", "WARMUP_SET", -24_000, 5, None),
+            ("Pull up", "WARMUP_SET", 0, 2, None),
+            ("Pull up", "NORMAL_SET", 20_000, 5, None),
+            ("Pull up", "NORMAL_SET", 10_000, 4, None),
+            ("Pull up", "NORMAL_SET", 0, 4, Some(1_000)),
+            ("Lat Pull-around", "WARMUP_SET", 25_000, 8, None),
+            ("Lat Pull-around", "NORMAL_SET", 50_000, 10, Some(800)),
+            ("Lat Pull-around", "NORMAL_SET", 50_000, 10, Some(900)),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, kind, weight, reps, effort))| fitness::Set {
+            ordinal: index as u32 + 1,
+            exercise_name: name.into(),
+            set_type: kind.into(),
+            weight_milli: Some(weight),
+            reps: Some(reps),
+            effort_hundredths: effort,
+            ..set()
+        })
+        .collect();
+        let blocks = exercise_blocks(&sets, "lift");
+        let rows: Vec<_> = blocks
+            .iter()
+            .flat_map(|block| &block.groups)
+            .flat_map(|group| &group.rows)
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.working_number)
+                .collect::<Vec<_>>(),
+            [
+                None,
+                None,
+                None,
+                Some(1),
+                Some(2),
+                Some(3),
+                None,
+                Some(1),
+                Some(2)
+            ]
+        );
+        assert_eq!(rows[3].prescription, "20 lbs × 5");
+        assert_eq!(rows[5].prescription, "0 lbs × 4");
+        assert_eq!(rows[7].prescription, "50 lbs × 10");
+        assert_eq!(rows[8].prescription, "50 lbs × 10");
+        // Source ordinals still supply unique popover IDs, even when displayed
+        // numbers repeat across exercises.
+        assert_eq!(rows[3].set.ordinal, 4);
+        assert_ne!(rows[3].effort_popover_id, rows[7].effort_popover_id);
+    }
+
+    #[test]
+    fn working_numbers_include_failure_and_every_non_warmup_type() {
+        let sets: Vec<_> = [
+            "NORMAL_SET",
+            "WARMUP_SET",
+            "DROP_SET",
+            "PARTIAL_REPS_SET",
+            "NEGATIVE_REPS_SET",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| fitness::Set {
+            ordinal: index as u32 + 1,
+            set_type: kind.into(),
+            reps: Some(5),
+            failure: index == 0,
+            ..set()
+        })
+        .collect();
+        let blocks = exercise_blocks(&sets, "lift");
+        let rows = &blocks[0].groups[0].rows;
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.working_number)
+                .collect::<Vec<_>>(),
+            [Some(1), None, Some(2), Some(3), Some(4)]
+        );
+        assert!(rows[0].details.is_empty());
     }
 
     #[test]

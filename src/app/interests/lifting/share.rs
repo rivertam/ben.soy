@@ -3,8 +3,8 @@
 //!
 //! The text is rendered server-side into a `<details>` disclosure whose
 //! readonly `<textarea>` is always selectable — that is the
-//! no-JavaScript path. `share.js` progressively reveals a clipboard
-//! button, exactly like `auto-filter.js` upgrades the log filter chrome.
+//! no-JavaScript path. The image preview and download use the same PNG as
+//! Open Graph; `share.js` progressively enables text and image copying.
 
 use benjisponge::workout_text::{self, Set as TextSet, Workout as TextWorkout};
 use topcoat::{
@@ -32,10 +32,12 @@ const SHARE_TEXT: &str = "block w-full max-h-[16rem] p-3 overflow-auto resize-y 
      font-meta text-[0.7rem] leading-[1.6] text-ink2 outline-none \
      focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-oxide \
      focus-visible:outline-offset-2";
-const SHARE_BUTTON: &str = "mt-2 px-3 py-[0.45rem] font-meta text-[0.7rem] text-card bg-oxide \
+const SHARE_BUTTON: &str = "px-3 py-[0.45rem] font-meta text-[0.7rem] text-card bg-oxide \
      border border-oxide rounded-[0.2rem] cursor-pointer hover:text-white hover:bg-oxide-hot \
      hover:border-oxide-hot focus-visible:text-white focus-visible:bg-oxide-hot \
-     focus-visible:border-oxide-hot";
+     focus-visible:border-oxide-hot disabled:opacity-60 disabled:cursor-wait";
+const SHARE_IMAGE_LINK: &str = "font-meta text-[0.7rem] text-oxide underline \
+     decoration-oxide/45 underline-offset-4 hover:decoration-current";
 const SHARE_HINT: &str = "mt-2 font-meta text-[0.67rem] leading-[1.5] text-muted";
 
 /// The absolute origin the visitor is browsing, mirroring the planes
@@ -108,10 +110,10 @@ pub(super) fn share_text(workout: &fitness::Workout, origin: Option<&str>) -> St
 /// stays copyable plain text even when a title or note contains an em
 /// dash — and it is selectable without JavaScript.
 #[component]
-pub(super) async fn share_block(text: &str) -> Result {
+pub(super) async fn share_block(text: &str, image_url: &str, image_alt: &str) -> Result {
     let rows = text.lines().count().clamp(3, 14).to_string();
     view! {
-        <details class="group" data-share="">
+        <details class="group" data-share="" data-share-image=(image_url)>
             <summary class=(SHARE_SUMMARY)>"share this workout"</summary>
             <div class="mt-2 max-w-[34rem]">
                 <textarea
@@ -122,12 +124,34 @@ pub(super) async fn share_block(text: &str) -> Result {
                     spellcheck="false"
                     aria-label="Workout share text"
                 >(text)</textarea>
-                <button class=(SHARE_BUTTON) type="button" data-share-copy="" hidden="">
-                    "copy to clipboard"
-                </button>
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                    <button class=(SHARE_BUTTON) type="button" data-share-copy="" hidden="">
+                        "copy text"
+                    </button>
+                    if !image_url.is_empty() {
+                        <button class=(SHARE_BUTTON) type="button" data-share-copy-image="" hidden="">
+                            "copy image"
+                        </button>
+                        <a class=(SHARE_IMAGE_LINK) href=(image_url) download="workout.png">
+                            "save image"
+                        </a>
+                    }
+                </div>
                 <p class=(SHARE_HINT) data-share-hint="">
                     "Select the text above to copy it — it already ends with this page's link."
                 </p>
+                <p class=(SHARE_HINT) data-share-status="" role="status" aria-live="polite"></p>
+                if !image_url.is_empty() {
+                    <img
+                        src=(image_url)
+                        alt=(image_alt)
+                        width="1200"
+                        height=(super::social_card::HEIGHT.to_string())
+                        loading="lazy"
+                        decoding="async"
+                        class="mt-3 block h-auto w-full border border-hairline"
+                    >
+                }
             </div>
         </details>
     }
@@ -136,11 +160,11 @@ pub(super) async fn share_block(text: &str) -> Result {
 /// A share row for the workout-page header list, so the disclosure sits
 /// with the date/time/duration facts.
 #[component]
-pub(super) async fn share_row(text: &str) -> Result {
+pub(super) async fn share_row(text: &str, image_url: &str, image_alt: &str) -> Result {
     view! {
         <div class="rail-row">
             <dt class="rail-stamp rail-stamp-label">"share"</dt>
-            <dd class="min-w-0">share_block(text: text)</dd>
+            <dd class="min-w-0">share_block(text: text, image_url: image_url, image_alt: image_alt)</dd>
         </div>
     }
 }
@@ -227,7 +251,7 @@ mod tests {
     fn share_text_lists_sets_and_ends_with_the_permalink() {
         let text = share_text(&workout(), Some("https://ben.soy"));
         let expected = "\
-**I missed 9am gym**
+*I missed 9am gym*
 Jul 21, 2026 · 10:39 AM–11:14 AM · 35m 10s · 2 working sets
 
 I. Incline Bench Press
@@ -245,6 +269,23 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00";
     fn share_text_without_an_origin_keeps_the_bare_path() {
         let text = share_text(&workout(), None);
         assert!(text.ends_with("\n/fitness/lift/2026-07-21T10-39-04-04-00"));
+    }
+
+    #[tokio::test]
+    async fn share_image_preview_copy_and_download_use_the_same_url() {
+        let cx = Cx::default();
+        let __cx = &cx;
+        let image_url = super::super::social_card::image_path("2026-07-21T10-39-04-04-00", 149);
+        let html = view! {
+            share_block(text: "Workout text", image_url: image_url.as_str(), image_alt: "Workout card")
+        }.unwrap().render(__cx);
+        let escaped_url = image_url.replace('&', "&amp;");
+        assert!(html.contains(&format!("data-share-image=\"{escaped_url}\"")));
+        assert!(html.contains(&format!("src=\"{escaped_url}\"")));
+        assert!(html.contains(&format!("href=\"{escaped_url}\"")));
+        assert!(html.contains("download=\"workout.png\""));
+        assert!(html.contains("data-share-copy-image") && html.contains("copy image"));
+        assert!(html.contains("Workout text</textarea>"));
     }
 
     #[test]
