@@ -29,7 +29,7 @@ pub(super) const WIDTH: u32 = 1200;
 pub(super) const HEIGHT: u32 = 600;
 pub(super) const CONTENT_TYPE: &str = "image/png";
 // Bump when the rendered design changes, independently of workout data.
-const RENDER_REVISION: u32 = 3;
+const RENDER_REVISION: u32 = 4;
 const MAX_EXERCISES: usize = 4;
 const MAX_BADGES: usize = 13;
 const EXERCISE_TOP: i32 = 288;
@@ -96,7 +96,7 @@ pub(super) fn image_alt(workout: &Workout, involvement: &MuscleInvolvement) -> S
 }
 
 fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>) {
-    draw_text(pixmap, "BEN.SOY / FITNESS / LIFT", 88, 68, 3, MUTED);
+    draw_text(pixmap, "BEN.SOY / FITNESS", 88, 68, 3, MUTED);
     draw_text_lines(pixmap, &copy.title, 88, 142, 3, 32, INK);
 
     draw_text(pixmap, &copy.date, 88, 220, 2, OXIDE);
@@ -693,7 +693,7 @@ mod tests {
     fn image_path_is_versioned_and_uses_the_canonical_workout_url() {
         assert_eq!(
             image_path("2026-09-07T11-06-51-04-00", 149),
-            "/fitness/lift/2026-09-07T11-06-51-04-00/social.png?v=149&r=3"
+            "/fitness/lift/2026-09-07T11-06-51-04-00/social.png?v=149&r=4"
         );
     }
 
