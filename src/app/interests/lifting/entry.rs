@@ -900,7 +900,7 @@ fn load_presets(history: &ExerciseHistory, bodyweight: bool) -> Vec<LoadPreset> 
         .iter()
         .enumerate()
         .filter_map(|(session_index, session)| {
-            session_work_load(session).map(|weight_milli| SessionLoad {
+            session_work_load(session, bodyweight).map(|weight_milli| SessionLoad {
                 session_index,
                 weight_milli,
             })
@@ -988,13 +988,15 @@ fn fatigue_profile(name: &str, movements: &[String], tags: &[(String, String)]) 
     )
 }
 
-fn session_work_load(session: &ExerciseSession) -> Option<Option<i64>> {
+fn session_work_load(session: &ExerciseSession, bodyweight: bool) -> Option<Option<i64>> {
     session
         .sets
         .iter()
         .filter(|set| set.set_type == SetType::Normal && set.reps.is_some_and(|reps| reps >= 1))
         .map(|set| set.weight_milli)
-        .max()
+        // Unassisted bodyweight is harder than negative assistance. Compare it
+        // as zero without replacing the stored null; explicit zero wins a tie.
+        .max_by_key(|weight| (weight.or(bodyweight.then_some(0)), *weight))
 }
 
 fn load_regime(weight_milli: Option<i64>) -> LoadRegime {
@@ -1577,6 +1579,51 @@ mod tests {
         assert_eq!(
             load_presets(&unweighted, true),
             vec![bodyweight_preset("work", None, "NORMAL_SET")]
+        );
+    }
+
+    #[test]
+    fn unassisted_bodyweight_work_takes_precedence_over_assisted_backoffs() {
+        let history = load_history(vec![vec![
+            load_set("WARMUP_SET", Some(-60_000), Some(8)),
+            load_set("NORMAL_SET", None, Some(6)),
+            load_set("NORMAL_SET", None, Some(5)),
+            load_set("NORMAL_SET", Some(-40_000), Some(8)),
+        ]]);
+        assert_eq!(
+            load_presets(&history, true),
+            vec![
+                bodyweight_preset("warm", Some(-60_000), "WARMUP_SET"),
+                bodyweight_preset("work", None, "NORMAL_SET"),
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_bodyweight_loads_preserve_explicit_zero_and_added_weight() {
+        for (weights, expected) in [
+            ([None, Some(0), Some(-40_000)], Some(0)),
+            ([Some(0), None, Some(-40_000)], Some(0)),
+            ([None, Some(25_000), Some(-40_000)], Some(25_000)),
+        ] {
+            let history = load_history(vec![
+                weights
+                    .into_iter()
+                    .map(|weight| load_set("NORMAL_SET", weight, Some(8)))
+                    .collect(),
+            ]);
+            assert_eq!(
+                load_presets(&history, true).last().unwrap().weight_milli,
+                expected
+            );
+        }
+        let unknown = load_history(vec![vec![
+            load_set("NORMAL_SET", None, Some(8)),
+            load_set("NORMAL_SET", Some(-40_000), Some(8)),
+        ]]);
+        assert_eq!(
+            load_presets(&unknown, false).last().unwrap().weight_milli,
+            Some(-40_000)
         );
     }
 
