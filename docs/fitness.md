@@ -215,7 +215,9 @@ reuse the local sync token or expose unrestricted SurrealQL.
   load dock: the working load is the heaviest normal set with at least one
   completed rep in the newest usable session among the three newest sessions.
   Repeated lighter back-off sets and older sessions do not dilute that load;
-  a newer lighter session still takes precedence over an older record. Up to
+  a newer lighter session still takes precedence over an older record.
+  For bodyweight exercises, unassisted reps rank above negative assistance
+  while retaining their blank load; positive added weight ranks above both. Up to
   two warm-up loads come from matching recent history (explicit warm-up rows
   win; positive fallbacks use rounded 50%/75% loads). Choosing a load also
   chooses warm/work set type.
