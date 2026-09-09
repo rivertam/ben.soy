@@ -201,6 +201,13 @@ reuse the local sync token or expose unrestricted SurrealQL.
   recovery gates, and a need stops boosting “expand” once that muscle enters
   the in-progress workout.
   Suggestions are guidance only; archive search always remains available.
+  The entry exercise picker matches every search term independently, regardless
+  of word order or intervening words: `barbell curl` and `curl bicep` can find
+  `Barbell Biceps Curl`. Matching is case-insensitive, accepts partial words,
+  and treats punctuation as query separators. Exact and phrase name matches
+  rank first, followed by all-term name matches, then muscle/movement metadata
+  matches; workout frequency and name break ties. Already-selected exercises
+  remain excluded, and results remain capped at six.
   The load field shows `BW` only for exercises carrying the canonical
   `equipment=bodyweight` tag; every other exercise gets a neutral blank-load
   hint. Blank still publishes `weight_milli=null`, literal zero remains zero,
