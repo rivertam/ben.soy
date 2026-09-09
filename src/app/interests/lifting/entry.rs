@@ -704,7 +704,7 @@ async fn set_template() -> Result {
                                         data-action="set-rir"
                                         data-entry-rir-option=""
                                         data-effort-hundredths=(effort_hundredths)
-                                        data-failure=(failure)
+                                        data-failure=(failure.to_string())
                                         data-set-action=""
                                         aria-label=(label)
                                     />
