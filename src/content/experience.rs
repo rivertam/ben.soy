@@ -79,7 +79,7 @@ pub static ROLES: [Role; 6] = [
         title: "Co-founder, Executive Software Lead",
         org: "DigiChem",
         place: "New York",
-        dates: "Aug 2024 – present",
+        dates: "Aug 2024 – Aug 2026",
         bullets: &[
             "Co-founded a chemical synthesis startup with two chemists",
             "Raised a seed round with MVP",
@@ -89,6 +89,8 @@ pub static ROLES: [Role; 6] = [
             "LLM-powered workflows used cheminformatics tools such as retrosynthesis,
             property prediction, and vendor price lists to propose and optimize
             synthetic routes",
+            "Company shut down summer of 2026 due to lack of product-market fit and overall
+            shrinking of the specialty chemical research industry",
         ],
         stack: &[
             language("TypeScript"),
