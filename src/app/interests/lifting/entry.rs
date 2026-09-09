@@ -919,19 +919,10 @@ fn load_presets(history: &ExerciseHistory, bodyweight: bool) -> Vec<LoadPreset> 
         .into_iter()
         .filter(|representative| load_regime(representative.weight_milli) == regime)
         .collect();
-    let work_weight = if matching.len() < 3 {
-        // One observation is itself; with two, favor the newer session rather
-        // than inventing a midpoint that may not exist on the equipment.
-        matching[0].weight_milli
-    } else {
-        let mut weights: Vec<Option<i64>> = matching
-            .iter()
-            .take(3)
-            .map(|representative| representative.weight_milli)
-            .collect();
-        weights.sort_unstable();
-        weights[1]
-    };
+    // Use the latest session's top completed working load. Older sessions and
+    // repeated back-off sets must not dilute progress; a newer lighter session
+    // still takes precedence over an older record.
+    let work_weight = matching[0].weight_milli;
 
     let explicit_warmups = matching.iter().find_map(|representative| {
         let warmups = valid_explicit_warmups(
@@ -998,28 +989,12 @@ fn fatigue_profile(name: &str, movements: &[String], tags: &[(String, String)]) 
 }
 
 fn session_work_load(session: &ExerciseSession) -> Option<Option<i64>> {
-    modal_load(
-        session
-            .sets
-            .iter()
-            .filter(|set| set.set_type == SetType::Normal && set.reps.is_some_and(|reps| reps >= 1))
-            .map(|set| set.weight_milli),
-    )
-}
-
-fn modal_load(weights: impl Iterator<Item = Option<i64>>) -> Option<Option<i64>> {
-    let mut counts: BTreeMap<Option<i64>, usize> = BTreeMap::new();
-    for weight in weights {
-        *counts.entry(weight).or_default() += 1;
-    }
-    counts
-        .into_iter()
-        .max_by(|(left_weight, left_count), (right_weight, right_count)| {
-            left_count
-                .cmp(right_count)
-                .then_with(|| left_weight.cmp(right_weight))
-        })
-        .map(|(weight, _)| weight)
+    session
+        .sets
+        .iter()
+        .filter(|set| set.set_type == SetType::Normal && set.reps.is_some_and(|reps| reps >= 1))
+        .map(|set| set.weight_milli)
+        .max()
 }
 
 fn load_regime(weight_milli: Option<i64>) -> LoadRegime {
@@ -1515,42 +1490,53 @@ mod tests {
     }
 
     #[test]
-    fn recent_positive_history_uses_all_normal_efforts_in_session_modes_then_median() {
+    fn recent_top_work_load_is_not_diluted_by_backoffs_or_older_sessions() {
         let history = load_history(vec![
             vec![
-                load_set("NORMAL_SET", Some(135_000), Some(8)),
-                load_set("NORMAL_SET", Some(135_000), Some(8)),
-                load_set("NORMAL_SET", Some(140_000), Some(6)),
-                load_set("NORMAL_SET", Some(200_000), Some(2)),
-                load_set("NORMAL_SET", Some(200_000), Some(2)),
-                load_set("NORMAL_SET", Some(200_000), Some(2)),
+                load_set("NORMAL_SET", Some(180_000), Some(10)),
+                load_set("NORMAL_SET", Some(145_000), Some(10)),
+                load_set("NORMAL_SET", Some(145_000), Some(10)),
+                load_set("NORMAL_SET", Some(145_000), Some(10)),
             ],
-            vec![load_set("NORMAL_SET", Some(150_000), Some(5))],
-            vec![
-                load_set("NORMAL_SET", Some(225_000), Some(0)),
-                load_set("NORMAL_SET", Some(120_000), Some(10)),
-            ],
+            vec![load_set("NORMAL_SET", Some(145_000), Some(10))],
+            vec![load_set("NORMAL_SET", Some(140_000), Some(10))],
         ]);
 
         assert_eq!(
             load_presets(&history, false),
             vec![
-                preset("warm", Some(75_000), "WARMUP_SET"),
-                preset("warm", Some(115_000), "WARMUP_SET"),
-                preset("work", Some(150_000), "NORMAL_SET"),
+                preset("warm", Some(90_000), "WARMUP_SET"),
+                preset("warm", Some(135_000), "WARMUP_SET"),
+                preset("work", Some(180_000), "NORMAL_SET"),
             ]
         );
+    }
 
-        let two_sessions = load_history(vec![
-            vec![load_set("NORMAL_SET", Some(90_000), Some(8))],
-            vec![load_set("NORMAL_SET", Some(150_000), Some(5))],
+    #[test]
+    fn newer_lighter_session_takes_precedence_over_older_records() {
+        let history = load_history(vec![
+            vec![load_set("NORMAL_SET", Some(145_000), Some(10))],
+            vec![load_set("NORMAL_SET", Some(180_000), Some(10))],
+            vec![load_set("NORMAL_SET", Some(175_000), Some(10))],
         ]);
         assert_eq!(
-            load_presets(&two_sessions, false)
-                .last()
-                .unwrap()
-                .weight_milli,
-            Some(90_000)
+            load_presets(&history, false).last().unwrap().weight_milli,
+            Some(145_000)
+        );
+    }
+
+    #[test]
+    fn work_load_ignores_special_sets_and_loads_without_completed_reps() {
+        let history = load_history(vec![vec![
+            load_set("NORMAL_SET", Some(180_000), Some(10)),
+            load_set("NORMAL_SET", Some(200_000), Some(0)),
+            load_set("NORMAL_SET", Some(210_000), None),
+            load_set("WARMUP_SET", Some(220_000), Some(1)),
+            load_set("PARTIAL_REPS_SET", Some(230_000), Some(1)),
+        ]]);
+        assert_eq!(
+            load_presets(&history, false).last().unwrap().weight_milli,
+            Some(180_000)
         );
     }
 

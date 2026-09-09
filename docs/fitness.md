@@ -205,9 +205,13 @@ reuse the local sync token or expose unrestricted SurrealQL.
   `equipment=bodyweight` tag; every other exercise gets a neutral blank-load
   hint. Blank still publishes `weight_milli=null`, literal zero remains zero,
   and negative values remain assistance. The active set opens a page-only
-  load dock: up to two warm-up loads plus one working load come from the three
-  newest sessions (explicit warm-up rows win; safe positive fallbacks use
-  rounded 50%/75% loads), and choosing one also chooses warm/work set type.
+  load dock: the working load is the heaviest normal set with at least one
+  completed rep in the newest usable session among the three newest sessions.
+  Repeated lighter back-off sets and older sessions do not dilute that load;
+  a newer lighter session still takes precedence over an older record. Up to
+  two warm-up loads come from matching recent history (explicit warm-up rows
+  win; positive fallbacks use rounded 50%/75% loads). Choosing a load also
+  chooses warm/work set type.
   Bodyweight and negative-assistance histories are never percentage-scaled.
   Four relative controls adjust the current load by -10/-5/+5/+10 lb, while
   direct decimal entry and the five structural set types remain available:
