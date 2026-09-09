@@ -838,7 +838,12 @@ fn present_suggestion(
 }
 
 fn search(draft: &Draft, guide: &GuideConfig, query: &str) -> (Vec<SearchHit>, String) {
-    if query.is_empty() {
+    let query = query.to_lowercase();
+    let terms: Vec<&str> = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .collect();
+    if terms.is_empty() {
         return (Vec::new(), String::new());
     }
     let selected: HashSet<&str> = draft
@@ -850,11 +855,11 @@ fn search(draft: &Draft, guide: &GuideConfig, query: &str) -> (Vec<SearchHit>, S
         .exercises
         .iter()
         .filter(|item| !selected.contains(item.name.as_str()))
-        .filter(|item| search_text(item).contains(query))
+        .filter(|item| matches_search_terms(&search_text(item), &terms))
         .collect();
     matches.sort_by(|left, right| {
-        search_rank(left, query)
-            .cmp(&search_rank(right, query))
+        search_rank(left, &query, &terms)
+            .cmp(&search_rank(right, &query, &terms))
             .then_with(|| right.workout_count.cmp(&left.workout_count))
             .then_with(|| left.name.cmp(&right.name))
     });
@@ -891,7 +896,13 @@ fn search_text(item: &ExerciseGuide) -> String {
         .to_lowercase()
 }
 
-fn search_rank(item: &ExerciseGuide, query: &str) -> u8 {
+fn matches_search_terms(text: &str, terms: &[&str]) -> bool {
+    // Each term must match, but words may be separated or reordered. Substring
+    // matching preserves partial input such as "bicep" matching "biceps".
+    terms.iter().all(|term| text.contains(term))
+}
+
+fn search_rank(item: &ExerciseGuide, query: &str, terms: &[&str]) -> u8 {
     let name = item.name.to_lowercase();
     if name == query {
         0
@@ -901,8 +912,10 @@ fn search_rank(item: &ExerciseGuide, query: &str) -> u8 {
         2
     } else if name.contains(query) {
         3
-    } else {
+    } else if matches_search_terms(&name, terms) {
         4
+    } else {
+        5
     }
 }
 
@@ -1140,6 +1153,58 @@ mod tests {
                 .map(|hit| hit.name.as_str())
                 .collect::<Vec<_>>(),
             ["Bench Press", "Incline Press"]
+        );
+    }
+
+    #[test]
+    fn exercise_search_matches_separated_reordered_and_partial_words() {
+        let mut guide = guide();
+        guide.exercises = vec![
+            item("Barbell Biceps Curl", 5, "2026-09-01", &[], &[], &[]),
+            item("Dumbbell Biceps Curl", 20, "2026-09-01", &[], &[], &[]),
+            item("Barbell Bench Press", 30, "2026-09-01", &[], &[], &[]),
+        ];
+        let mut draft = draft_with("Bench Press");
+        draft.exercises.clear();
+        for query in [
+            "barbell curl",
+            "curl barbell",
+            "BARBELL  CURL",
+            "barbell-curl",
+        ] {
+            let (hits, _) = search(&draft, &guide, query);
+            assert_eq!(hits.len(), 1, "query: {query}");
+            assert_eq!(hits[0].name, "Barbell Biceps Curl", "query: {query}");
+        }
+        let (hits, _) = search(&draft, &guide, "curl bicep");
+        assert_eq!(
+            hits.iter().map(|hit| hit.name.as_str()).collect::<Vec<_>>(),
+            ["Dumbbell Biceps Curl", "Barbell Biceps Curl"]
+        );
+        assert!(search(&draft, &guide, "barbell squat").0.is_empty());
+        assert!(search(&draft, &guide, " -- ").0.is_empty());
+        assert!(search(&draft, &guide, "  ").0.is_empty());
+    }
+
+    #[test]
+    fn exercise_search_prefers_names_over_metadata_and_excludes_selected() {
+        let mut guide = guide();
+        guide.exercises = vec![
+            item("Barbell Biceps Curl", 5, "2026-09-01", &[], &[], &[]),
+            item("Bicep Curl", 1, "2026-09-01", &[], &[], &[]),
+            item("Cable Curl", 50, "2026-09-01", &[("biceps", 100)], &[], &[]),
+        ];
+        let mut draft = draft_with("Bench Press");
+        draft.exercises.clear();
+        let (hits, _) = search(&draft, &guide, "bicep curl");
+        assert_eq!(
+            hits.iter().map(|hit| hit.name.as_str()).collect::<Vec<_>>(),
+            ["Bicep Curl", "Barbell Biceps Curl", "Cable Curl"]
+        );
+        let (hits, _) = search(&draft_with("Bicep Curl"), &guide, "curl bicep");
+        assert_eq!(
+            hits.iter().map(|hit| hit.name.as_str()).collect::<Vec<_>>(),
+            ["Barbell Biceps Curl", "Cable Curl"]
         );
     }
 
