@@ -14,6 +14,7 @@ mod format;
 mod ice;
 mod instruments;
 mod reference_data;
+mod selection;
 mod share;
 mod sources;
 

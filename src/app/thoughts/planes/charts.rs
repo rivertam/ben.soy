@@ -6,7 +6,7 @@
 //! All arithmetic stays server-side: the cut chips write
 //! plain signals, the affected chart regions are `#[shard]`s re-rendered on
 //! the server, and the "erased" slice styling is pure CSS keyed off
-//! reactive `data-pick-*` attributes (see `styles/planes-charts.css`).
+//! selection-derived `data-pick-slices` attributes (see `styles/planes-charts.css`).
 //! Tooltips are CSS-only `.tip` spans on :hover/:focus-visible — no JS
 //! positioning, unlike the original's tooltip layer.
 
@@ -28,6 +28,7 @@ use super::{
     reference_data::{
         CutOption, HABIT_BARS, SACRIFICE_BARS, SacrificeBar, cuttable_kg, pick_analogy, total_kg,
     },
+    selection::Selection,
     share::{SHARE_JS, share_block},
     sources::{cite, cite_group},
 };
@@ -54,17 +55,14 @@ fn opt_label(bar_id: &str, option_id: &str) -> &'static str {
 }
 
 /// What a cut erases: the summed weight of the slices it names.
+#[cfg(test)]
 fn option_kg(bar: &SacrificeBar, option_id: &str) -> f64 {
     let option = bar
         .options
         .iter()
         .find(|o| o.id == option_id)
         .expect("known option id");
-    bar.slices
-        .iter()
-        .filter(|slice| slice.cut.is_some() && option.slice_ids.contains(&slice.id))
-        .map(|slice| slice.kg)
-        .sum()
+    Selection::new([(bar, option)]).kg()
 }
 
 /// The full monk year: every bar's deepest cut, summed, in tonnes.
@@ -229,9 +227,7 @@ async fn combined_swaps(
         style: String,
         tip: String,
     }
-    let mut segs = Vec::new();
-    let mut labels: Vec<String> = Vec::new();
-    let mut picked_kg = 0.0;
+    let mut picks = Vec::new();
     for bar in all_bars() {
         for option in bar.options.iter() {
             // Options run mild→deep within a ladder; a pick is the option's
@@ -246,31 +242,34 @@ async fn combined_swaps(
             if pos == 0 || ladder(bar.id, option.group) != pos {
                 continue;
             }
-            let kg = option_kg(bar, option.id);
-            let color = bar
-                .slices
-                .iter()
-                .find(|s| s.id == option.slice_ids[0])
-                .map(|s| s.color)
-                .unwrap_or("var(--ink)");
-            picked_kg += kg;
-            labels.push(strip_price(option.label).to_string());
-            segs.push(Seg {
-                style: format!(
-                    "width:{}%;background:{}",
-                    kg / 1000.0 / scale_max * 100.0,
-                    color
-                ),
-                tip: format!(
-                    "{} — {}: −{}",
-                    bar.noun,
-                    strip_price(option.label),
-                    format_bar_value(kg)
-                ),
-            });
+            picks.push((bar, option));
         }
     }
-    let picked_tonnes = picked_kg / 1000.0;
+    let selected = Selection::new(picks);
+    let erased = selected.erased();
+    let labels: Vec<_> = selected
+        .options
+        .iter()
+        .map(|(_, option)| strip_price(option.label))
+        .collect();
+    let segs: Vec<_> = selected
+        .slices
+        .iter()
+        .map(|selected| Seg {
+            style: format!(
+                "width:{}%;background:{}",
+                selected.slice.kg / 1000.0 / scale_max * 100.0,
+                selected.slice.color
+            ),
+            tip: format!(
+                "{} — {}: −{}",
+                selected.bar.noun,
+                selected.slice.label,
+                format_bar_value(selected.slice.kg)
+            ),
+        })
+        .collect();
+    let picked_tonnes = selected.kg() / 1000.0;
     let cuts_text = if labels.is_empty() {
         "empty until you tap a cut — see how much it takes to cross the dashed line".to_string()
     } else {
@@ -284,6 +283,7 @@ async fn combined_swaps(
 
     view! {
         <div class="bar-cell">
+            <span hidden=(true) data-pick-slices=(erased)></span>
             <div class="bar-h-track">
                 for seg in segs {
                     <div class="bar-seg" tabindex="0" style=(seg.style)>
@@ -523,18 +523,6 @@ pub async fn charts_section(
                         </div>
                         <div
                             class="effort-rows"
-                                :data-pick-heat=$(p_heat.get())
-                                :data-pick-cool=$(p_cool.get())
-                                :data-pick-diet=$(p_diet.get())
-                                :data-pick-waste=$(p_waste.get())
-                                :data-pick-fashion=$(p_fashion.get())
-                                :data-pick-coffee=$(p_coffee.get())
-                                :data-pick-phone=$(p_phone.get())
-                                :data-pick-soda=$(p_soda.get())
-                                :data-pick-bottle=$(p_bottle.get())
-                                :data-pick-stream=$(p_stream.get())
-                                :data-pick-gpt=$(p_gpt.get())
-                                :data-pick-straw=$(p_straw.get())
                             >
                                 <div class="effort-row">
                                     <span class="row-head">
@@ -1041,10 +1029,6 @@ mod tests {
     /// The stylesheet hardcodes generated class names; these tests are the
     /// tripwire for the reference_data ↔ charts ↔ CSS coupling triangle.
     const CSS: &str = include_str!("../../../../styles/planes-charts.css");
-    /// This file's own source: the `:data-pick-*` attributes declared in
-    /// charts_section are the Rust side of the CSS attribute selectors.
-    const SELF: &str = include_str!("charts.rs");
-
     /// Every `<stem><ident-chars>` token following an occurrence of
     /// `prefix` (whose leading punctuation is not part of the token). Bare
     /// stems (comments like "data-pick-*") are dropped.
@@ -1083,49 +1067,34 @@ mod tests {
     }
 
     #[test]
-    fn css_data_pick_attrs_all_declared_in_charts() {
-        let declared = tokens_after(SELF, ":data-pick-");
-        let used = tokens_after(CSS, "data-pick-");
-        assert!(!used.is_empty(), "extraction found no data-pick selectors");
-        for token in used {
-            assert!(
-                declared.contains(&token),
-                "planes-charts.css keys on [{token}] but charts_section declares no :{token} \
-                 attribute"
-            );
-        }
-    }
-
-    #[test]
     fn citation_commas_require_an_explicit_group() {
         assert!(CSS.contains(".dispatch .cite-group > sup.cite + sup.cite::before"));
         assert!(!CSS.contains(".dispatch sup.cite + sup.cite::before"));
     }
 
-    /// The other direction: the tests above only prove CSS names exist in
-    /// Rust, so a stylesheet rewrite could silently drop the whole erased
-    /// table and still pass. Pin its shape — every declared pick attribute
-    /// must appear in at least one CSS selector, and the selector table must
-    /// keep its 22 entries (one per pick level × slice combination).
     #[test]
-    fn css_erased_table_is_complete() {
-        let declared = tokens_after(SELF, ":data-pick-");
-        let used = tokens_after(CSS, "data-pick-");
-        for token in &declared {
+    fn css_erased_table_covers_every_selectable_slice() {
+        let selected = Selection::new(
+            all_bars().flat_map(|bar| bar.options.iter().map(move |option| (bar, option))),
+        );
+        for slice in &selected.slices {
+            let identity = slice.identity();
             assert!(
-                used.contains(token),
-                "charts_section declares :{token} but planes-charts.css never keys on it — \
-                 erased styling silently lost?"
+                CSS.contains(&format!(
+                    "[data-pick-slices~='{identity}']) .seg-{identity}"
+                )),
+                "missing erased selector for {identity}"
             );
         }
-        let table_rows = CSS
-            .lines()
-            .filter(|l| l.contains("[data-pick-") && l.contains("] .seg-"))
-            .count();
+        assert_eq!(
+            CSS.lines()
+                .filter(|line| line.contains("[data-pick-slices~="))
+                .count(),
+            selected.slices.len()
+        );
         assert!(
-            table_rows >= 22,
-            "the erased-slice selector table shrank to {table_rows} rows (expected ≥22) — \
-             a stylesheet rewrite dropped part of it"
+            !CSS.contains("[data-pick-heat="),
+            "erased styling must use the calculated union"
         );
     }
 }

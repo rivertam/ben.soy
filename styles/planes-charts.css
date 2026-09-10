@@ -8,8 +8,8 @@
  * JavaScript there:
  *  - tooltips are .tip children revealed on :hover/:focus-visible instead of
  *    the JS-positioned .viz-tooltip layer;
- *  - "erased" slices are driven by data-pick-* attributes on .effort-rows
- *    (reactively bound to the cut-chip signals) as well as the original
+ *  - "erased" slices use the Rust selection union returned by the combined
+ *    swaps shard (data-pick-slices), as well as the original
  *    .bar-seg.erased class.
  */
 
@@ -298,36 +298,28 @@
 }
 
 /* a slice the chosen cut erases stays in the chart as a shadow of itself.
-   The data-pick-* attributes mirror the cut-chip signals (see charts.rs);
+   The data-pick-slices value is the same Rust union that prices combined swaps;
    within a ladder, larger values are deeper cuts, and a deeper cut also
    erases every slice outside it. */
 .dispatch .bar-seg.erased,
-.dispatch .effort-rows[data-pick-heat='2'] .seg-climate-gas-premium,
-.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-heat-pump-floor,
-.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-gas-premium,
-.dispatch .effort-rows[data-pick-heat='1'] .seg-climate-thermostat,
-.dispatch .effort-rows[data-pick-heat='2'] .seg-climate-thermostat,
-.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-thermostat,
-.dispatch .effort-rows[data-pick-cool='1'] .seg-climate-ac-all,
-.dispatch .effort-rows[data-pick-heat='3'] .seg-climate-ac-all,
-.dispatch .effort-rows[data-pick-diet='2'] .seg-eating-veg-to-vegan,
-.dispatch .effort-rows[data-pick-diet='1'] .seg-eating-avg-to-veg,
-.dispatch .effort-rows[data-pick-diet='2'] .seg-eating-avg-to-veg,
-.dispatch .effort-rows[data-pick-waste='2'] .seg-eating-farming,
-.dispatch .effort-rows[data-pick-waste='1'] .seg-eating-methane,
-.dispatch .effort-rows[data-pick-waste='2'] .seg-eating-methane,
-.dispatch .effort-rows[data-pick-fashion='2'] .seg-fashion-average-wardrobe,
-.dispatch .effort-rows[data-pick-fashion='1'] .seg-fashion-fast-premium,
-.dispatch .effort-rows[data-pick-fashion='2'] .seg-fashion-fast-premium,
-.dispatch .effort-rows[data-pick-coffee='2'] .seg-coffee-beans,
-.dispatch .effort-rows[data-pick-coffee='1'] .seg-coffee-milk,
-.dispatch .effort-rows[data-pick-coffee='2'] .seg-coffee-milk,
-.dispatch .effort-rows[data-pick-phone='1'] .seg-phone-handset,
-.dispatch .effort-rows[data-pick-soda='1'] .seg-soda-cans,
-.dispatch .effort-rows[data-pick-bottle='1'] .seg-bottled-water-bottles,
-.dispatch .effort-rows[data-pick-stream='1'] .seg-streaming-hours,
-.dispatch .effort-rows[data-pick-gpt='1'] .seg-chatgpt-queries,
-.dispatch .effort-rows[data-pick-straw='1'] .seg-straws-straws {
+.dispatch .effort-rows:has([data-pick-slices~='climate-gas-premium']) .seg-climate-gas-premium,
+.dispatch .effort-rows:has([data-pick-slices~='climate-heat-pump-floor']) .seg-climate-heat-pump-floor,
+.dispatch .effort-rows:has([data-pick-slices~='climate-thermostat']) .seg-climate-thermostat,
+.dispatch .effort-rows:has([data-pick-slices~='climate-ac-all']) .seg-climate-ac-all,
+.dispatch .effort-rows:has([data-pick-slices~='eating-veg-to-vegan']) .seg-eating-veg-to-vegan,
+.dispatch .effort-rows:has([data-pick-slices~='eating-avg-to-veg']) .seg-eating-avg-to-veg,
+.dispatch .effort-rows:has([data-pick-slices~='eating-farming']) .seg-eating-farming,
+.dispatch .effort-rows:has([data-pick-slices~='eating-methane']) .seg-eating-methane,
+.dispatch .effort-rows:has([data-pick-slices~='fashion-average-wardrobe']) .seg-fashion-average-wardrobe,
+.dispatch .effort-rows:has([data-pick-slices~='fashion-fast-premium']) .seg-fashion-fast-premium,
+.dispatch .effort-rows:has([data-pick-slices~='coffee-beans']) .seg-coffee-beans,
+.dispatch .effort-rows:has([data-pick-slices~='coffee-milk']) .seg-coffee-milk,
+.dispatch .effort-rows:has([data-pick-slices~='phone-handset']) .seg-phone-handset,
+.dispatch .effort-rows:has([data-pick-slices~='soda-cans']) .seg-soda-cans,
+.dispatch .effort-rows:has([data-pick-slices~='bottled-water-bottles']) .seg-bottled-water-bottles,
+.dispatch .effort-rows:has([data-pick-slices~='streaming-hours']) .seg-streaming-hours,
+.dispatch .effort-rows:has([data-pick-slices~='chatgpt-queries']) .seg-chatgpt-queries,
+.dispatch .effort-rows:has([data-pick-slices~='straws-straws']) .seg-straws-straws {
   opacity: 0.22;
   transition:
     opacity 320ms ease,
