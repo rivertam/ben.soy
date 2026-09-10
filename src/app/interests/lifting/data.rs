@@ -65,7 +65,7 @@ impl LogActivity {
     }
 }
 
-/// Page-only composition for `/fitness/log`. `activities` contains only the
+/// Page-only composition for `/fitness`. `activities` contains only the
 /// primary rows on this page; closed interruptions consume no slots and are
 /// assigned to the page containing the last same-date primary row.
 #[derive(Clone, Debug)]
@@ -122,6 +122,16 @@ impl fmt::Display for LoadError {
     }
 }
 
+/// Presentation data from one lifting snapshot, plus the independent runs.
+pub(super) struct FitnessPage {
+    pub facets: Result<Facets, LoadError>,
+    pub activities: Result<FitnessLogPage, LoadError>,
+    pub calendar: Result<Calendar, LoadError>,
+    pub interruptions: Result<Vec<Interruption>, LoadError>,
+    pub focus: Result<TrainingFocus, LoadError>,
+    pub exercise_weights: ExerciseWeights,
+}
+
 /// The full-log page's reads. Lift facets, matches, calendar, and
 /// interruptions all come from one snapshot. Runs are loaded independently
 /// by the page and supplied only when no lift-only filter is active.
@@ -129,22 +139,19 @@ pub(in crate::app::interests::lifting) async fn load(
     store: &FitnessStore,
     filters: &[(String, String)],
     runs: &[RunningActivity],
-) -> (
-    Result<Facets, LoadError>,
-    Result<FitnessLogPage, LoadError>,
-    Result<Calendar, LoadError>,
-    Result<Vec<Interruption>, LoadError>,
-) {
+) -> FitnessPage {
     let snapshot = match store.snapshot().await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             let message = error.to_string();
-            return (
-                Err(LoadError::Unavailable(message.clone())),
-                Err(LoadError::Unavailable(message.clone())),
-                Err(LoadError::Unavailable(message.clone())),
-                Err(LoadError::Unavailable(message)),
-            );
+            return FitnessPage {
+                facets: Err(LoadError::Unavailable(message.clone())),
+                activities: Err(LoadError::Unavailable(message.clone())),
+                calendar: Err(LoadError::Unavailable(message.clone())),
+                interruptions: Err(LoadError::Unavailable(message.clone())),
+                focus: Err(LoadError::Unavailable(message)),
+                exercise_weights: ExerciseWeights::default(),
+            };
         }
     };
     let (page, calendar) = match parse_filters(filters) {
@@ -165,12 +172,14 @@ pub(in crate::app::interests::lifting) async fn load(
             Err(LoadError::Rejected(message)),
         ),
     };
-    (
-        Ok(snapshot.facets()),
-        page,
+    FitnessPage {
+        facets: Ok(snapshot.facets()),
+        activities: page,
         calendar,
-        Ok(snapshot.interruptions().to_vec()),
-    )
+        interruptions: Ok(snapshot.interruptions().to_vec()),
+        focus: Ok(snapshot.training_focus(eastern::eastern_date(jiff::Timestamp::now()))),
+        exercise_weights: snapshot.exercise_weight_map().clone(),
+    }
 }
 
 fn compose_log_page(
@@ -298,37 +307,6 @@ fn interruptions_for_page(
         })
         .cloned()
         .collect()
-}
-
-/// The landing view: archive-wide daily totals plus the newest workout.
-pub async fn load_home(
-    store: &FitnessStore,
-) -> (
-    Result<Calendar, LoadError>,
-    Result<WorkoutDetail, LoadError>,
-    Result<TrainingFocus, LoadError>,
-    Result<Vec<Interruption>, LoadError>,
-) {
-    match store.snapshot().await {
-        Ok(snapshot) => {
-            let today = eastern::eastern_date(jiff::Timestamp::now());
-            (
-                Ok(snapshot.calendar()),
-                Ok(snapshot.latest()),
-                Ok(snapshot.training_focus(today)),
-                Ok(snapshot.interruptions().to_vec()),
-            )
-        }
-        Err(error) => {
-            let message = error.to_string();
-            (
-                Err(LoadError::Unavailable(message.clone())),
-                Err(LoadError::Unavailable(message.clone())),
-                Err(LoadError::Unavailable(message.clone())),
-                Err(LoadError::Unavailable(message)),
-            )
-        }
-    }
 }
 
 /// Weighted muscle credit for the exercises one workout used, keyed by

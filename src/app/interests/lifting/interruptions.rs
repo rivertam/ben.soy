@@ -3,7 +3,7 @@
 //!
 //! Admin create / edit / delete lives here as form POSTs (same identity gate
 //! as `/fitness/lift/import`). Open rows (no end date) surface on `/fitness`;
-//! closed rows inject into the `/fitness/log` timeline. Heatmap chrome covers
+//! closed rows inject into the `/fitness` timeline. Heatmap chrome covers
 //! open rows through today and closed rows through their end date.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,7 +37,7 @@ use super::{
 };
 
 const OPEN_REDIRECT: &str = "/fitness#interruptions";
-const CLOSED_REDIRECT: &str = "/fitness/log#set-log";
+const CLOSED_REDIRECT: &str = "/fitness#set-log";
 const LOGIN_REDIRECT: &str = "/login?next=%2Ffitness%23interruptions";
 const BODY_LIMIT_BYTES: usize = 4 * 1024;
 const NO_STORE: &str = "no-store";

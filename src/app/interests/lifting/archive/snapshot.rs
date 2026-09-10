@@ -74,20 +74,13 @@ pub struct ExerciseProfile {
     pub last_date: String,
 }
 
-/// Compact fields the heatmap day popover needs — deliberately not a full
-/// wire workout. Built by scanning set exercise names and volume points
-/// without cloning set rows into the page payload.
+/// Full workouts loaded only by the on-demand day preview, never the
+/// calendar's SSR or public JSON. UTC ordering and volume stay page-only.
 #[derive(Clone, Debug)]
-pub struct HeatmapWorkoutSummary {
-    pub title: String,
-    pub path: String,
-    /// Absolute UTC start, so page-only composite previews can interleave
-    /// lifts with independently stored running activities across DST folds.
+pub struct HeatmapWorkout {
+    pub workout: api::Workout,
     pub start_time: i64,
-    pub duration_seconds: u64,
-    pub set_count: usize,
     pub volume_points: u32,
-    pub exercises: Vec<String>,
 }
 
 struct SnapWorkout {
@@ -684,35 +677,26 @@ impl Snapshot {
         })
     }
 
-    /// Compact heatmap-day summaries for one Eastern local date, newest-first.
-    /// Page-only — the day popover shard loads these on demand so the calendar
-    /// SSR never clones set payloads. Never rides the public calendar JSON.
-    pub fn workouts_on_date(&self, date: &str) -> Vec<HeatmapWorkoutSummary> {
+    /// Full workouts for one Eastern day, newest-first. The shard calls this
+    /// only after a day is selected, so the calendar never embeds set payloads.
+    pub fn workouts_on_date(&self, date: &str) -> Vec<HeatmapWorkout> {
         self.workouts
             .iter()
             .filter(|snap| snap.local_date == date)
             .map(|snap| {
-                let mut seen = std::collections::BTreeSet::new();
-                let mut exercises = Vec::new();
-                let mut volume_points = 0_u32;
-                for set in &snap.sets {
-                    volume_points = volume_points.saturating_add(scoring::set_volume_points(
-                        set.wire.set_type.as_str(),
-                        set.wire.effort_hundredths,
-                        set.wire.failure,
-                    ));
-                    if seen.insert(set.wire.exercise_name.as_str()) {
-                        exercises.push(set.wire.exercise_name.clone());
-                    }
-                }
-                HeatmapWorkoutSummary {
-                    title: snap.wire.title.clone(),
-                    path: snap.wire.path.clone(),
+                let mut workout = snap.wire.clone();
+                workout.sets = snap.sets.iter().map(|set| set.wire.clone()).collect();
+                let volume_points = workout.sets.iter().fold(0_u32, |points, set| {
+                    points.saturating_add(scoring::set_volume_points(
+                        &set.set_type,
+                        set.effort_hundredths,
+                        set.failure,
+                    ))
+                });
+                HeatmapWorkout {
+                    workout,
                     start_time: snap.start_time,
-                    duration_seconds: snap.wire.duration_seconds,
-                    set_count: snap.sets.len(),
                     volume_points,
-                    exercises,
                 }
             })
             .collect()
@@ -1483,15 +1467,25 @@ mod tests {
     }
 
     #[test]
-    fn workouts_on_date_keeps_exercise_order_without_set_payloads() {
+    fn workouts_on_date_preserves_full_sets_for_the_on_demand_preview() {
         let snap = snapshot();
         let day = snap.workouts_on_date("2026-07-21");
         assert_eq!(day.len(), 1);
         assert_eq!(
-            day[0].exercises,
-            vec!["Squat (Barbell)".to_string(), "Bench Press".to_string()]
+            day[0]
+                .workout
+                .sets
+                .iter()
+                .map(|set| set.exercise_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Squat (Barbell)", "Bench Press"]
         );
-        assert_eq!(day[0].set_count, 2);
+        assert_eq!(day[0].workout.sets.len(), 2);
+        let instant = eastern::parse_public_path(&day[0].workout.path).unwrap();
+        assert_eq!(
+            serde_json::to_value(&day[0].workout).unwrap(),
+            serde_json::to_value(snap.by_path(&instant).unwrap().workout.unwrap()).unwrap()
+        );
         assert!(day[0].volume_points > 0);
         assert_eq!(
             day[0].start_time,

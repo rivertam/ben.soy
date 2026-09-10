@@ -166,6 +166,79 @@ async fn stamp_face(set: &fitness::Set, number: &str, banner: &str) -> Result {
     }
 }
 
+/// The social image's numbered seal, with the complete set available on tap.
+/// The caller scopes IDs so a log and its day preview can coexist.
+#[component]
+pub(super) async fn compact_set_badge(
+    row: &super::results::SetRow<'_>,
+    popover_id: &str,
+) -> Result {
+    let set = row.set;
+    let number = row
+        .working_number
+        .map_or_else(|| "W".to_string(), |n| format!("{n:02}"));
+    let (state, effort) = match badge_for(set) {
+        Badge::Warmup => ("warmup", "Warm-up set".to_string()),
+        Badge::Failure => ("failure", format!("Set {number}, failure")),
+        Badge::Rated => (
+            "rated",
+            format!(
+                "Set {number}, {}",
+                effort_label(set.effort_hundredths.unwrap())
+            ),
+        ),
+        Badge::Unrated => ("unrated", format!("Set {number}, unrated")),
+    };
+    let label = format!(
+        "{}, {effort}, {}{}",
+        set.exercise_name,
+        row.prescription,
+        row.record
+            .as_ref()
+            .map_or(String::new(), |record| format!(", {record}"))
+    );
+    let seal = seal_shapes(set, "var(--color-card)");
+    view! {
+        <button
+            type="button"
+            class="lift-set-compact"
+            data-set-effort=(state)
+            popovertarget=(popover_id)
+            style=(format!("anchor-name: --inline-popover-{popover_id};"))
+            title=(label.as_str())
+            aria-label=(label.as_str())
+        >
+            <svg class="lift-set-seal" viewBox="0 0 36 36" aria-hidden="true" focusable="false">
+                (Unescaped::new_unchecked(seal))
+            </svg>
+            <span class="lift-set-numeral" aria-hidden="true">(number)</span>
+            if row.record.is_some() {
+                <span class="lift-set-compact-record" aria-hidden="true">"★"</span>
+            }
+        </button>
+        <div
+            id=(popover_id)
+            class="inline-popover-panel"
+            popover="auto"
+            role="dialog"
+            aria-label=(label.as_str())
+            style=(format!("position-anchor: --inline-popover-{popover_id};"))
+        >
+            <button type="button" class="inline-popover-close" popovertarget=(popover_id)
+                popovertargetaction="hide" aria-label="Close set details">"×"</button>
+            <span class="inline-popover-kicker">(set.exercise_name.as_str())</span>
+            <p class="text-ink font-semibold">(row.prescription.as_str())</p>
+            <p>(effort)</p>
+            if let Some(effort) = set.effort_hundredths {
+                <p class="text-muted">"Recorded RPE "(format_scaled(effort, 100))</p>
+            }
+            if !row.details.is_empty() { <p>(row.details.as_str())</p> }
+            if let Some(record) = &row.record { <p class="text-brass">(record.as_str())</p> }
+            if let Some(note) = row.note { <p>(note)</p> }
+        </div>
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

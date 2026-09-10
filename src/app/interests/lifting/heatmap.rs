@@ -22,10 +22,10 @@ use super::{
         steps::{MAX_STEPS_PER_DAY, StepDay},
         store::FitnessStore,
     },
-    data::CalendarDay,
-    format::{format_duration, format_integer, plural},
+    compact,
+    data::{CalendarDay, Workout},
+    format::{format_integer, plural},
     interruptions, muscles,
-    results::workout_url,
 };
 use benjisponge::data::{Data, fitness_models::Interruption, running_models::RunningActivity};
 
@@ -332,9 +332,9 @@ async fn day_preview_shard(cx: &Cx, selection: String, link_query: String) -> Re
     let date = parsed.to_string();
     let link_query = sanitize_link_query(&link_query);
     let href = if link_query.is_empty() {
-        format!("/fitness/log?from={date}&to={date}#set-log")
+        format!("/fitness?from={date}&to={date}#set-log")
     } else {
-        format!("/fitness/log?{link_query}&from={date}&to={date}#set-log")
+        format!("/fitness?{link_query}&from={date}&to={date}#set-log")
     };
 
     let (snapshot, run_log) = tokio::join!(
@@ -377,19 +377,18 @@ async fn day_preview_shard(cx: &Cx, selection: String, link_query: String) -> Re
             .as_ref()
             .map(|snapshot| {
                 muscles::involvement_for_exercises(
-                    summary.exercises.iter().map(String::as_str),
+                    summary
+                        .workout
+                        .sets
+                        .iter()
+                        .map(|set| set.exercise_name.as_str()),
                     snapshot.exercise_weight_map(),
                 )
             })
             .unwrap_or_default();
         activities.push(ShardActivity::Workout(ShardWorkout {
-            identity: summary.path.clone(),
             start_time: summary.start_time,
-            title: summary.title,
-            href: workout_url(&summary.path),
-            duration: format_duration(summary.duration_seconds),
-            set_count: summary.set_count,
-            exercises: summary.exercises,
+            workout: summary.workout,
             involvement,
         }));
     }
@@ -454,7 +453,11 @@ async fn day_preview_shard(cx: &Cx, selection: String, link_query: String) -> Re
         <div class="space-y-[0.75rem]">
             for activity in activities.iter() {
                 if let ShardActivity::Workout(workout) = activity {
-                    workout_block(workout: workout)
+                    compact::workout_summary(
+                        workout: &workout.workout,
+                        involvement: &workout.involvement,
+                        preview: true,
+                    )
                 }
                 if let ShardActivity::Run(run) = activity {
                     run_block(run: run)
@@ -512,7 +515,7 @@ impl ShardActivity {
 
     fn identity(&self) -> &str {
         match self {
-            Self::Workout(workout) => &workout.identity,
+            Self::Workout(workout) => &workout.workout.path,
             Self::Run(run) => &run.identity,
         }
     }
@@ -527,48 +530,9 @@ fn sort_shard_activities(activities: &mut [ShardActivity]) {
     });
 }
 
-#[component]
-async fn workout_block(workout: &ShardWorkout) -> Result {
-    let exercises = workout.exercises.join(" · ");
-    let meta = format!(
-        "{} · {} {}",
-        workout.duration,
-        workout.set_count,
-        plural(workout.set_count, "set", "sets"),
-    );
-    let title_label = format!("Open {} workout", workout.title);
-    view! {
-        <article class="border-t border-hairline pt-[0.65rem] first:border-t-0 first:pt-0">
-            <header class="flex items-baseline justify-between gap-3">
-                <a
-                    class=(PREVIEW_WORKOUT_TITLE)
-                    href=(workout.href.as_str())
-                    aria-label=(title_label.as_str())
-                >
-                    (workout.title.as_str())
-                </a>
-                <span class="flex-none font-meta text-[0.62rem] leading-[1.4] text-muted">
-                    (meta.as_str())
-                </span>
-            </header>
-            if !exercises.is_empty() {
-                <p class=(class!(PREVIEW_EXERCISE, "mt-[0.3rem]"))>(exercises.as_str())</p>
-            }
-            if !workout.involvement.is_empty() {
-                muscles::muscle_map_compact(involvement: &workout.involvement)
-            }
-        </article>
-    }
-}
-
 struct ShardWorkout {
-    identity: String,
     start_time: i64,
-    title: String,
-    href: String,
-    duration: String,
-    set_count: usize,
-    exercises: Vec<String>,
+    workout: Workout,
     involvement: muscles::MuscleInvolvement,
 }
 
@@ -1307,6 +1271,24 @@ mod tests {
         assert!(cell.label.contains("Interrupted · 🩹 ankle"));
     }
 
+    fn preview_workout(path: &str) -> Workout {
+        Workout {
+            id: path.into(),
+            path: path.into(),
+            title: String::new(),
+            raw_title: String::new(),
+            started_at_local: "2026-09-08 11:52:00".into(),
+            ended_at_local: "2026-09-08 12:29:00".into(),
+            eastern_offset_minutes: -240,
+            end_eastern_offset_minutes: -240,
+            duration_seconds: 2220,
+            duration_suspicious: false,
+            notes: None,
+            description: None,
+            sets: Vec::new(),
+        }
+    }
+
     #[test]
     fn preview_activities_sort_by_exact_utc_then_kind_and_identity() {
         let mut activities = vec![
@@ -1329,23 +1311,13 @@ mod tests {
                 pace: String::new(),
             }),
             ShardActivity::Workout(ShardWorkout {
-                identity: "lift-z".into(),
                 start_time: 100,
-                title: String::new(),
-                href: String::new(),
-                duration: String::new(),
-                set_count: 0,
-                exercises: Vec::new(),
+                workout: preview_workout("lift-z"),
                 involvement: muscles::MuscleInvolvement::default(),
             }),
             ShardActivity::Workout(ShardWorkout {
-                identity: "lift-a".into(),
                 start_time: 100,
-                title: String::new(),
-                href: String::new(),
-                duration: String::new(),
-                set_count: 0,
-                exercises: Vec::new(),
+                workout: preview_workout("lift-a"),
                 involvement: muscles::MuscleInvolvement::default(),
             }),
         ];

@@ -36,7 +36,7 @@ use crate::{
 };
 
 const FITNESS_PATH: &str = "/fitness";
-const LOG_PATH: &str = "/fitness/log";
+const LOG_PATH: &str = "/fitness";
 const RUN_PATH: &str = "/fitness/run";
 const SHARE_PATH: &str = "/fitness/share";
 const IMPORT_PATH: &str = "/fitness/run/import";

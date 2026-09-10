@@ -377,7 +377,7 @@ fn make_fold(folded: &[Item], all_runs: &[Run]) -> Fold {
             label: format!("{count} more lifts ·"),
             // Date-range filters, unlike page numbers, keep pointing at
             // these workouts as newer ones arrive.
-            href: format!("/fitness/log?from={oldest}&to={}", published.date),
+            href: format!("/fitness?from={oldest}&to={}", published.date),
             body: format!("back to {oldest}"),
             link_label: "workouts →",
         },
@@ -387,7 +387,7 @@ fn make_fold(folded: &[Item], all_runs: &[Run]) -> Fold {
             label: format!("{count} more runs ·"),
             body: format!("back to {oldest}"),
             href: format!(
-                "/fitness/log?from={oldest}&to={}",
+                "/fitness?from={oldest}&to={}",
                 running::activity_date(activity)
             ),
             link_label: "activity log →",
@@ -1224,7 +1224,7 @@ mod tests {
         assert_eq!(fold.label, "2 more lifts ·");
         assert_eq!(fold.date, "2026-07-24");
         assert_eq!(fold.body, "back to 2026-07-23");
-        assert_eq!(fold.href, "/fitness/log?from=2026-07-23&to=2026-07-24");
+        assert_eq!(fold.href, "/fitness?from=2026-07-23&to=2026-07-24");
         assert_eq!(fold.link_label, "workouts →");
     }
 
@@ -1252,7 +1252,7 @@ mod tests {
         assert_eq!(fold.label, "2 more runs ·");
         assert_eq!(fold.date, "2026-07-24");
         assert_eq!(fold.body, "back to 2026-07-23");
-        assert_eq!(fold.href, "/fitness/log?from=2026-07-23&to=2026-07-24");
+        assert_eq!(fold.href, "/fitness?from=2026-07-23&to=2026-07-24");
         assert_eq!(fold.link_label, "activity log →");
     }
 

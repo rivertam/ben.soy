@@ -1,4 +1,4 @@
-//! Compact tag chrome + two-step add-filter picker for `/fitness/log`.
+//! Compact tag chrome + two-step add-filter picker for `/fitness`.
 
 use super::{
     AUTO_FILTER_JS, LOG_PATH, META_LABEL, PAGE_CURRENT, PAGE_DISABLED, PAGE_GAP, PAGE_LINK,
@@ -220,7 +220,7 @@ pub(super) async fn filter_chrome(
                 }
             </div>
 
-            <form class="space-y-2" action="/fitness/log#set-log" method="get">
+            <form class="space-y-2" action="/fitness#set-log" method="get">
                 for (name, value) in search_carry.iter() {
                     <input type="hidden" name=(name.as_str()) value=(value.as_str())>
                 }
@@ -495,7 +495,7 @@ async fn value_body(
             let from = filters.value("from");
             let to = filters.value("to");
             view! {
-                <form class="space-y-3" action="/fitness/log#set-log" method="get">
+                <form class="space-y-3" action="/fitness#set-log" method="get">
                     for (name, value) in carry.iter() {
                         <input type="hidden" name=(name.as_str()) value=(value.as_str())>
                     }
@@ -539,7 +539,7 @@ async fn value_body(
             };
             let carry = filters.form_carry("exercise");
             view! {
-                <form class="space-y-2" action="/fitness/log#set-log" method="get">
+                <form class="space-y-2" action="/fitness#set-log" method="get">
                     for (key, value) in carry.iter() {
                         <input type="hidden" name=(key.as_str()) value=(value.as_str())>
                     }
@@ -641,44 +641,51 @@ pub(super) async fn log_pager(
             </div>
         </div>
         if let Some(pager) = pager {
-            <nav
-                class="flex flex-wrap items-center gap-[0.35rem] mt-3 font-meta text-[0.72rem]"
-                aria-label="Workout log pages"
-            >
-                if let Some(href) = &pager.newer {
-                    <a class=(PAGE_LINK) href=(href.as_str())>
-                        "← newer"
-                    </a>
-                } else {
-                    <span class=(PAGE_DISABLED) aria-disabled="true">
-                        "← newer"
-                    </span>
-                }
-                for part in pager.parts.iter() {
-                    if let Some(number) = part {
-                        if *number == pager.current {
-                            <span class=(PAGE_CURRENT) aria-current="page">
-                                (number.to_string())
-                            </span>
-                        } else {
-                            <a class=(PAGE_LINK) href=(filters.page_url(*number))>
-                                (number.to_string())
-                            </a>
-                        }
-                    } else {
-                        <span class=(PAGE_GAP)>"…"</span>
-                    }
-                }
-                if let Some(href) = &pager.older {
-                    <a class=(PAGE_LINK) href=(href.as_str())>
-                        "older →"
-                    </a>
-                } else {
-                    <span class=(PAGE_DISABLED) aria-disabled="true">
-                        "older →"
-                    </span>
-                }
-            </nav>
+            log_navigation(filters: filters, pager: pager)
         }
+    }
+}
+
+#[component]
+pub(super) async fn log_navigation(filters: &Filters, pager: &Pager) -> Result {
+    view! {
+        <nav
+            class="flex flex-wrap items-center gap-[0.35rem] mt-3 font-meta text-[0.72rem]"
+            aria-label="Workout log pages"
+        >
+            if let Some(href) = &pager.newer {
+                <a class=(PAGE_LINK) href=(href.as_str())>
+                    "← newer"
+                </a>
+            } else {
+                <span class=(PAGE_DISABLED) aria-disabled="true">
+                    "← newer"
+                </span>
+            }
+            for part in pager.parts.iter() {
+                if let Some(number) = part {
+                    if *number == pager.current {
+                        <span class=(PAGE_CURRENT) aria-current="page">
+                            (number.to_string())
+                        </span>
+                    } else {
+                        <a class=(PAGE_LINK) href=(filters.page_url(*number))>
+                            (number.to_string())
+                        </a>
+                    }
+                } else {
+                    <span class=(PAGE_GAP)>"…"</span>
+                }
+            }
+            if let Some(href) = &pager.older {
+                <a class=(PAGE_LINK) href=(href.as_str())>
+                    "older →"
+                </a>
+            } else {
+                <span class=(PAGE_DISABLED) aria-disabled="true">
+                    "older →"
+                </span>
+            }
+        </nav>
     }
 }

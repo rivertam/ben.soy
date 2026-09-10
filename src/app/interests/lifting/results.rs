@@ -406,7 +406,7 @@ mod tests {
         let filters = Filters::normalize(vec![("page".into(), "2".into())]).unwrap();
         let pager = make_pager(&page, &filters).unwrap();
         assert_eq!(pager.current, 2);
-        assert_eq!(pager.newer.as_deref(), Some("/fitness/log#set-log"));
+        assert_eq!(pager.newer.as_deref(), Some("/fitness#set-log"));
         assert!(pager.older.is_none());
     }
 

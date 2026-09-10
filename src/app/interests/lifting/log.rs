@@ -1,25 +1,16 @@
-//! `/fitness/log` — the searchable, filterable fitness activity log.
+//! The searchable fitness archive shared by `/fitness` and the phone pane.
 
 use super::*;
 use crate::app::interests::running;
 use benjisponge::data::Data;
 
-const ANONYMOUS_LOG_CACHE: &str = "public, max-age=0, s-maxage=60";
+#[route(GET "/fitness/log")]
+async fn legacy_fitness_log(cx: &Cx) -> Result {
+    Err(redirect_permanent(with_raw_query(cx, FITNESS_PATH)).into())
+}
 
-#[page("/fitness/log")]
-async fn lifting_log(cx: &Cx) -> Result {
-    let raw = match parse_query_params::<Vec<(String, String)>>(cx) {
-        Ok(raw) => raw,
-        Err(_) => return Err(redirect(LOG_PATH).into()),
-    };
-    let Some(filters) = Filters::normalize(raw) else {
-        return Err(redirect(LOG_PATH).into());
-    };
-    let canonical = filters.query();
-    if uri(cx).query().is_some_and(|query| query != canonical) {
-        return Err(redirect(filters.url(false)).into());
-    }
-
+#[component]
+pub(super) async fn fitness_content(cx: &Cx, filters: &Filters) -> Result {
     let meta = interest("fitness");
     let can_edit = viewer(cx).is_some_and(|current| is_admin(&current.email));
     let api_pairs = filters.api_pairs();
@@ -32,7 +23,24 @@ async fn lifting_log(cx: &Cx) -> Result {
         ),
         archive::steps::load(app_context::<Data>(cx), archive::steps::HEATMAP_DAYS_LIMIT),
     );
-    let (facets, activities, calendar, interruptions) = fitness_results;
+    let fitness::FitnessPage {
+        facets,
+        activities,
+        calendar,
+        interruptions,
+        focus,
+        exercise_weights,
+    } = fitness_results;
+    if let Err(error) = &focus {
+        eprintln!("fitness training focus failed: {error}");
+    }
+    if let Err(error) = &calendar {
+        eprintln!("fitness calendar fetch failed: {error}");
+    }
+    let focus_summary = focus
+        .as_ref()
+        .ok()
+        .filter(|summary| !summary.muscles.is_empty());
     if let Err(error) = &facets {
         eprintln!("fitness facets fetch failed: {error}");
     }
@@ -52,6 +60,7 @@ async fn lifting_log(cx: &Cx) -> Result {
         .map(|page| heatmap::run_days(&page.matching_runs))
         .unwrap_or_default();
     let interruption_rows = interruptions.unwrap_or_default();
+    let open_interruptions = interruptions::open_rows(&interruption_rows);
     let steps_unavailable = steps.is_err();
     let step_days = steps.unwrap_or_default();
     let day_link_query = filters.day_link_query();
@@ -100,7 +109,7 @@ async fn lifting_log(cx: &Cx) -> Result {
     let pager = activities
         .as_ref()
         .ok()
-        .and_then(|page| make_pager(page, &filters));
+        .and_then(|page| make_pager(page, filters));
     let retry_url = filters.url(true);
     let log_items = activities
         .as_ref()
@@ -108,150 +117,172 @@ async fn lifting_log(cx: &Cx) -> Result {
         .map(|page| interruptions::merge_log_items(&page.activities, &page.interruptions));
 
     view! {
-        // Anonymous archive reads can trail a sync by one minute at the CDN.
-        // Browser caches stay cold, and response_layer.rs replaces this with
-        // private, no-store whenever the viewer cookie is present.
-        ((header::CACHE_CONTROL, HeaderValue::from_static(ANONYMOUS_LOG_CACHE)))
-        shell(
-            page: meta.title,
-            active: "",
-            runtime: true,
-            fitness_pwa: true,
-            page_head(stamp: meta.slug, title: meta.title, lede: meta.teaser)
-            <div class="relative min-[90rem]:min-h-[28rem]">
-                <aside
-                    class="mt-8 pt-4 border-t border-hairline \
-                         min-[90rem]:absolute min-[90rem]:left-full min-[90rem]:top-0 \
-                         min-[90rem]:ml-8 min-[90rem]:w-[14.5rem] \
-                         min-[90rem]:mt-0 min-[90rem]:pt-0 min-[90rem]:border-t-0"
-                    aria-label="Archive filters"
-                >
-                    filter_ui::filter_chrome(
-                        filters: &filters,
-                        active: active_filters.as_slice(),
-                        exercise_options: exercise_options.as_slice(),
-                    )
-                </aside>
-
-                if let Some(days) = calendar_days {
-                    rail_section(
-                        class: "mt-10 min-[90rem]:mt-10",
-                        stamp: "volume",
-                        <div id="volume">
-                            heatmap::calendar_heatmap(
-                                days: days,
-                                runs: run_days.clone(),
-                                steps: step_days.clone(),
-                                steps_unavailable: steps_unavailable,
-                                link_query: day_link_query,
-                                filtered: !active_filters.is_empty(),
-                                interruptions: interruption_rows.clone()
-                            )
-                        </div>
-                    )
-                }
-                if !runs.live {
-                    <p class="mt-3 font-meta text-xs text-muted">
-                        "Runs are unavailable right now; lift matches and interruptions are still shown."
+        <header class="rail-row mt-16">
+            <p class="rail-stamp rail-stamp-label">(meta.slug)</p>
+            <div class="flex min-w-0 items-start justify-between gap-4">
+                <div class="min-w-0">
+                    <h1 class="font-display text-4xl font-bold tracking-tight">(meta.title)</h1>
+                    <p class="mt-2 max-w-prose text-sm leading-relaxed text-ink2">
+                        "Lifts, runs, steps, and the breaks between them—one training history."
                     </p>
+                </div>
+                if can_edit { home::log_launcher() }
+            </div>
+        </header>
+        <div class="relative min-[90rem]:min-h-[40rem]">
+            <aside
+                class="mt-8 pt-4 border-t border-hairline min-[90rem]:absolute \
+                     min-[90rem]:left-full min-[90rem]:top-10 min-[90rem]:ml-8 \
+                     min-[90rem]:w-[14.5rem] min-[90rem]:mt-0 min-[90rem]:pt-0 \
+                     min-[90rem]:border-t-0"
+                aria-label="Archive filters and muscle load"
+            >
+                filter_ui::filter_chrome(
+                    filters: filters,
+                    active: active_filters.as_slice(),
+                    exercise_options: exercise_options.as_slice(),
+                )
+                if let Some(focus) = focus_summary {
+                    <div class="hidden mt-8 border-t border-hairline pt-4 min-[90rem]:block">
+                        training_focus::panel(focus: focus, heading_id: "training-focus-desktop")
+                    </div>
                 }
+            </aside>
+            if let Some(focus) = focus_summary {
+                <details class="group mt-6 min-[90rem]:hidden">
+                    <summary class="flex min-h-11 cursor-pointer list-none items-center \
+                         justify-between gap-4 rounded-sm border border-hairline px-4 py-2 \
+                         font-meta text-xs text-oxide hover:border-oxide \
+                         after:content-['+'] group-open:after:content-['−'] \
+                         focus-visible:outline-solid focus-visible:outline-2 \
+                         focus-visible:outline-oxide [&::-webkit-details-marker]:hidden">
+                        "Muscle load + next focus"
+                    </summary>
+                    <div class="mt-3 rounded-sm border border-hairline bg-card p-4">
+                        training_focus::panel(focus: focus, heading_id: "training-focus-mobile")
+                    </div>
+                </details>
+            }
+            if let Some(days) = calendar_days {
+                rail_section(
+                    class: "mt-10",
+                    stamp: "volume",
+                    <div id="volume">
+                        heatmap::calendar_heatmap(
+                            days: days,
+                            runs: run_days.clone(),
+                            steps: step_days.clone(),
+                            steps_unavailable: steps_unavailable,
+                            link_query: day_link_query,
+                            filtered: !active_filters.is_empty(),
+                            interruptions: interruption_rows.clone()
+                        )
+                    </div>
+                )
+            }
+            if !runs.live {
+                <p class="mt-3 font-meta text-xs text-muted">
+                    "Runs are unavailable right now; lift matches and interruptions are still shown."
+                </p>
+            }
 
+            if !open_interruptions.is_empty() {
                 rail_section(
                     class: "mt-12",
-                    stamp: "activity",
-                    <header id="set-log">
-                        filter_ui::log_pager(
-                            filters: &filters,
-                            pager: pager.as_ref(),
-                            result_summary: result_summary.as_str()
-                        )
-                    </header>
+                    stamp: "notes",
+                    interruptions::open_panel(rows: open_interruptions.as_slice(), can_edit: can_edit)
                 )
+            }
 
-                <section class=(LIST) aria-label="Filtered fitness activities">
-                    if let Err(error) = &activities {
-                        <div class=(EMPTY_ERROR_CARD)>
-                            if let Some(message) = error.rejected_message() {
-                                <p class=(EMPTY_TITLE)>
-                                    "That filter combination is not valid."
-                                </p>
-                                <p class=(EMPTY_COPY)>(message)</p>
-                                <a class=(EMPTY_RESET) href="/fitness/log#set-log">
-                                    "clear every filter"
-                                </a>
-                            } else {
-                                <p class=(EMPTY_TITLE)>
-                                    "The fitness log did not load."
-                                </p>
-                                <p class=(EMPTY_COPY)>
-                                    "The filters are intact. Try the database again."
-                                </p>
-                                <a class=(EMPTY_RESET) href=(retry_url.as_str())>
-                                    "retry"
-                                </a>
-                            }
-                        </div>
-                    }
-                    if let Ok(page) = &activities
-                        && page.activities.is_empty()
-                        && page.interruptions.is_empty()
-                    {
-                        <div class=(EMPTY_CARD)>
+            rail_section(
+                class: "mt-12",
+                stamp: "activity",
+                <header id="set-log">
+                    filter_ui::log_pager(
+                        filters: filters,
+                        pager: pager.as_ref(),
+                        result_summary: result_summary.as_str()
+                    )
+                </header>
+            )
+
+            <section class=(LIST) aria-label="Filtered fitness activities">
+                if let Err(error) = &activities {
+                    <div class=(EMPTY_ERROR_CARD)>
+                        if let Some(message) = error.rejected_message() {
                             <p class=(EMPTY_TITLE)>
-                                if page.total_activities() > 0 {
-                                    "This page is empty."
-                                } else {
-                                    "No matching activities."
-                                }
+                                "That filter combination is not valid."
                             </p>
-                            <p class=(EMPTY_COPY)>
-                                if page.total_activities() > 0 {
-                                    "Try a previous page."
-                                } else {
-                                    "Loosen a movement, date, or filter and the log will reappear."
-                                }
-                            </p>
-                            <a class=(EMPTY_RESET) href="/fitness/log#set-log">
+                            <p class=(EMPTY_COPY)>(message)</p>
+                            <a class=(EMPTY_RESET) href="/fitness#set-log">
                                 "clear every filter"
                             </a>
-                        </div>
-                    }
-                    if let Some(items) = &log_items {
-                        for item in items.iter() {
-                            if let interruptions::LogItem::Activity(activity) = item {
-                                if let fitness::LogActivity::Lift(lift) = activity {
-                                    workout_sheet(workout: &lift.workout, permalink: true)
-                                }
-                                if let fitness::LogActivity::Run(run) = activity {
-                                    running::activity_card(activity: &run.activity)
-                                }
+                        } else {
+                            <p class=(EMPTY_TITLE)>
+                                "The fitness log did not load."
+                            </p>
+                            <p class=(EMPTY_COPY)>
+                                "The filters are intact. Try the database again."
+                            </p>
+                            <a class=(EMPTY_RESET) href=(retry_url.as_str())>
+                                "retry"
+                            </a>
+                        }
+                    </div>
+                }
+                if let Ok(page) = &activities
+                    && page.activities.is_empty()
+                    && page.interruptions.is_empty()
+                {
+                    <div class=(EMPTY_CARD)>
+                        <p class=(EMPTY_TITLE)>
+                            if page.total_activities() > 0 {
+                                "This page is empty."
+                            } else {
+                                "No matching activities."
                             }
-                            if let interruptions::LogItem::Interruption(row) = item {
-                                interruptions::log_entry(row: row, can_edit: can_edit)
+                        </p>
+                        <p class=(EMPTY_COPY)>
+                            if page.total_activities() > 0 {
+                                "Try a previous page."
+                            } else {
+                                "Loosen a movement, date, or filter and the log will reappear."
+                            }
+                        </p>
+                        <a class=(EMPTY_RESET) href="/fitness#set-log">
+                            "clear every filter"
+                        </a>
+                    </div>
+                }
+                if let Some(items) = &log_items {
+                    for item in items.iter() {
+                        if let interruptions::LogItem::Activity(activity) = item {
+                            if let fitness::LogActivity::Lift(lift) = activity {
+                                compact::workout_log_entry(workout: &lift.workout, weights: &exercise_weights)
+                            }
+                            if let fitness::LogActivity::Run(run) = activity {
+                                running::activity_card(activity: &run.activity)
                             }
                         }
+                        if let interruptions::LogItem::Interruption(row) = item {
+                            interruptions::log_entry(row: row, can_edit: can_edit)
+                        }
                     }
-                </section>
-            </div>
-            back_link(href: "/", label: "~")
-        )
+                }
+            </section>
+            if let Some(pager) = &pager {
+                rail_section(
+                    class: "mt-6",
+                    stamp: "",
+                    filter_ui::log_navigation(filters: filters, pager: pager)
+                )
+            }
+        </div>
+
     }
 }
 
 #[route(GET "/lifting/log")]
 async fn legacy_lifting_log(cx: &Cx) -> Result {
     Err(redirect_permanent(with_raw_query(cx, LOG_PATH)).into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ANONYMOUS_LOG_CACHE;
-
-    #[test]
-    fn anonymous_log_cache_is_browser_cold_and_edge_short_lived() {
-        assert_eq!(
-            ANONYMOUS_LOG_CACHE.split(", ").collect::<Vec<_>>(),
-            ["public", "max-age=0", "s-maxage=60"]
-        );
-    }
 }

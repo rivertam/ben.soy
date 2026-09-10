@@ -44,6 +44,7 @@ if (root && typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.p
     };
 
     const show = (date, selection, button) => {
+      if (panel.dataset.pinned === "true") return;
       clearHide();
       setDay(date, selection);
       open(button);
@@ -77,6 +78,12 @@ if (root && typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.p
 
     panel.addEventListener("mouseenter", clearHide);
     panel.addEventListener("mouseleave", scheduleHide);
+    // Keep a hover preview open while its set details or muscle disclosure
+    // are being used. A later explicit day click can still select another day.
+    panel.addEventListener("click", () => {
+      clearHide();
+      panel.dataset.pinned = "true";
+    });
 
     panel.addEventListener("toggle", (event) => {
       if (event.newState === "closed") {

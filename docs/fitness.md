@@ -13,9 +13,11 @@ reuse the local sync token or expose unrestricted SurrealQL.
 
 - Page, filter/query handling, API reader, and HTML rendering compose the
   independently stored lifting, running, and daily-step models under one
-  public surface. `/fitness` is the landing view (combined training/steps
-  heatmap and the newest lift and run), `/fitness/log` is the filterable,
-  UTC-interleaved activity archive,
+  public surface. `/fitness` contains the combined training/steps heatmap,
+  muscle load/next focus, and the full filterable, paginated, UTC-interleaved
+  activity archive. `/fitness/log` permanently redirects there, preserving its
+  query and fragment. The phone's fitness pane uses the same body with default
+  filters, independent of the main timeline's query.
   `/fitness/lift/YYYY-MM-DDTHH-MM-SS-04-00` (or `-05-00`) is a complete workout
   page, and `/fitness/run/{Eastern-start}/{sha256-id}` is a run summary. Legacy
   `/lifting` and `/running` reads permanently redirect to their canonical
@@ -23,19 +25,18 @@ reuse the local sync token or expose unrestricted SurrealQL.
   `America/New_York` projection of the
   source instant; the explicit Eastern offset keeps same-date workouts and the
   repeated fall DST hour distinct without exposing importer IDs.
-  Anonymous `/fitness/log` HTML is browser-cold and edge-cacheable for 60
-  seconds (`max-age=0`, `s-maxage=60`); viewer-cookie requests are forced to
-  `private, no-store` by the site response layer and bypassed at Cloudflare.
   The standalone `/fitness` page, detail pages, and fitness APIs remain
-  `no-store`.
-  `/fitness/log` filter chrome is an always-visible search field, a compact tag
+  `no-store`; viewer-cookie requests are forced to `private, no-store` by the
+  site response layer and bypassed at Cloudflare. The home phone pane retains
+  home's 60-second anonymous edge TTL.
+  `/fitness` filter chrome is an always-visible search field, a compact tag
   bar (removable active filters), and a two-step “add filter” picker
   (category → value); on wide viewports it sits in the right gutter, otherwise
   inline above the archive. `auto-filter.js` only swaps the no-JS `<details>`
   fallback for the popover “+ filter” button — links and mini GET forms remain
   the navigation path. Page size lives with the pager at the top of the
   activity log, not in the filter picker.
-- `/fitness` and `/fitness/log` render one layered training calendar. Oxide
+- `/fitness` renders one layered training calendar. Oxide
   fill intensity remains strictly lifting volume, a fixed-scale brass border
   encodes daily steps (0 / 4k / 8k / 12k+), a patina edge marker means one or
   more runs occurred, and the existing emoji annotates an interruption; all
@@ -51,8 +52,15 @@ reuse the local sync token or expose unrestricted SurrealQL.
   (minus `from`/`to`/`page`) into their day-log links. An interactive day opens
   a shared popover whose body is a Topcoat shard (`day_preview_shard`): the
   calendar SSR stays compact, and that day's exact step count, lifts, runs,
-  exercise names, and compact muscle maps load on hover or click in exact UTC
-  order. Shard args are untrusted and validated (canonical `YYYY-MM-DD`,
+  exercise names, set badges, and compact muscle maps load on hover or click
+  in exact UTC order. `compact::workout_summary` is shared by the log and day
+  preview: all exercise groups and sets remain present, with the social PNG's
+  numbered effort seals beside a front/back map. Each seal opens load, reps,
+  exact effort, set notes, and PR details; a star marks records in the summary.
+  Supersets retain their grouping. Preview set-popover IDs are scoped separately
+  from log IDs so the same workout can appear in both at once. Maps in filtered
+  cards describe their matching sets; day previews still show the full workout.
+  Shard args are untrusted and validated (canonical `YYYY-MM-DD`,
   optional bounded step count, and a filter-shaped `link_query`). Hover/pin
   chrome is `heatmap-preview.js`; click-to-open still works via native
   `popovertarget`. Previews remain full-day even when filters only lit the
@@ -351,7 +359,7 @@ reuse the local sync token or expose unrestricted SurrealQL.
   Run dialog, or the Lyfta text form in the Lift dialog on `/fitness`.
 - Annotate-only interruptions: the Interruption choice in the owner-only log
   launcher opens its create dialog; edit / delete controls remain on open rows
-  on `/fitness` and closed rows in the `/fitness/log`
+  on `/fitness` and closed rows in the `/fitness`
   timeline. Writes are `POST /fitness/interruptions`,
   `POST /fitness/interruptions/{id}`, and
   `POST /fitness/interruptions/{id}/delete` — each repeats the admin check
@@ -360,7 +368,7 @@ reuse the local sync token or expose unrestricted SurrealQL.
   heatmap `emoji`. Opaque 32-hex ids keep identity across edits. Overlaps
   and multiple open rows are allowed. Open interruptions (no `to`) appear
   only in the `/fitness` notes section — that section is omitted when none
-  are open. Closed interruptions inject into the `/fitness/log` activity list by
+  are open. Closed interruptions inject into the `/fitness` activity list by
   `to_date` (after same-day lifts and runs; omitted from pager counts). The heatmap
   marks covered days with that emoji (open rows through today Eastern;
   closed through `to`; newest wins on overlap) and surfaces emoji + note in

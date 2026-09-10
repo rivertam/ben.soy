@@ -423,9 +423,8 @@ pub(super) async fn muscle_map(involvement: &MuscleInvolvement) -> Result {
     }
 }
 
-/// Compact front/back figures for heatmap day preview popovers. One-line
-/// primary/secondary labels replace the full legend; empty involvement
-/// renders nothing so the card can skip the muscles block entirely.
+/// Compact figures with expandable muscle names, shared by log and preview.
+/// Empty involvement renders nothing, leaving the exercises the full width.
 #[component]
 pub(super) async fn muscle_map_compact(involvement: &MuscleInvolvement) -> Result {
     if involvement.is_empty() {
@@ -434,8 +433,9 @@ pub(super) async fn muscle_map_compact(involvement: &MuscleInvolvement) -> Resul
     let primary_list = label_list(&involvement.primary);
     let secondary_list = label_list(&involvement.secondary);
     view! {
-        <div class="mt-[0.55rem]" aria-hidden="true">
-            <div class="flex items-start gap-x-3">
+        <div class="muscle-map-compact">
+            <div class="muscle-map-figures" role="img"
+                aria-label=(format!("Primary muscles: {primary_list}. Secondary muscles: {secondary_list}."))>
                 muscle_figure(
                     paths: FRONT_PATHS,
                     caption: "front",
@@ -449,18 +449,21 @@ pub(super) async fn muscle_map_compact(involvement: &MuscleInvolvement) -> Resul
                     compact: true
                 )
             </div>
-            if !involvement.primary.is_empty() {
-                <p class="mt-[0.4rem] font-meta text-[0.62rem] leading-[1.4] text-ink2">
-                    <span class="text-muted">"primary · "</span>
-                    (primary_list.as_str())
-                </p>
-            }
-            if !involvement.secondary.is_empty() {
-                <p class="mt-[0.15rem] font-meta text-[0.62rem] leading-[1.4] text-ink2">
-                    <span class="text-muted">"secondary · "</span>
-                    (secondary_list.as_str())
-                </p>
-            }
+            <details class="muscle-map-labels">
+                <summary>"muscles"</summary>
+                if !involvement.primary.is_empty() {
+                    <p class="muscle-map-label mt-[0.4rem] font-meta text-[0.62rem] leading-[1.4] text-ink2">
+                        <span class="text-muted">"primary · "</span>
+                        (primary_list.as_str())
+                    </p>
+                }
+                if !involvement.secondary.is_empty() {
+                    <p class="muscle-map-label mt-[0.15rem] font-meta text-[0.62rem] leading-[1.4] text-ink2">
+                        <span class="text-muted">"secondary · "</span>
+                        (secondary_list.as_str())
+                    </p>
+                }
+            </details>
         </div>
     }
 }

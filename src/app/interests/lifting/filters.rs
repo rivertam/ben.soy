@@ -3,7 +3,7 @@
 use crate::util::urlencode;
 
 const DEFAULT_PER_PAGE: &str = "10";
-pub(super) const LOG_PATH: &str = "/fitness/log";
+pub(super) const LOG_PATH: &str = "/fitness";
 
 pub(super) const MOVEMENTS: &[(&str, &str)] = &[
     ("squat-type", "squat-type"),
@@ -425,13 +425,10 @@ mod tests {
             ("page".into(), "4".into()),
         ])
         .expect("safe query");
-        assert_eq!(
-            filters.page_url(1),
-            "/fitness/log?movement=squat-type#set-log"
-        );
+        assert_eq!(filters.page_url(1), "/fitness?movement=squat-type#set-log");
         assert_eq!(
             filters.page_url(3),
-            "/fitness/log?movement=squat-type&page=3#set-log"
+            "/fitness?movement=squat-type&page=3#set-log"
         );
     }
 
@@ -489,13 +486,10 @@ mod tests {
             ("per_page".into(), "20".into()),
         ])
         .expect("safe query");
-        assert_eq!(
-            filters.per_page_url("10"),
-            "/fitness/log?muscle=chest#set-log"
-        );
+        assert_eq!(filters.per_page_url("10"), "/fitness?muscle=chest#set-log");
         assert_eq!(
             filters.per_page_url("40"),
-            "/fitness/log?muscle=chest&per_page=40#set-log"
+            "/fitness?muscle=chest&per_page=40#set-log"
         );
     }
 }

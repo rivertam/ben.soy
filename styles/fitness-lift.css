@@ -131,3 +131,220 @@ button.lift-set-stamp:hover .lift-set-effort {
   font-family: "Zilla Slab", "Rockwell", serif;
   font-style: italic;
 }
+
+/* A workout reads like its social card: exercises and seals beside the map.
+   Container sizing keeps the same markup useful inside a narrow day preview. */
+.lift-summary {
+  container: lift-summary / inline-size;
+  min-width: 0;
+  padding: 1rem;
+  color: var(--color-ink);
+  background: var(--color-card);
+  border: 1px solid var(--color-hairline);
+}
+
+.lift-summary-header {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.lift-summary-header h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.lift-summary a {
+  text-decoration-color: color-mix(in srgb, var(--color-oxide) 45%, transparent);
+  text-underline-offset: 0.2em;
+}
+
+.lift-summary a:hover,
+.lift-summary a:focus-visible {
+  color: var(--color-oxide);
+}
+
+.lift-summary .lift-summary-facts {
+  margin: 0.35rem 0 0;
+  color: var(--color-muted);
+  font-family: var(--font-meta);
+  font-size: 0.65rem;
+  line-height: 1.5;
+}
+
+.lift-summary-body {
+  display: grid;
+  gap: 1rem;
+  padding-top: 0.75rem;
+}
+
+.lift-summary-with-muscles {
+  grid-template-columns: minmax(0, 1fr) 10rem;
+}
+
+.lift-summary-exercises,
+.lift-summary-block {
+  display: grid;
+  align-content: start;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.lift-summary-exercise h4 {
+  margin: 0 0 0.2rem;
+  color: var(--color-ink2);
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.lift-summary-sets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lift-set-compact {
+  position: relative;
+  display: block;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-ink2);
+  font-family: var(--font-meta);
+  font-size: 0.65rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.lift-set-compact[data-set-effort="warmup"] {
+  color: var(--color-steel);
+}
+
+.lift-set-compact[data-set-effort="failure"] {
+  color: var(--color-brass);
+}
+
+.lift-set-compact:is(:hover, :focus-visible) {
+  color: var(--color-oxide);
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+
+.lift-set-compact-record {
+  position: absolute;
+  right: -0.1rem;
+  bottom: -0.1rem;
+  color: var(--color-brass);
+  font-size: 0.6rem;
+  line-height: 1;
+}
+
+.lift-summary-superset {
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--color-oxide);
+}
+
+.lift-summary .lift-summary-superset-label {
+  margin: 0;
+  color: var(--color-muted);
+  font: 0.6rem/1.4 var(--font-meta);
+}
+
+.lift-summary-muscles {
+  min-width: 0;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--color-hairline);
+}
+
+.muscle-map-figures {
+  display: flex;
+  align-items: start;
+  gap: 0.4rem;
+}
+
+.muscle-map-figures > figure {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.lift-summary .muscle-map-label {
+  margin-right: 0;
+}
+
+.muscle-map-labels > summary {
+  margin-top: 0.6rem;
+  color: var(--color-muted);
+  font: 0.62rem/1.5 var(--font-meta);
+  cursor: pointer;
+}
+
+.muscle-map-labels > summary:is(:hover, :focus-visible) {
+  color: var(--color-oxide);
+}
+
+.lift-summary-preview {
+  padding: 0.75rem;
+}
+
+.inline-popover-panel[data-heatmap-panel] {
+  width: min(38rem, calc(100vw - 2rem));
+  max-height: min(44rem, calc(100dvh - 3rem));
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+@supports (position-area: bottom) {
+  .inline-popover-panel[data-heatmap-panel]:popover-open {
+    position: fixed;
+    inset: auto;
+    position-area: bottom;
+    position-try-fallbacks: flip-block;
+    margin: 0.6rem 1rem;
+    transform: none;
+  }
+
+  .lift-summary .inline-popover-panel:popover-open {
+    position: fixed;
+    inset: auto;
+    position-area: bottom;
+    position-try-fallbacks: flip-block;
+    margin: 0.6rem 1rem;
+    transform: none;
+  }
+}
+
+@container lift-summary (max-width: 29rem) {
+  .lift-summary-with-muscles {
+    grid-template-columns: minmax(0, 1fr) 6rem;
+    gap: 0.65rem;
+  }
+
+  .lift-summary-muscles {
+    padding-left: 0.5rem;
+  }
+
+  .muscle-map-labels {
+    display: none;
+  }
+}
+
+@container lift-summary (max-width: 18rem) {
+  .lift-summary-with-muscles {
+    grid-template-columns: minmax(0, 1fr) 4.75rem;
+    gap: 0.5rem;
+  }
+}

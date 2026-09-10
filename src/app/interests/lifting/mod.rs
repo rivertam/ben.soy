@@ -2,6 +2,7 @@
 
 pub(crate) mod archive;
 mod badge;
+mod compact;
 mod data;
 mod delete;
 mod entry;
@@ -88,7 +89,6 @@ pub(super) const PAGE_CURRENT: &str = "inline-flex min-w-[2.1rem] min-h-[2.1rem]
      justify-center px-[0.55rem] py-[0.35rem] text-card bg-ink border border-ink";
 pub(super) const PAGE_GAP: &str = "inline-flex min-w-[2.1rem] min-h-[2.1rem] items-center \
      justify-center px-[0.55rem] py-[0.35rem] text-muted";
-const META_SMALL: &str = "flex-none font-meta text-[0.67rem] leading-[1.5] text-muted";
 const WORKOUT_NOTE: &str = "mt-[0.7rem] px-[0.7rem] py-[0.6rem] text-ink2 bg-brass/7 \
      border-l-2 border-brass text-[0.82rem] leading-[1.5]";
 
@@ -504,68 +504,6 @@ async fn lift_detail_head(
 }
 
 #[component]
-pub(super) async fn workout_sheet(workout: &fitness::Workout, permalink: bool) -> Result {
-    let source_workout = workout;
-    let workout = WorkoutCard::from(workout);
-    let workout_link_label = format!("Open {} workout", workout.title);
-    debug_assert!(permalink, "workout cards are only used in archive listings");
-    view! {
-        <article class="rail-row rail-row-top">
-            <div class="rail-stamp sm:pt-[0.35rem]">
-                <time
-                    class="flex flex-col gap-[0.1rem]"
-                    datetime=(workout.datetime.as_str())
-                    title="Eastern start and end time from the workout archive"
-                >
-                    <span class="text-ink2">(workout.date.as_str())</span>
-                    <span class="text-[0.68rem] text-muted">
-                        (workout.time_range.as_str())
-                    </span>
-                </time>
-            </div>
-            <div class="min-w-0 p-4 bg-card border border-hairline sm:px-5 sm:py-[1.1rem]">
-                <header
-                    class="flex items-start justify-between gap-4 pb-3 border-b border-hairline"
-                >
-                    <h3 class="min-w-0 font-display text-xl font-semibold leading-[1.2]">
-                        if permalink {
-                            <a
-                                class="decoration-oxide/45 decoration-1 \
-                                     underline-offset-[0.18em] hover:text-oxide \
-                                     hover:decoration-current focus-visible:text-oxide \
-                                     focus-visible:decoration-current"
-                                href=(workout.href.as_str())
-                                aria-label=(workout_link_label.as_str())
-                            >
-                                (workout.title)
-                            </a>
-                        } else {
-                            (workout.title)
-                        }
-                    </h3>
-                    <p class=(META_SMALL)>
-                        (format!(
-                            "{} · {} {}", workout.duration, workout.set_count,
-                            plural(workout.set_count, "set", "sets"),
-                        ))
-                        if workout.duration_suspicious {
-                            " · "
-                            <span
-                                class="text-oxide"
-                                title="This source workout was left running for at least four hours, or recorded as zero."
-                            >
-                                "timer outlier"
-                            </span>
-                        }
-                    </p>
-                </header>
-                workout_body(workout: source_workout)
-            </div>
-        </article>
-    }
-}
-
-#[component]
 async fn workout_detail(workout: &fitness::Workout) -> Result {
     let workout = WorkoutCard::from(workout);
     view! {
@@ -612,56 +550,6 @@ async fn workout_detail_block(block: &results::ExerciseBlock<'_>) -> Result {
     if let Some(id) = block.superset_id {
         let label = format!("Superset {id}");
         view! { rail_group(label: label.as_str(), (groups)) }
-    } else {
-        Ok(groups)
-    }
-}
-
-#[component]
-async fn workout_body(workout: &fitness::Workout) -> Result {
-    let workout = WorkoutCard::from(workout);
-    view! {
-        if let Some(description) = workout.description {
-            <p class=(WORKOUT_NOTE)>(description)</p>
-        }
-        if let Some(notes) = workout.notes {
-            <p class=(WORKOUT_NOTE)>(notes)</p>
-        }
-        for block in workout.blocks.iter() {
-            workout_body_block(block: block)
-        }
-    }
-}
-
-#[component]
-async fn workout_body_block(block: &results::ExerciseBlock<'_>) -> Result {
-    let groups = view! {
-        <div>
-            for group in block.groups.iter() {
-                <section class="mt-3">
-                    <div class="flex items-end justify-between gap-[0.7rem] pb-[0.35rem]">
-                        <h4 class="text-[0.9rem] font-semibold leading-[1.3]">
-                            <a
-                                class="hover:text-oxide hover:underline \
-                                     hover:decoration-oxide/45 underline-offset-[0.2em]"
-                                href=(exercise::page_url(group.name))
-                            >
-                                (group.name)
-                            </a>
-                        </h4>
-                    </div>
-                    <ol>
-                        for row in group.rows.iter() {
-                            set_row(row: row, divided: true)
-                        }
-                    </ol>
-                </section>
-            }
-        </div>
-    }?;
-    if let Some(id) = block.superset_id {
-        let label = format!("Superset {id}");
-        view! { rail_group(class: "rail-group-compact", label: label.as_str(), (groups)) }
     } else {
         Ok(groups)
     }
