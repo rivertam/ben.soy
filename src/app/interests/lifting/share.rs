@@ -275,7 +275,8 @@ https://ben.soy/fitness/lift/2026-07-21T10-39-04-04-00";
     async fn share_image_preview_copy_and_download_use_the_same_url() {
         let cx = Cx::default();
         let __cx = &cx;
-        let image_url = super::super::social_card::image_path("2026-07-21T10-39-04-04-00", 149);
+        let image_url =
+            super::super::social_card::image_path("2026-07-21T10-39-04-04-00", 149, None);
         let html = view! {
             share_block(text: "Workout text", image_url: image_url.as_str(), image_alt: "Workout card")
         }.unwrap().render(__cx);

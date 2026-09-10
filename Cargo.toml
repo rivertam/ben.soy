@@ -74,6 +74,7 @@ jiff = { version = "0.2.34", features = ["tzdb-bundle-always"] }
 # be PKCS#8 PEM — jsonwebtoken rejects SEC1 "EC PRIVATE KEY" files).
 jsonwebtoken = "9"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+rand = { version = "0.10.2", default-features = false, features = ["chacha"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-webpki-roots",
     "json",

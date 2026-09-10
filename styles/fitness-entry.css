@@ -1102,7 +1102,8 @@ body:has(.fitness-entry) {
   border: 0;
   border-radius: 0;
   font-family: "Fira Mono", "Courier New", monospace;
-  font-size: 1.05rem;
+  font-size: 2.1rem;
+  line-height: 1;
 }
 
 .entry-set__remove::before {

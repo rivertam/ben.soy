@@ -9,6 +9,8 @@
 
 use std::fmt::Write;
 
+use benjisponge::plaid::{Pattern, Rgb};
+
 use font8x8::{BASIC_FONTS, LATIN_FONTS, UnicodeFonts};
 use jiff::civil::{DateTime, Weekday};
 use resvg::{
@@ -30,43 +32,136 @@ pub(super) const WIDTH: u32 = 1200;
 pub(super) const HEIGHT: u32 = 600;
 pub(super) const CONTENT_TYPE: &str = "image/png";
 // Bump when the rendered design changes, independently of workout data.
-const RENDER_REVISION: u32 = 5;
+const RENDER_REVISION: u32 = 6;
 const MAX_EXERCISES: usize = 4;
 const MAX_BADGES: usize = 13;
 const EXERCISE_TOP: i32 = 288;
 const EXERCISE_PITCH: i32 = 64;
 const BADGE_PITCH: i32 = 40;
 
-const INK: (u8, u8, u8, u8) = (210, 218, 176, 255);
-const INK_2: (u8, u8, u8, u8) = (174, 187, 135, 255);
-const MUTED: (u8, u8, u8, u8) = (139, 154, 104, 255);
-const OXIDE: (u8, u8, u8, u8) = (232, 163, 61, 255);
+struct CardColors {
+    ink: Rgb,
+    ink2: Rgb,
+    muted: Rgb,
+    accent: Rgb,
+    warmup: Rgb,
+    failure: Rgb,
+    page: Rgb,
+    panel_start: Rgb,
+    panel_end: Rgb,
+    border: Rgb,
+    card: Rgb,
+    silhouette: Rgb,
+    outline: Rgb,
+    unused: Rgb,
+    secondary: Rgb,
+}
+
+impl CardColors {
+    fn new(plaid: Option<&Pattern>) -> Self {
+        if let Some(plaid) = plaid {
+            let finish = plaid.finish();
+            Self {
+                ink: finish.ink,
+                ink2: finish.ink2,
+                muted: finish.muted,
+                accent: finish.accent,
+                warmup: finish.steel,
+                failure: finish.brass,
+                page: finish.page,
+                panel_start: finish.page,
+                panel_end: finish.page,
+                border: finish.hairline,
+                card: finish.card,
+                silhouette: finish.card,
+                outline: finish.muted,
+                unused: finish.card.mix(finish.hairline, 0.2),
+                secondary: finish.accent.mix(finish.card, 0.45),
+            }
+        } else {
+            Self {
+                ink: Rgb(210, 218, 176),
+                ink2: Rgb(174, 187, 135),
+                muted: Rgb(139, 154, 104),
+                accent: Rgb(232, 163, 61),
+                warmup: Rgb(145, 177, 191),
+                failure: Rgb(222, 193, 108),
+                page: Rgb(30, 36, 26),
+                panel_start: Rgb(51, 60, 41),
+                panel_end: Rgb(40, 48, 33),
+                border: Rgb(70, 82, 50),
+                card: Rgb(46, 54, 38),
+                silhouette: Rgb(48, 58, 40),
+                outline: Rgb(89, 104, 64),
+                unused: Rgb(58, 69, 47),
+                secondary: Rgb(143, 102, 52),
+            }
+        }
+    }
+}
+
+pub(super) fn uses_plaid(workout: &Workout) -> bool {
+    workout
+        .started_at_local
+        .parse::<DateTime>()
+        .is_ok_and(|start| start.weekday() == Weekday::Thursday)
+}
 
 /// Render the share image. SVG remains an internal drawing description; the
 /// public endpoint always returns PNG because chat clients support raster
 /// Open Graph images much more consistently.
-pub(super) fn render_png(workout: &Workout, involvement: &MuscleInvolvement) -> Vec<u8> {
+pub(super) fn render_png(
+    workout: &Workout,
+    involvement: &MuscleInvolvement,
+    plaid: &Pattern,
+) -> Vec<u8> {
+    render_at_width(workout, involvement, plaid, WIDTH)
+}
+
+fn render_at_width(
+    workout: &Workout,
+    involvement: &MuscleInvolvement,
+    plaid: &Pattern,
+    width: u32,
+) -> Vec<u8> {
     let copy = CardCopy::new(workout, involvement);
-    let tree = Tree::from_str(&card_svg(workout, involvement, &copy), &Options::default())
-        .expect("the workout card SVG is application-authored");
-    let mut pixmap = Pixmap::new(WIDTH, HEIGHT).expect("fixed social-card dimensions are valid");
-    render(&tree, Transform::identity(), &mut pixmap.as_mut());
-    draw_copy(&mut pixmap, &copy);
+    let tree = Tree::from_str(
+        &card_svg(workout, involvement, &copy, plaid),
+        &Options::default(),
+    )
+    .expect("the workout card SVG is application-authored");
+    let scale = width as f32 / WIDTH as f32;
+    let mut pixmap =
+        Pixmap::new(width, width * HEIGHT / WIDTH).expect("fixed social-card dimensions are valid");
+    render(
+        &tree,
+        Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    draw_copy(
+        &mut pixmap,
+        &copy,
+        &CardColors::new(uses_plaid(workout).then_some(plaid)),
+    );
     pixmap
         .encode_png()
         .expect("fixed-size social card encodes as PNG")
 }
 
-pub(super) fn image_path(workout_path: &str, version: i64) -> String {
+pub(super) fn image_path(workout_path: &str, version: i64, plaid: Option<&Pattern>) -> String {
     format!(
         "{}/social.png?{}",
         workout_url(workout_path),
-        image_query(version)
+        image_query(version, plaid.map(Pattern::fingerprint).as_deref())
     )
 }
 
-pub(super) fn image_query(version: i64) -> String {
-    format!("v={version}&r={RENDER_REVISION}")
+pub(super) fn image_query(version: i64, fingerprint: Option<&str>) -> String {
+    let mut query = format!("v={version}&r={RENDER_REVISION}");
+    if let Some(fingerprint) = fingerprint {
+        write!(query, "&p={fingerprint}").unwrap();
+    }
+    query
 }
 
 pub(super) fn description(workout: &Workout, involvement: &MuscleInvolvement) -> String {
@@ -96,20 +191,20 @@ pub(super) fn image_alt(workout: &Workout, involvement: &MuscleInvolvement) -> S
     )
 }
 
-fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>) {
-    draw_text(pixmap, "BEN.SOY / FITNESS", 88, 68, 3, MUTED);
-    draw_text_lines(pixmap, &copy.title, 88, 142, 3, 32, INK);
+fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>, colors: &CardColors) {
+    draw_text(pixmap, "BEN.SOY / FITNESS", 88, 68, 3, colors.muted.rgba());
+    draw_text_lines(pixmap, &copy.title, 88, 142, 3, 32, colors.ink.rgba());
 
-    draw_text(pixmap, &copy.date, 88, 220, 2, OXIDE);
-    draw_text(pixmap, &copy.facts, 88, 250, 2, INK_2);
+    draw_text(pixmap, &copy.date, 88, 220, 2, colors.accent.rgba());
+    draw_text(pixmap, &copy.facts, 88, 250, 2, colors.ink2.rgba());
     for (index, exercise) in copy.exercises.iter().enumerate() {
         let y = EXERCISE_TOP + index as i32 * EXERCISE_PITCH;
-        draw_text(pixmap, &exercise.name, 88, y, 2, INK_2);
+        draw_text(pixmap, &exercise.name, 88, y, 2, colors.ink2.rgba());
         for (index, row) in exercise.rows.iter().enumerate() {
             let number = row
                 .working_number
                 .map_or_else(|| "W".into(), |n| format!("{n:02}"));
-            let color = badge_color(badge::badge_for(row.set));
+            let color = badge_color(badge::badge_for(row.set), colors);
             let scale = 1.25_f32.min(18.0 / (number.len() as f32 * 7.0));
             draw_text_sized(
                 pixmap,
@@ -128,7 +223,7 @@ fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>) {
                 88 + exercise.rows.len() as i32 * BADGE_PITCH,
                 y + 33,
                 2,
-                MUTED,
+                colors.muted.rgba(),
             );
         }
     }
@@ -143,13 +238,13 @@ fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>) {
             88,
             546,
             2,
-            MUTED,
+            colors.muted.rgba(),
         );
     }
 
-    draw_text(pixmap, "MUSCLE BREAKDOWN", 718, 68, 2, MUTED);
-    draw_text(pixmap, "FRONT", 763, 399, 2, MUTED);
-    draw_text(pixmap, "BACK", 929, 399, 2, MUTED);
+    draw_text(pixmap, "MUSCLE BREAKDOWN", 718, 68, 2, colors.muted.rgba());
+    draw_text(pixmap, "FRONT", 763, 399, 2, colors.muted.rgba());
+    draw_text(pixmap, "BACK", 929, 399, 2, colors.muted.rgba());
 
     if copy.primary_count > 0 {
         draw_text(
@@ -158,9 +253,9 @@ fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>) {
             718,
             422,
             2,
-            OXIDE,
+            colors.accent.rgba(),
         );
-        draw_text_lines(pixmap, &copy.primary, 718, 448, 2, 22, INK_2);
+        draw_text_lines(pixmap, &copy.primary, 718, 448, 2, 22, colors.ink2.rgba());
     }
     if copy.secondary_count > 0 {
         draw_text(
@@ -169,105 +264,171 @@ fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>) {
             718,
             498,
             2,
-            MUTED,
+            colors.muted.rgba(),
         );
-        draw_text_lines(pixmap, &copy.secondary, 718, 524, 2, 22, INK_2);
+        draw_text_lines(pixmap, &copy.secondary, 718, 524, 2, 22, colors.ink2.rgba());
     }
 }
 
-fn card_svg(workout: &Workout, involvement: &MuscleInvolvement, copy: &CardCopy<'_>) -> String {
+fn card_svg(
+    workout: &Workout,
+    involvement: &MuscleInvolvement,
+    copy: &CardCopy<'_>,
+    plaid: &Pattern,
+) -> String {
     let panel_height = HEIGHT - 56;
-    // Use the archive's Eastern start date, even when UTC or the end date
-    // falls on another day. The cloth matches the site's Plaid Thursday theme.
-    let background = if workout
-        .started_at_local
-        .parse::<DateTime>()
-        .is_ok_and(|start| start.weekday() == Weekday::Thursday)
-    {
-        "plaid"
-    } else {
-        "grid"
-    };
+    let cloth = uses_plaid(workout).then_some(plaid);
+    let colors = CardColors::new(cloth);
+    let border = colors.border.hex();
     let mut svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">
 <defs>
   <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
-    <path d="M48 0H0V48" fill="none" stroke="#465232" stroke-width="1" opacity="0.42"/>
-  </pattern>
-  <pattern id="plaid" width="90.4" height="90.4" patternUnits="userSpaceOnUse" patternTransform="rotate(10)">
-    <rect width="90.4" height="90.4" fill="#192b24"/>
-    <rect x="20.8" width="21.6" height="90.4" fill="#071426" opacity="0.58"/>
-    <rect x="53.6" width="5.12" height="90.4" fill="#7e252d" opacity="0.58"/>
-    <rect x="58.72" width="1.44" height="90.4" fill="#e2c168" opacity="0.38"/>
-    <rect x="60.16" width="5.12" height="90.4" fill="#7e252d" opacity="0.58"/>
-    <rect y="20.8" width="90.4" height="21.6" fill="#071426" opacity="0.58"/>
-    <rect y="53.6" width="90.4" height="5.12" fill="#7e252d" opacity="0.58"/>
-    <rect y="58.72" width="90.4" height="1.44" fill="#e2c168" opacity="0.38"/>
-    <rect y="60.16" width="90.4" height="5.12" fill="#7e252d" opacity="0.58"/>
+    <path d="M48 0H0V48" fill="none" stroke="{border}" stroke-width="1" opacity="0.42"/>
   </pattern>
   <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0" stop-color="#333c29"/>
-    <stop offset="1" stop-color="#283021"/>
+    <stop offset="0" stop-color="{}"/><stop offset="1" stop-color="{}"/>
   </linearGradient>
+  <clipPath id="panel"><rect x="30" y="28" width="1140" height="{panel_height}" rx="8"/></clipPath>
+  {}
 </defs>
-<rect width="{WIDTH}" height="{HEIGHT}" fill="#1e241a"/>
-<rect x="30" y="28" width="1140" height="{panel_height}" rx="8" fill="url(#page)"/>
-<rect x="30" y="28" width="1140" height="{panel_height}" rx="8" fill="url(#{background})"/>
-<rect x="30" y="28" width="1140" height="8" rx="4" fill="#e8a33d"/>
-<path d="M88 112H1112" stroke="#465232" stroke-width="2"/>
-<path d="M675 132V526" stroke="#465232" stroke-width="2"/>
-<g transform="translate(700 121) scale(0.72)">"##
+<rect width="{WIDTH}" height="{HEIGHT}" fill="{}"/>
+<rect x="30" y="28" width="1140" height="{panel_height}" rx="8" fill="url(#page)"/>"##,
+        colors.panel_start.hex(),
+        colors.panel_end.hex(),
+        cloth.map(|p| p.svg_defs("plaid")).unwrap_or_default(),
+        colors.page.hex(),
     );
-    push_figure(&mut svg, FRONT_PATHS, involvement);
+    if let Some(plaid) = cloth {
+        svg.push_str("<g clip-path=\"url(#panel)\">");
+        svg.push_str(&plaid.svg_background("plaid", [30, 28, 1140, panel_height], true));
+        svg.push_str("</g>");
+    } else {
+        write!(
+            svg,
+            r#"<rect x="30" y="28" width="1140" height="{panel_height}" rx="8" fill="url(#grid)"/>"#
+        )
+        .unwrap();
+    }
+    write!(
+        svg,
+        r#"<rect x="30" y="28" width="1140" height="8" rx="4" fill="{}"/>
+<path d="M88 112H1112" stroke="{border}" stroke-width="2"/>
+<path d="M675 132V526" stroke="{border}" stroke-width="2"/>
+<g transform="translate(700 121) scale(0.72)">"#,
+        colors.accent.hex()
+    )
+    .unwrap();
+    push_figure(&mut svg, FRONT_PATHS, involvement, &colors);
     svg.push_str("</g><g transform=\"translate(868 121) scale(0.72)\">");
-    push_figure(&mut svg, BACK_PATHS, involvement);
+    push_figure(&mut svg, BACK_PATHS, involvement, &colors);
     svg.push_str("</g>");
     for (index, exercise) in copy.exercises.iter().enumerate() {
         let y = EXERCISE_TOP + index as i32 * EXERCISE_PITCH + 22;
         for (index, row) in exercise.rows.iter().enumerate() {
-            let (red, green, blue, _) = badge_color(badge::badge_for(row.set));
+            let (red, green, blue, _) = badge_color(badge::badge_for(row.set), &colors);
             write!(
                 svg,
                 r#"<g transform="translate({} {y})" color="rgb({red},{green},{blue})">{}</g>"#,
                 88 + index as i32 * BADGE_PITCH,
-                badge::seal_shapes(row.set, "#2e3626"),
+                badge::seal_shapes(row.set, &colors.card.hex())
             )
-            .expect("write to string");
+            .unwrap();
         }
     }
     svg.push_str("</svg>");
     svg
 }
 
-fn badge_color(badge: Badge) -> (u8, u8, u8, u8) {
+fn badge_color(badge: Badge, colors: &CardColors) -> (u8, u8, u8, u8) {
     match badge {
-        Badge::Warmup => (145, 177, 191, 255),
-        Badge::Failure => (222, 193, 108, 255),
-        Badge::Rated | Badge::Unrated => INK_2,
+        Badge::Warmup => colors.warmup.rgba(),
+        Badge::Failure => colors.failure.rgba(),
+        Badge::Rated | Badge::Unrated => colors.ink2.rgba(),
     }
 }
 
-fn push_figure(svg: &mut String, paths: &'static [MusclePath], involvement: &MuscleInvolvement) {
+fn push_figure(
+    svg: &mut String,
+    paths: &'static [MusclePath],
+    involvement: &MuscleInvolvement,
+    colors: &CardColors,
+) {
+    let outline = colors.outline.hex();
     write!(
         svg,
-        r##"<path fill="#303a28" stroke="#596840" stroke-width="1.5" d="{SILHOUETTE}"/>"##
+        r#"<path fill="{}" stroke="{outline}" stroke-width="1.5" d="{SILHOUETTE}"/>"#,
+        colors.silhouette.hex()
     )
-    .expect("write to string");
+    .unwrap();
     for path in paths {
         let fill = if involvement.primary.contains(&path.muscle) {
-            "#e8a33d"
+            colors.accent
         } else if involvement.secondary.contains(&path.muscle) {
-            "#8f6634"
+            colors.secondary
         } else {
-            "#3a452f"
+            colors.unused
         };
         write!(
             svg,
-            r##"<path fill="{fill}" stroke="#596840" stroke-width="0.75" d="{}"/>"##,
+            r#"<path fill="{}" stroke="{outline}" stroke-width="0.75" d="{}"/>"#,
+            fill.hex(),
             path.d
         )
-        .expect("write to string");
+        .unwrap();
     }
+}
+
+/// A clearly synthetic card for the admin preview, using the production
+/// renderer without reading or creating any workout records.
+pub(crate) fn preview_png(plaid: &Pattern) -> Vec<u8> {
+    use super::archive::api::Set;
+    let workout = Workout {
+        id: "plaid-preview".into(),
+        path: "plaid-preview".into(),
+        title: "Thursday cloth study".into(),
+        raw_title: "Thursday cloth study".into(),
+        started_at_local: "2026-09-10 11:00:00".into(),
+        ended_at_local: "2026-09-10 11:45:00".into(),
+        eastern_offset_minutes: -240,
+        end_eastern_offset_minutes: -240,
+        duration_seconds: 2700,
+        duration_suspicious: false,
+        notes: None,
+        description: None,
+        sets: ["Bench Press", "Barbell Squat", "Cable Row"]
+            .into_iter()
+            .enumerate()
+            .flat_map(|(i, name)| {
+                (0..3).map(move |n| Set {
+                    id: format!("preview-{i}-{n}"),
+                    ordinal: (i * 3 + n) as u32,
+                    exercise_name: name.into(),
+                    raw_exercise_name: name.into(),
+                    exercise_note: None,
+                    superset_id: None,
+                    weight_milli: Some(100_000),
+                    weight_unit: "lbs".into(),
+                    reps: Some(8),
+                    effort_hundredths: Some(800),
+                    failure: false,
+                    distance_milli: None,
+                    set_time_seconds: None,
+                    set_type: "NORMAL_SET".into(),
+                    records: vec![],
+                })
+            })
+            .collect(),
+    };
+    render_at_width(
+        &workout,
+        &MuscleInvolvement {
+            primary: vec!["mid-chest", "quads", "lats"],
+            secondary: vec!["triceps", "glute-max"],
+        },
+        plaid,
+        600,
+    )
 }
 
 struct CardExercise<'a> {
@@ -600,7 +761,9 @@ fn draw_text_sized(
 ) {
     let mut paint = Paint::default();
     paint.set_color_rgba8(color.0, color.1, color.2, color.3);
-    paint.anti_alias = scale.fract() != 0.0;
+    let viewport_scale = pixmap.width() as f32 / WIDTH as f32;
+    paint.anti_alias = (scale * viewport_scale).fract() != 0.0;
+    let transform = Transform::from_scale(viewport_scale, viewport_scale);
     let advance = scale * 7.0;
 
     for (index, character) in card_text(value).chars().enumerate() {
@@ -622,7 +785,7 @@ fn draw_text_sized(
                     scale,
                 )
                 .expect("positive glyph rectangle");
-                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                pixmap.fill_rect(rect, &paint, transform, None);
             }
         }
     }
@@ -715,18 +878,51 @@ mod tests {
     #[test]
     fn image_path_is_versioned_and_uses_the_canonical_workout_url() {
         assert_eq!(
-            image_path("2026-09-07T11-06-51-04-00", 149),
-            "/fitness/lift/2026-09-07T11-06-51-04-00/social.png?v=149&r=5"
+            image_path("2026-09-07T11-06-51-04-00", 149, None),
+            "/fitness/lift/2026-09-07T11-06-51-04-00/social.png?v=149&r=6"
         );
     }
 
     #[test]
     fn raster_is_a_large_png_with_the_expected_dimensions() {
-        let png = render_png(&workout(), &involvement());
+        let png = render_png(&workout(), &involvement(), &Pattern::default());
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), WIDTH);
         assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), HEIGHT);
         assert!(png.len() < 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn changing_cloth_changes_thursday_images_and_urls_only() {
+        let original = Pattern::default();
+        let other = benjisponge::plaid::generate(
+            &original,
+            "light-shirt",
+            benjisponge::plaid::GENERATOR_VERSION,
+            benjisponge::plaid::GenerateMode::All,
+        )
+        .unwrap();
+        let mut lift = workout();
+        let involved = involvement();
+        assert!(!uses_plaid(&lift));
+        assert_eq!(
+            render_png(&lift, &involved, &original),
+            render_png(&lift, &involved, &other)
+        );
+        lift.started_at_local = "2026-09-10 11:00:00".into();
+        assert!(uses_plaid(&lift));
+        assert_ne!(
+            render_png(&lift, &involved, &original),
+            render_png(&lift, &involved, &other)
+        );
+        assert_ne!(
+            image_path(&lift.path, 149, Some(&original)),
+            image_path(&lift.path, 149, Some(&other))
+        );
+        assert!(
+            image_path(&lift.path, 149, Some(&original))
+                .ends_with(&format!("&p={}", original.fingerprint()))
+        );
     }
 
     #[test]
@@ -735,7 +931,7 @@ mod tests {
             let mut workout = workout();
             workout.started_at_local = start.into();
             workout.ended_at_local = end.into();
-            let png = render_png(&workout, &involvement());
+            let png = render_png(&workout, &involvement(), &Pattern::default());
             let pixmap = Pixmap::decode_png(&png).unwrap();
             // Sample the cloth beside the title, clear of all foreground art.
             (130..200)
@@ -775,7 +971,7 @@ mod tests {
             .collect();
         assert_eq!(numbers, [None, Some(1), Some(1), Some(2)]);
         assert!(copy.facts.contains("3 WORKING SETS"));
-        let svg = card_svg(&workout, &involvement, &copy);
+        let svg = card_svg(&workout, &involvement, &copy, &Pattern::default());
         assert_eq!(svg.matches("class=\"lift-set-bar\"").count(), 12);
         assert!(svg.contains(&badge::seal_shapes(&workout.sets[3], "#2e3626")));
         assert!(!svg.contains("volume points"));

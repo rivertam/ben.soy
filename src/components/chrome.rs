@@ -286,6 +286,7 @@ pub async fn shell(
                     data-vimium-module=(SESSION_VIMIUM_JS)
                 ></script>
                 <link rel="stylesheet" href=(SITE_CSS)>
+                <link rel="stylesheet" href="/plaid/current.css">
                 // These faces belong to alternate finishes, not the default
                 // session. Keep their @font-face rules available for a live
                 // switch without preloading their bytes on every visit.

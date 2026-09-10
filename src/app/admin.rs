@@ -1,5 +1,5 @@
 //! Admin-only pages: `/admin` (the tool index) and `/admin/permissions`
-//! (hidden-page grant management).
+//! (hidden-page grant management). The plaid workbench lives in `app::plaid`.
 //!
 //! The index is a rail of cards fed by `ADMIN_TOOLS`; the
 //! shell's admin-only footer link is its one listing. Permissions renders one
@@ -57,7 +57,7 @@ struct AdminTool {
     teaser: &'static str,
 }
 
-static ADMIN_TOOLS: [AdminTool; 2] = [
+static ADMIN_TOOLS: [AdminTool; 3] = [
     AdminTool {
         stamp: "permissions",
         href: PAGE_PATH,
@@ -71,6 +71,12 @@ static ADMIN_TOOLS: [AdminTool; 2] = [
         title: "Diary",
         teaser: "Completely private, timestamped entries. Deliberately not a \
                  hidden page, so it can never be granted.",
+    },
+    AdminTool {
+        stamp: "plaid",
+        href: "/admin/plaid",
+        title: "Plaid",
+        teaser: "Build a cloth, try another colorway, and choose the plaid for Thursday.",
     },
 ];
 

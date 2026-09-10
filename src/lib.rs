@@ -7,4 +7,5 @@ pub mod auth;
 pub mod data;
 pub mod fitness;
 pub mod fitness_mcp;
+pub mod plaid;
 pub mod workout_text;

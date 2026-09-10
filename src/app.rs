@@ -11,6 +11,7 @@ mod log;
 pub(crate) mod login;
 mod motorcycles;
 mod not_found;
+mod plaid;
 mod pwa;
 mod response_layer;
 mod resume;
@@ -39,6 +40,7 @@ pub fn router() -> Router {
         .origin_policy(OriginPolicy::new().exempt_paths(["/mcp"]));
     benjisponge::fitness_mcp::mount(builder, data.clone())
         .app_context(data.clone())
+        .app_context(benjisponge::plaid::store::PlaidStore::new(data.clone()))
         .app_context(FitnessStore::new(data))
         .app_context(cookie_key())
         .build()

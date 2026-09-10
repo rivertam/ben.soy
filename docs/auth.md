@@ -43,6 +43,13 @@ independently repeats that exact check before reading the request body.
 
 ## Admin pages (`/admin`, `/admin/permissions`)
 
+`/admin/plaid` is also exact-admin tooling, listed only in `ADMIN_TOOLS`.
+Its preview/generate/publish POSTs require same-origin JSON requests bounded
+to 32 KiB. Only publishing writes the current plaid, with a revision check
+to reject stale editors. Every admin response is `no-store`; the public
+`/plaid/current.css` contains only rendered appearance settings and revalidates.
+See `docs/plaid.md` for the definition and endpoint contracts.
+
 `/admin` is the tool index — a rail of cards fed by
 `ADMIN_TOOLS` in `src/app/admin.rs`; the "admin" link the shell adds to the
 admin's own footer line is its one listing. Admin pages are tooling, not

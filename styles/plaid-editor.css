@@ -1,0 +1,53 @@
+.plaid-editor { margin-top: 2.5rem; }
+.plaid-workbench { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 2rem; align-items: start; }
+.plaid-preview-column { position: sticky; top: 2rem; min-width: 0; }
+.plaid-cloth { min-height: 15rem; border: 1px solid var(--color-hairline); border-radius: .3rem .3rem 0 0; }
+.plaid-preview-switch { display: flex; gap: .5rem; padding: .75rem 0; }
+.plaid-preview-switch [aria-pressed="true"] { border-color: var(--color-oxide); color: var(--color-oxide); }
+.plaid-page-preview { padding: 1.75rem; border: 1px solid var(--color-hairline); border-radius: .3rem; font-family: "Fira Sans", sans-serif; }
+.plaid-page-preview h2 { font-family: "Zilla Slab", serif; font-size: 1.8rem; line-height: 1.15; margin: .8rem 0; }
+.plaid-page-preview p { font-size: .95rem; line-height: 1.6; color: var(--color-ink2); }
+.plaid-page-preview .plaid-sample-meta { color: var(--color-muted); font-size: .75rem; }
+.plaid-page-preview .plaid-sample-link { color: var(--color-oxide); margin-top: 1rem; }
+.plaid-sample-card { background: var(--color-card); color: var(--color-ink2); border: 1px solid var(--color-hairline); padding: 1rem; margin-top: 1rem; font-size: .85rem; }
+.plaid-card-preview img { display: block; width: 100%; height: auto; border: 1px solid var(--color-hairline); }
+.plaid-caption, .plaid-card-preview p { color: var(--color-muted); font-size: .75rem; line-height: 1.5; margin-top: .75rem; }
+.plaid-controls { display: grid; gap: 1.5rem; min-width: 0; }
+.plaid-editor fieldset { border: 0; padding: 0; min-width: 0; }
+.plaid-editor legend { font-family: var(--font-display); font-size: 1.25rem; margin-bottom: .7rem; color: var(--color-ink); }
+.plaid-editor label { display: grid; gap: .35rem; font-size: .8rem; color: var(--color-ink2); }
+.plaid-editor input:not([type="checkbox"]):not([type="color"]), .plaid-editor select, .plaid-editor textarea { width: 100%; min-width: 0; padding: .45rem .55rem; border: 1px solid var(--color-hairline); border-radius: .2rem; background: var(--color-card); color: var(--color-ink); font: inherit; }
+.plaid-editor :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--color-oxide); outline-offset: 3px; }
+.plaid-editor button { border: 1px solid var(--color-hairline); background: var(--color-card); color: var(--color-ink2); border-radius: .2rem; padding: .45rem .65rem; font-size: .8rem; cursor: pointer; min-height: 2.2rem; }
+.plaid-editor button:hover { color: var(--color-oxide); border-color: var(--color-oxide); }
+.plaid-editor button:disabled { opacity: .5; cursor: default; }
+.plaid-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .65rem; }
+.plaid-palette { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: .6rem; }
+.plaid-color-row { display: flex; align-items: end; gap: .2rem; }
+.plaid-color-row label { text-align: center; }
+.plaid-color-row input { width: 2.5rem; height: 2.2rem; cursor: pointer; padding: .1rem; border: 1px solid var(--color-hairline); }
+.plaid-color-row button { border: 0; background: none; padding: .2rem; }
+.plaid-editor .plaid-check { display: flex; align-items: start; gap: .6rem; line-height: 1.5; }
+.plaid-check input { margin-top: .2rem; accent-color: var(--color-oxide); }
+.plaid-axis { margin-top: 1rem; }
+.plaid-axis-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .5rem; }
+.plaid-axis-heading h3 { font-size: .85rem; }
+.plaid-axis-heading select { width: auto; font-size: .8rem; }
+.plaid-bands { display: grid; gap: .4rem; margin-bottom: .6rem; }
+.plaid-band-row { display: grid; grid-template-columns: minmax(3rem, 1fr) minmax(3.5rem, 1.2fr) repeat(3, 2.2rem); gap: .35rem; }
+.plaid-band-row button { padding: .3rem; }
+.plaid-band-row [data-plaid-remove-band] { font-size: 1.6rem; line-height: 1; }
+.plaid-dimensions { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.plaid-document { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--color-hairline); }
+.plaid-document summary { cursor: pointer; font-size: 1rem; }
+.plaid-document p { max-width: 65ch; color: var(--color-muted); font-size: .8rem; line-height: 1.6; margin: .8rem 0; }
+.plaid-document textarea { font-family: var(--font-meta); font-size: .8rem; line-height: 1.5; margin: .4rem 0 .7rem; resize: vertical; }
+.plaid-publish { margin-top: 1.5rem; padding: 1rem 0; border-top: 1px solid var(--color-hairline); }
+.plaid-publish .plaid-use { background: var(--color-oxide); border-color: var(--color-oxide); color: var(--color-page); }
+.plaid-publish p { font-size: .85rem; line-height: 1.6; margin-top: .8rem; max-width: 75ch; }
+.plaid-editor [hidden] { display: none; }
+@media (max-width: 60rem) {
+  .plaid-workbench { grid-template-columns: 1fr; }
+  .plaid-preview-column { position: static; }
+  .plaid-cloth { min-height: 11rem; }
+}

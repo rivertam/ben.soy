@@ -3,6 +3,15 @@
 -- data/schema_migrations/: DEFINE INDEX OVERWRITE destroys and rebuilds an
 -- existing index on SurrealDB 3.2.3, even when its definition is unchanged.
 
+-- The validated, versioned document is a native object. Palette codes are
+-- user-defined keys; the Rust plaid parser bounds and validates every field.
+DEFINE TABLE OVERWRITE plaid_settings SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE spec ON plaid_settings TYPE object FLEXIBLE;
+DEFINE FIELD OVERWRITE revision ON plaid_settings TYPE int ASSERT $value > 0;
+DEFINE FIELD OVERWRITE fingerprint ON plaid_settings TYPE string
+    ASSERT string::matches($value, '^[0-9a-f]{64}$');
+DEFINE FIELD OVERWRITE updated_at ON plaid_settings TYPE int ASSERT $value >= 0;
+
 DEFINE TABLE OVERWRITE spire_runs SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON spire_runs TYPE string;
 -- `game`/`run_id` are optional only so rows written before multi-game support

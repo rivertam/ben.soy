@@ -20,7 +20,7 @@ mod muscle_taxonomy;
 mod muscles;
 mod results;
 mod share;
-mod social_card;
+pub(crate) mod social_card;
 mod taxonomy;
 mod training_focus;
 
@@ -207,8 +207,12 @@ path_param!(workout_path);
 const VERSIONED_SOCIAL_IMAGE_CACHE: &str = "public, max-age=31536000, immutable";
 const UNVERSIONED_SOCIAL_IMAGE_CACHE: &str = "no-cache";
 
-fn social_image_cache(query: Option<&str>, version: i64) -> &'static str {
-    let expected_query = social_card::image_query(version);
+fn social_image_cache(
+    query: Option<&str>,
+    version: i64,
+    fingerprint: Option<&str>,
+) -> &'static str {
+    let expected_query = social_card::image_query(version, fingerprint);
     if query == Some(expected_query.as_str()) {
         VERSIONED_SOCIAL_IMAGE_CACHE
     } else {
@@ -241,14 +245,36 @@ async fn lift_social_image(cx: &Cx) -> Result<Response> {
         return Err(not_found().into());
     };
     let involvement = muscles::workout_involvement(workout, &weights);
-    let cache_control = social_image_cache(uri(cx).query(), detail.version);
+    let loaded_plaid = if social_card::uses_plaid(workout) {
+        Some(
+            app_context::<benjisponge::plaid::store::PlaidStore>(cx)
+                .current(false)
+                .await,
+        )
+    } else {
+        None
+    };
+    let fingerprint = loaded_plaid.as_ref().map(|p| p.saved.pattern.fingerprint());
+    let cache_control = if loaded_plaid.as_ref().is_some_and(|p| !p.available) {
+        UNVERSIONED_SOCIAL_IMAGE_CACHE
+    } else {
+        social_image_cache(uri(cx).query(), detail.version, fingerprint.as_deref())
+    };
+    let fallback = benjisponge::plaid::Pattern::default();
+    let plaid = loaded_plaid
+        .as_ref()
+        .map_or(&fallback, |p| &p.saved.pattern);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, social_card::CONTENT_TYPE)
         .header(header::CACHE_CONTROL, cache_control)
         .header("x-content-type-options", "nosniff")
-        .body(Body::from(social_card::render_png(workout, &involvement)))
+        .body(Body::from(social_card::render_png(
+            workout,
+            &involvement,
+            plaid,
+        )))
         .expect("fitness social image response uses static headers"))
 }
 
@@ -278,9 +304,19 @@ async fn lift_detail(cx: &Cx) -> Result {
     });
     let share_text =
         workout.map(|workout| share::share_text(workout, share::request_origin(cx).as_deref()));
+    let loaded_plaid = if workout.is_some_and(social_card::uses_plaid) {
+        Some(
+            app_context::<benjisponge::plaid::store::PlaidStore>(cx)
+                .current(false)
+                .await,
+        )
+    } else {
+        None
+    };
+    let plaid = loaded_plaid.as_ref().map(|p| &p.saved.pattern);
     let share_image = workout
         .zip(detail)
-        .map(|(workout, detail)| social_card::image_path(&workout.path, detail.version));
+        .map(|(workout, detail)| social_card::image_path(&workout.path, detail.version, plaid));
     let share_image_alt = workout
         .zip(involvement.as_ref())
         .map(|(workout, involvement)| social_card::image_alt(workout, involvement));
@@ -299,7 +335,7 @@ async fn lift_detail(cx: &Cx) -> Result {
         (workout, involvement.as_ref(), detail)
     {
         page_meta = page_meta.image(
-            social_card::image_path(&workout.path, detail.version),
+            social_card::image_path(&workout.path, detail.version, plaid),
             social_card::CONTENT_TYPE,
             social_card::WIDTH,
             social_card::HEIGHT,
@@ -608,28 +644,45 @@ mod tests {
     #[test]
     fn only_the_matching_social_image_version_is_immutable() {
         assert_eq!(
-            social_image_cache(Some(&social_card::image_query(149)), 149),
+            social_image_cache(Some(&social_card::image_query(149, None)), 149, None),
             VERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(
-            social_image_cache(Some(&social_card::image_query(148)), 149),
+            social_image_cache(Some(&social_card::image_query(148, None)), 149, None),
             UNVERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(
-            social_image_cache(Some("v=149&extra=1"), 149),
+            social_image_cache(Some("v=149&extra=1"), 149, None),
             UNVERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(
-            social_image_cache(Some("v=149"), 149),
+            social_image_cache(Some("v=149"), 149, None),
             UNVERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(
-            social_image_cache(Some("v=149&r=1"), 149),
+            social_image_cache(Some("v=149&r=1"), 149, None),
             UNVERSIONED_SOCIAL_IMAGE_CACHE
         );
         assert_eq!(
-            social_image_cache(None, 149),
+            social_image_cache(None, 149, None),
             UNVERSIONED_SOCIAL_IMAGE_CACHE
         );
+        let fingerprint = benjisponge::plaid::Pattern::default().fingerprint();
+        let query = social_card::image_query(149, Some(&fingerprint));
+        assert_eq!(
+            social_image_cache(Some(&query), 149, Some(&fingerprint)),
+            VERSIONED_SOCIAL_IMAGE_CACHE
+        );
+        for stale in [
+            social_card::image_query(149, None),
+            social_card::image_query(149, Some("old")),
+            format!("{query}&extra=1"),
+            format!("p={fingerprint}&v=149&r=6"),
+        ] {
+            assert_eq!(
+                social_image_cache(Some(&stale), 149, Some(&fingerprint)),
+                UNVERSIONED_SOCIAL_IMAGE_CACHE
+            );
+        }
     }
 }
