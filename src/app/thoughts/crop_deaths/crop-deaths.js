@@ -354,5 +354,7 @@ if (calculator && form) {
     update();
   });
   form.dataset.enhanced = "true";
-  update();
+  // The server already rendered the receipt from validated, normalized inputs.
+  // Preserve its warnings and the requested URL until the reader edits a
+  // control or submits; normalized defaults are not a new valid submission.
 }
