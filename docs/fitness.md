@@ -38,8 +38,9 @@ reuse the local sync token or expose unrestricted SurrealQL.
   activity log, not in the filter picker.
 - `/fitness` renders one layered training calendar. Oxide
   fill intensity remains strictly lifting volume, a fixed-scale brass border
-  encodes daily steps (0 / 4k / 8k / 12k+), a patina edge marker means one or
-  more runs occurred, and the existing emoji annotates an interruption; all
+  encodes daily steps (0 / 10k / 20k / 30k+), with totals below 10k barely
+  brighter than no-data days. A patina edge marker means one or more runs
+  occurred, and the existing emoji annotates an interruption; all
   four can coexist. Run-only and step-only days are interactive but add zero
   volume points. The filtered lifting calendar comes from
   `Snapshot::calendar_filtered` in-process (the same per-set predicate as the

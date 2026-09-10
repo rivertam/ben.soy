@@ -164,7 +164,7 @@ pub(super) async fn calendar_heatmap(
         "Training by day for the 53 weeks ending {ending}. Oxide fill shows lifting volume points{filter_copy}; brass borders show daily steps; a patina corner marks one or more runs; emoji mark interruptions. Days with training, steps, or interruptions open a detail preview.",
     );
     let legend_styles: Vec<String> = (0..=4).map(heat_style).collect();
-    let step_legend_styles: Vec<String> = [0, 4_000, 8_000, 12_000]
+    let step_legend_styles: Vec<String> = [0, 10_000, 20_000, 30_000]
         .into_iter()
         .map(|steps| step_border_style(Some(steps)))
         .collect();
@@ -218,7 +218,7 @@ pub(super) async fn calendar_heatmap(
                     </div>
                     <div
                         class="inline-flex items-center gap-[0.22rem]"
-                        aria-label="Brass border intensity shows 0, 4,000, 8,000, and 12,000 or more daily steps."
+                        aria-label="Brass border intensity shows 0, 10,000, 20,000, and 30,000 or more daily steps."
                     >
                         <span class="mr-[0.12rem]">"steps"</span>
                         <span class="mr-[0.12rem]">"0"</span>
@@ -231,7 +231,7 @@ pub(super) async fn calendar_heatmap(
 
                             </span>
                         }
-                        <span class="ml-[0.12rem]">"12k+"</span>
+                        <span class="ml-[0.12rem]">"30k+"</span>
                     </div>
                 </div>
             </header>
@@ -886,10 +886,10 @@ fn heat_style(intensity: u8) -> String {
 
 fn step_border_alpha(steps: u64) -> u8 {
     match steps {
-        0 => 22,
-        1..=3_999 => 38,
-        4_000..=7_999 => 58,
-        8_000..=11_999 => 78,
+        0 => 0,
+        1..=9_999 => 8,
+        10_000..=19_999 => 32,
+        20_000..=29_999 => 64,
         _ => 100,
     }
 }
@@ -1085,14 +1085,14 @@ mod tests {
 
     #[test]
     fn step_border_bands_use_fixed_daily_milestones() {
-        assert_eq!(step_border_alpha(0), 22);
-        assert_eq!(step_border_alpha(1), 38);
-        assert_eq!(step_border_alpha(3_999), 38);
-        assert_eq!(step_border_alpha(4_000), 58);
-        assert_eq!(step_border_alpha(7_999), 58);
-        assert_eq!(step_border_alpha(8_000), 78);
-        assert_eq!(step_border_alpha(11_999), 78);
-        assert_eq!(step_border_alpha(12_000), 100);
+        assert_eq!(step_border_alpha(0), 0);
+        assert_eq!(step_border_alpha(1), 8);
+        assert_eq!(step_border_alpha(9_999), 8);
+        assert_eq!(step_border_alpha(10_000), 32);
+        assert_eq!(step_border_alpha(19_999), 32);
+        assert_eq!(step_border_alpha(20_000), 64);
+        assert_eq!(step_border_alpha(29_999), 64);
+        assert_eq!(step_border_alpha(30_000), 100);
         assert_eq!(step_border_alpha(u64::MAX), 100);
     }
 
