@@ -18,3 +18,12 @@ for the exact current hash, so deploy skew cannot pin a mismatched pair in the
 browser cache. Files are read by stamp at request time; rebuilding Wasm does
 not require rebuilding the server. With missing artifacts or unavailable Wasm,
 the ordinary server-rendered GET forms remain usable.
+
+Airport search uses the same `thoughts-core` registry for server lookup and
+browser suggestions. Unicode folding performs NFD decomposition and removes
+Unicode diacritics before matching words; metro aliases, fuzzy matching, and
+ranking have one implementation. Keyboard handling and list rendering remain
+in `airport-combobox.js`. `just airport-wasm` builds the separate airport
+entry of `thoughts-worker`, served by `/airport-search.js` with its own matched
+pair and hash. This keeps the airport dataset out of the crop calculator's
+small download. Both builds are included in development/build/release and CI.

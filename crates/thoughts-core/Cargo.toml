@@ -3,5 +3,11 @@ name = "thoughts-core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+airports = ["dep:serde_json", "dep:unicode-normalization", "dep:regex"]
+
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+unicode-normalization = { version = "0.1.25", optional = true }
+regex = { version = "1", default-features = false, features = ["std", "unicode-gencat", "unicode-bool", "unicode-perl"], optional = true }

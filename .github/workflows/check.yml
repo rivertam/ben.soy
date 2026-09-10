@@ -19,5 +19,6 @@ jobs:
       - run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
       - run: just fitness-wasm
       - run: just thoughts-wasm
+      - run: just airport-wasm
       - run: just check
       - run: node --test tests/browser/*.test.cjs

@@ -307,11 +307,7 @@ pub const JET_FUEL_KG_PER_LITRE: f64 = 0.8;
 /// Paris-aligned personal allowance for all mobility (car, bus, train,
 /// plane), tonnes CO₂e per person per year: the 2030 milestone of the
 /// 1.5-Degree Lifestyles technical report (IGES/Aalto/D-mat 2019) —
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Coordinates {
-    pub lat: f64,
-    pub lon: f64,
-}
+pub use thoughts_core::airports::Coordinates;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FlightInput {

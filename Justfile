@@ -10,6 +10,7 @@ install-hooks:
 dev *args:
     just fitness-wasm
     just thoughts-wasm
+    just airport-wasm
     bash scripts/dev.sh {{args}}
 
 # Replace local fitness tables and import a Strong CSV (run while `just dev` is active)
@@ -20,6 +21,7 @@ reset-fitness-local csv="/home/benji/Downloads/WorkoutData.csv":
 build:
     just fitness-wasm
     just thoughts-wasm
+    just airport-wasm
     cargo build
     topcoat asset bundle --bin benjisponge
 
@@ -39,12 +41,13 @@ diary-wasm:
         crates/diary-worker/target/wasm32-unknown-unknown/wasm/diary_worker.wasm
 
 # Build all browser Rust modules into wasm-dist/.
-wasm: diary-wasm fitness-wasm thoughts-wasm
+wasm: diary-wasm fitness-wasm thoughts-wasm airport-wasm
 
 # Build the release binary and extract its assets
 release:
     just fitness-wasm
     just thoughts-wasm
+    just airport-wasm
     cargo build --release
     topcoat asset bundle --release --bin benjisponge
 
@@ -107,10 +110,17 @@ test:
 test-browser:
     just fitness-wasm
     just thoughts-wasm
+    just airport-wasm
     node --test tests/browser/*.test.cjs
 
 # Build the small shared calculator/search module for public thought pages.
 thoughts-wasm:
     cargo build -p thoughts-worker --profile wasm --target wasm32-unknown-unknown
     wasm-bindgen --target web --out-dir wasm-dist --out-name thoughts_core \
+        target/wasm32-unknown-unknown/wasm/thoughts_worker.wasm
+
+# Separate airport entry keeps the dataset out of the crop calculator download.
+airport-wasm:
+    cargo build -p thoughts-worker --features airports --profile wasm --target wasm32-unknown-unknown
+    wasm-bindgen --target web --out-dir wasm-dist --out-name airport_search \
         target/wasm32-unknown-unknown/wasm/thoughts_worker.wasm

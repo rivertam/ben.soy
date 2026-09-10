@@ -54,7 +54,7 @@ name = "podrick"
 path = "src/app/interests/podrick/podrick.rs"
 
 [dependencies]
-thoughts-core = { workspace = true }
+thoughts-core = { workspace = true, features = ["airports"] }
 anyhow = "1.0.104"
 axum = "0.8.9"
 base64 = "0.22"

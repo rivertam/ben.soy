@@ -3,6 +3,9 @@ name = "thoughts-worker"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+airports = ["thoughts-core/airports"]
+
 [lib]
 crate-type = ["cdylib"]
 

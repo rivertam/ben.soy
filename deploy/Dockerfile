@@ -39,6 +39,7 @@ COPY Cargo.toml Cargo.lock build.rs .gitignore ./
 COPY .cargo ./.cargo
 COPY crates ./crates
 COPY src ./src
+COPY data ./data
 COPY scripts/vendor-surrealdb-core.sh ./scripts/vendor-surrealdb-core.sh
 COPY deploy/surrealdb-core-wasm-time.patch ./deploy/surrealdb-core-wasm-time.patch
 RUN bash scripts/vendor-surrealdb-core.sh
@@ -54,6 +55,10 @@ RUN wasm-bindgen --target no-modules --out-dir wasm-dist --out-name fitness_entr
 
 RUN cargo build -p thoughts-worker --profile wasm --target wasm32-unknown-unknown
 RUN wasm-bindgen --target web --out-dir wasm-dist --out-name thoughts_core \
+    target/wasm32-unknown-unknown/wasm/thoughts_worker.wasm
+
+RUN cargo build -p thoughts-worker --features airports --profile wasm --target wasm32-unknown-unknown
+RUN wasm-bindgen --target web --out-dir wasm-dist --out-name airport_search \
     target/wasm32-unknown-unknown/wasm/thoughts_worker.wasm
 
 FROM debian:trixie-slim

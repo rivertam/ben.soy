@@ -16,12 +16,33 @@ use topcoat::{
     router::{Body, StatusCode, header, request::uri, response::Response, route},
 };
 
-const GLUE_PATH: &str = "/thoughts-core-glue.js";
-const WASM_PATH: &str = "/thoughts-core_bg.wasm";
+#[derive(Clone, Copy)]
+enum Pair {
+    Crop,
+    Airports,
+}
+impl Pair {
+    fn paths(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Crop => ("/thoughts-core-glue.js", "/thoughts-core_bg.wasm"),
+            Self::Airports => ("/airport-search-glue.js", "/airport-search_bg.wasm"),
+        }
+    }
+    fn files(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Crop => ("thoughts_core.js", "thoughts_core_bg.wasm"),
+            Self::Airports => ("airport_search.js", "airport_search_bg.wasm"),
+        }
+    }
+    fn cache(self) -> &'static Mutex<Option<(Stamp, Arc<Dist>)>> {
+        match self {
+            Self::Crop => &CACHE,
+            Self::Airports => &AIRPORT_CACHE,
+        }
+    }
+}
 const DIST_DIR_VAR: &str = "THOUGHTS_CORE_DIST";
 const DIST_DIR: &str = "wasm-dist";
-const GLUE_FILE: &str = "thoughts_core.js";
-const WASM_FILE: &str = "thoughts_core_bg.wasm";
 const JAVASCRIPT_TYPE: &str = "text/javascript; charset=utf-8";
 const WASM_TYPE: &str = "application/wasm";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
@@ -36,46 +57,63 @@ struct Dist {
 type Stamp = ((SystemTime, u64), (SystemTime, u64));
 
 static CACHE: Mutex<Option<(Stamp, Arc<Dist>)>> = Mutex::new(None);
+static AIRPORT_CACHE: Mutex<Option<(Stamp, Arc<Dist>)>> = Mutex::new(None);
 
 #[route(GET "/thoughts-core.js")]
 async fn serve_loader() -> Result<Response> {
-    let Some(dist) = dist() else {
-        return Ok(missing());
-    };
-    Ok(bytes_response(
-        JAVASCRIPT_TYPE,
-        NO_CACHE,
-        loader_js(&dist.version).into_bytes(),
-    ))
+    Ok(loader(Pair::Crop))
 }
-
 #[route(GET "/thoughts-core-glue.js")]
 async fn serve_glue(cx: &Cx) -> Result<Response> {
-    let Some(dist) = dist() else {
-        return Ok(missing());
-    };
-    Ok(bytes_response(
-        JAVASCRIPT_TYPE,
-        cache_control(uri(cx).query(), &dist.version),
-        dist.glue.clone(),
-    ))
+    Ok(asset(Pair::Crop, cx, true))
 }
-
 #[route(GET "/thoughts-core_bg.wasm")]
 async fn serve_wasm(cx: &Cx) -> Result<Response> {
-    let Some(dist) = dist() else {
-        return Ok(missing());
-    };
-    Ok(bytes_response(
-        WASM_TYPE,
-        cache_control(uri(cx).query(), &dist.version),
-        dist.wasm.clone(),
-    ))
+    Ok(asset(Pair::Crop, cx, false))
+}
+#[route(GET "/airport-search.js")]
+async fn serve_airport_loader() -> Result<Response> {
+    Ok(loader(Pair::Airports))
+}
+#[route(GET "/airport-search-glue.js")]
+async fn serve_airport_glue(cx: &Cx) -> Result<Response> {
+    Ok(asset(Pair::Airports, cx, true))
+}
+#[route(GET "/airport-search_bg.wasm")]
+async fn serve_airport_wasm(cx: &Cx) -> Result<Response> {
+    Ok(asset(Pair::Airports, cx, false))
 }
 
-fn loader_js(version: &str) -> String {
+fn loader(pair: Pair) -> Response {
+    let Some(dist) = dist(pair) else {
+        return missing();
+    };
+    bytes_response(
+        JAVASCRIPT_TYPE,
+        NO_CACHE,
+        loader_js(pair, &dist.version).into_bytes(),
+    )
+}
+
+fn asset(pair: Pair, cx: &Cx, glue: bool) -> Response {
+    let Some(dist) = dist(pair) else {
+        return missing();
+    };
+    bytes_response(
+        if glue { JAVASCRIPT_TYPE } else { WASM_TYPE },
+        cache_control(uri(cx).query(), &dist.version),
+        if glue {
+            dist.glue.clone()
+        } else {
+            dist.wasm.clone()
+        },
+    )
+}
+
+fn loader_js(pair: Pair, version: &str) -> String {
+    let (glue, wasm) = pair.paths();
     format!(
-        "import init, * as core from '{GLUE_PATH}?v={version}';\nawait init({{module_or_path:'{WASM_PATH}?v={version}'}});\nexport {{core}};\n"
+        "import init, * as core from '{glue}?v={version}';\nawait init({{module_or_path:'{wasm}?v={version}'}});\nexport {{core}};\n"
     )
 }
 
@@ -87,20 +125,21 @@ fn cache_control(query: Option<&str>, version: &str) -> &'static str {
     }
 }
 
-fn dist() -> Option<Arc<Dist>> {
+fn dist(pair: Pair) -> Option<Arc<Dist>> {
     let dir = dist_dir();
-    let stamp = (stat(&dir.join(GLUE_FILE))?, stat(&dir.join(WASM_FILE))?);
-    if let Some((cached_stamp, dist)) = CACHE.lock().unwrap().as_ref()
+    let (glue_file, wasm_file) = pair.files();
+    let stamp = (stat(&dir.join(glue_file))?, stat(&dir.join(wasm_file))?);
+    if let Some((cached_stamp, dist)) = pair.cache().lock().unwrap().as_ref()
         && *cached_stamp == stamp
     {
         return Some(Arc::clone(dist));
     }
-    let dist = Arc::new(load_dist(&dir)?);
-    let settled = (stat(&dir.join(GLUE_FILE))?, stat(&dir.join(WASM_FILE))?);
+    let dist = Arc::new(load_dist(&dir, pair)?);
+    let settled = (stat(&dir.join(glue_file))?, stat(&dir.join(wasm_file))?);
     if settled != stamp {
         return None;
     }
-    *CACHE.lock().unwrap() = Some((stamp, Arc::clone(&dist)));
+    *pair.cache().lock().unwrap() = Some((stamp, Arc::clone(&dist)));
     Some(dist)
 }
 
@@ -115,9 +154,10 @@ fn stat(path: &Path) -> Option<(SystemTime, u64)> {
     Some((metadata.modified().ok()?, metadata.len()))
 }
 
-fn load_dist(dir: &Path) -> Option<Dist> {
-    let glue = std::fs::read(dir.join(GLUE_FILE)).ok()?;
-    let wasm = std::fs::read(dir.join(WASM_FILE)).ok()?;
+fn load_dist(dir: &Path, pair: Pair) -> Option<Dist> {
+    let (glue_file, wasm_file) = pair.files();
+    let glue = std::fs::read(dir.join(glue_file)).ok()?;
+    let wasm = std::fs::read(dir.join(wasm_file)).ok()?;
     Some(Dist {
         version: version_of(&glue, &wasm),
         glue,
@@ -152,7 +192,7 @@ fn missing() -> Response {
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::CACHE_CONTROL, NO_CACHE)
         .body(Body::from(
-            "Thought calculator requires a wasm build; run `just thoughts-wasm`.",
+            "Thought enhancements require Wasm; run `just thoughts-wasm` and `just airport-wasm`.",
         ))
         .expect("static Thought calculator wasm error headers")
 }
@@ -163,10 +203,14 @@ mod tests {
 
     #[test]
     fn loader_versions_one_matched_pair() {
-        let loader = loader_js("abc123");
+        let loader = loader_js(Pair::Crop, "abc123");
         assert!(loader.contains("/thoughts-core-glue.js?v=abc123"));
         assert!(loader.contains("/thoughts-core_bg.wasm?v=abc123"));
         assert!(loader.contains("export {core}"));
+        let airport = loader_js(Pair::Airports, "other");
+        assert!(airport.contains("/airport-search-glue.js?v=other"));
+        assert!(airport.contains("/airport-search_bg.wasm?v=other"));
+        assert!(!airport.contains("thoughts-core"));
         assert_eq!(cache_control(Some("v=abc123"), "abc123"), IMMUTABLE);
         assert_eq!(cache_control(Some("v=old"), "abc123"), NO_CACHE);
         assert_eq!(cache_control(None, "abc123"), NO_CACHE);
@@ -180,14 +224,15 @@ mod tests {
 
     #[test]
     fn half_a_pair_never_serves() {
+        let (glue_file, wasm_file) = Pair::Crop.files();
         let dir =
             std::env::temp_dir().join(format!("thoughts-core-dist-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(GLUE_FILE), b"glue").unwrap();
-        assert!(load_dist(&dir).is_none());
-        std::fs::write(dir.join(WASM_FILE), b"wasm").unwrap();
-        assert!(load_dist(&dir).is_some());
+        std::fs::write(dir.join(glue_file), b"glue").unwrap();
+        assert!(load_dist(&dir, Pair::Crop).is_none());
+        std::fs::write(dir.join(wasm_file), b"wasm").unwrap();
+        assert!(load_dist(&dir, Pair::Crop).is_some());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -205,7 +250,14 @@ mod tests {
 
     #[test]
     fn artifact_routes_are_not_site_pages() {
-        for path in ["/thoughts-core.js", GLUE_PATH, WASM_PATH] {
+        for path in [
+            "/thoughts-core.js",
+            Pair::Crop.paths().0,
+            Pair::Crop.paths().1,
+            "/airport-search.js",
+            Pair::Airports.paths().0,
+            Pair::Airports.paths().1,
+        ] {
             assert!(!crate::content::routes::site_routes().contains(&path.to_string()));
         }
     }

@@ -4,9 +4,8 @@
 //! The baseline is a plain GET form submitting to the page's own URL: the
 //! route fields are text inputs named `from`/`to` holding IATA codes, so the
 //! whole flow works with JavaScript disabled. The combobox is a client-side
-//! enhancement (`airport-combobox.js`): it fetches the bundled airports
-//! dataset once and runs the same search (prefix, fuzzy, metros, country)
-//! in the browser — no shard round-trips.
+//! enhancement (`airport-combobox.js`) calls the shared Rust/Wasm search
+//! (prefix, fuzzy, metros, country) without shard round-trips.
 
 use topcoat::{
     Result,
@@ -18,7 +17,6 @@ use super::{airports::Airport, emissions::Cabin};
 use crate::components::stamp_seal;
 
 const AIRPORT_COMBOBOX_JS: Asset = asset!("./airport-combobox.js");
-const AIRPORTS_JSON: Asset = asset!("../../../../data/airports.json");
 
 /// One rendered via field: the filled layovers, plus one empty slot. Every
 /// input shares `name="via"` (the server reads the repeated params in
@@ -72,7 +70,6 @@ pub async fn flight_form(
     view! {
         <form
             class=(if revealed { "flight-form form-dock" } else { "flight-form" })
-            data-airports-url=(AIRPORTS_JSON)
         >
             <header class=(if revealed { "form-head form-head--dock" } else { "form-head" })>
                 <p class="eyebrow">
