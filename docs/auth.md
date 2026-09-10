@@ -6,6 +6,14 @@ Identity is a 30-day encrypted `__Host-viewer` cookie (`src/app/login.rs`). Any
 verified Google account may sign in to comment; hidden-page and admin
 authorization remain separate checks on every request (`src/content/access.rs`).
 
+Exercise-library reads (`/fitness/exercises` and exercise pages) are public,
+including definitions with no logged sets. Creation, preview, definition edits,
+and the entry-guide refresh are owner-only. Browser POSTs repeat exact-admin,
+same-origin, content-type, and 16 KiB body checks. Every response is `no-store`;
+JSON creation receipts expose only the canonical exercise identity and location.
+Exercise creation requires an online save, independently of the local workout
+queue; it never broadens the Fitness worker's scope or adds a fetch handler.
+
 ## Allowlisting someone
 
 Sign in as the admin and use `/admin/permissions`: one form set per hidden

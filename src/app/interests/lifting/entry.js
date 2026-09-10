@@ -35,12 +35,35 @@ async function start(root) {
 
   const guide = parseGuide(root.dataset.entryGuide);
   const guideByName = new Map(guide.exercises.map((exercise) => [exercise.name, exercise]));
-  const catalogNodes = new Map(
-    Array.from(root.querySelectorAll("[data-exercise-catalog]")).map((node) => [
-      node.dataset.name || "",
-      node,
-    ]),
-  );
+  const catalogNodes = new Map();
+  let catalogVersion = null;
+
+  function updateGuide(nextGuide) {
+    if (!nextGuide || nextGuide.version === catalogVersion) return;
+    catalogVersion = nextGuide.version;
+    guideByName.clear();
+    const template = root.querySelector('[data-entry-picker-template]');
+    for (const node of catalogNodes.values()) node.remove();
+    catalogNodes.clear();
+    for (const exercise of nextGuide.exercises) {
+      guideByName.set(exercise.name, exercise);
+      const node = template.content.firstElementChild.cloneNode(true);
+      node.dataset.name = exercise.name;
+      node.querySelector('[data-picker-name]').textContent = exercise.name;
+      node.querySelector('[data-picker-meta]').textContent = exercise.picker_meta;
+      node.querySelector('[data-picker-mark]').textContent = exercise.picker_mark;
+      catalogNodes.set(exercise.name, node);
+    }
+  }
+
+  async function attachCreatedExercise(saved, guide) {
+    if (!guide.exercises.some((exercise) => exercise.name === saved.name)) throw new Error('The new exercise is still loading. Retry adding it.');
+    snapshot = await request('refresh_guide', { guide, context });
+    updateGuide(snapshot.guide);
+    const value = await addExercise(saved.name);
+    if (!value || value.error) throw new Error('Exercise saved. Retry adding it to your workout.');
+  }
+
 
   function setStatus(kind, message) {
     if (!statusNode) return;
@@ -86,6 +109,20 @@ async function start(root) {
   }
 
   function installEventHandlers() {
+    root.addEventListener('exercise-created', (event) => {
+      event.detail.completion = attachCreatedExercise(event.detail.saved, event.detail.guide);
+    });
+    const createDialog = root.querySelector('[data-entry-create-dialog]');
+    createDialog?.addEventListener('cancel', (event) => {
+      if (createDialog.querySelector('[data-busy="true"]')) event.preventDefault();
+    });
+    createDialog?.addEventListener('close', () => {
+      if (snapshot?.draft.exercises.length && !context.query) {
+        const exercise = snapshot.draft.exercises.at(-1);
+        const set = exercise.sets.at(-1);
+        if (set) requestAnimationFrame(() => focusLoadDock(exercise.id, set.id));
+      } else root.querySelector('[data-entry-picker-search]')?.focus();
+    });
     const review = root.querySelector("[data-entry-review]");
     review?.addEventListener("cancel", (event) => {
       if (publishInFlight) event.preventDefault();
@@ -111,7 +148,7 @@ async function start(root) {
           if (generation !== searchGeneration) return;
           snapshot = value;
           renderGuidance(value);
-          if (value.derived.search.length > 0) {
+          if (value.derived.search.length > 0 || context.query.trim()) {
             requestAnimationFrame(scrollSearchIntoView);
           }
         }, reportFailure);
@@ -196,6 +233,16 @@ async function start(root) {
   }
 
   async function handleAction(control, action, event) {
+    if (action === 'create-exercise') {
+      const dialog = root.querySelector('[data-entry-create-dialog]');
+      const content = dialog.querySelector('[data-entry-create-content]');
+      content.replaceChildren(root.querySelector('[data-entry-create-template]').content.cloneNode(true));
+      content.querySelector('[name="name"]').value = context.query.trim().replace(/\s+/g, ' ');
+      dialog.dispatchEvent(new CustomEvent('exercise-wizard-open', { bubbles: true }));
+      dialog.showModal();
+      content.querySelector('[name="name"]').focus();
+      return;
+    }
     if (action === "choose-direction") {
       context.direction = control.dataset.direction || "";
       context.query = "";
@@ -371,7 +418,7 @@ async function start(root) {
     context.query = "";
     const search = root.querySelector("[data-entry-picker-search]");
     if (search) search.value = "";
-    await mutate(
+    return await mutate(
       { type: "add_exercise", name, exercise_id: exerciseId, set_id: setId },
       { exercises: true },
     );
@@ -556,6 +603,7 @@ async function start(root) {
   }
 
   function render(value, { exercises = false } = {}) {
+    updateGuide(value.guide);
     const numbers = workingSetNumbers(value.draft.exercises);
     if (exercises) renderExercises(value, numbers);
     else syncExistingRows(value, numbers);
@@ -746,6 +794,14 @@ async function start(root) {
   }
 
   function renderGuidance(value) {
+    updateGuide(value.guide);
+    const queryName = context.query.trim().replace(/\s+/g, ' ');
+    const exact = [...guideByName.values()].find((exercise) => [exercise.name, ...(exercise.aliases || [])].some((name) => name.toLowerCase() === queryName.toLowerCase()));
+    const create = root.querySelector('[data-entry-create]');
+    const alreadyAdded = exact && value.draft.exercises.some((exercise) => exercise.name === exact.name);
+    create.hidden = !queryName || (Boolean(exact) && !alreadyAdded);
+    create.disabled = Boolean(alreadyAdded);
+    create.textContent = alreadyAdded ? 'Already in workout' : `Create “${queryName}”`;
     setText("[data-entry-exercise-count]", value.derived.exercise_count);
     setText("[data-entry-set-count]", value.derived.set_count);
     setText("[data-entry-completed-count]", value.derived.completed_count);

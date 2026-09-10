@@ -166,7 +166,7 @@ mod tests {
     fn loader_versions_one_matched_pair() {
         assert_eq!(
             loader_js("abc123"),
-            "self.FITNESS_ENTRY_WASM={v:\"abc123\",glue:\"/fitness-entry-glue.js?v=abc123\",wasm:\"/fitness-entry_bg.wasm?v=abc123\",protocol:1};\n"
+            "self.FITNESS_ENTRY_WASM={v:\"abc123\",glue:\"/fitness-entry-glue.js?v=abc123\",wasm:\"/fitness-entry_bg.wasm?v=abc123\",protocol:2};\n"
         );
         assert_eq!(cache_control(Some("v=abc123"), "abc123"), IMMUTABLE);
         assert_eq!(cache_control(Some("v=old"), "abc123"), NO_CACHE);

@@ -18,6 +18,9 @@ use sha2::{Digest, Sha256};
 use surrealdb::types::SurrealValue;
 
 use super::super::{muscle_seed, muscle_taxonomy};
+
+#[path = "catalog_db.rs"]
+pub mod catalog;
 use super::aliases::AliasMap;
 use super::import::{IncomingExercise, IncomingTag, Payload, tag_signature};
 
@@ -40,6 +43,8 @@ struct ArchiveRows {
     tags: Vec<ExerciseTag>,
     weights: Vec<ExerciseMuscle>,
     interruptions: Vec<Interruption>,
+    exercises: Vec<Exercise>,
+    references: Vec<String>,
 }
 
 /// The version and everything its snapshot needs from one read transaction.
@@ -54,11 +59,15 @@ pub async fn load_archive(
     Vec<ExerciseTag>,
     Vec<ExerciseMuscle>,
     Vec<Interruption>,
+    Vec<Exercise>,
+    Vec<String>,
 )> {
     let mut response = db
         .query(
             "RETURN {
                  version: (SELECT VALUE v FROM fitness_meta:version)[0] ?? 0,
+                 exercises: (SELECT name, admin_managed ?? false AS admin_managed FROM exercises),
+                 references: (SELECT VALUE exercise_name FROM exercise_muscles WHERE source IN ['seed', 'admin']),
                  workouts: (
                      SELECT
                          record::id(id) AS id,
@@ -129,6 +138,8 @@ pub async fn load_archive(
         rows.tags,
         rows.weights,
         rows.interruptions,
+        rows.exercises,
+        rows.references,
     ))
 }
 
@@ -286,8 +297,9 @@ struct WeightPair {
 /// exercise granularity: an exercise with any stored weight row — `seed`,
 /// `derived`, or `admin` — is never touched, so hand-tuned ratios survive
 /// every future reconcile the way hand-corrected taxonomy survives imports.
-/// Exercises with no rows get the researched seed table, else ratios derived
-/// from their stored taxonomy tags. Runs at the top of every snapshot load;
+/// Unmanaged exercises with no rows get the researched seed table, else ratios derived
+/// from their stored taxonomy tags. Managed definitions may stay unweighted.
+/// Runs at the top of every snapshot load;
 /// in steady state it reads, finds nothing missing, and writes nothing.
 /// Deliberately no version bump: the same call builds the snapshot that
 /// reads these rows.
@@ -324,7 +336,7 @@ pub async fn reconcile_muscle_weights(db: &Db, updated_at: i64) -> anyhow::Resul
     let mut response = db
         .query(
             "RETURN {
-                 exercises: (SELECT VALUE name FROM exercises),
+                 exercises: (SELECT VALUE name FROM exercises WHERE (admin_managed ?? false) = false),
                  weighted: (SELECT VALUE exercise_name FROM exercise_muscles)
              };",
         )
@@ -694,12 +706,14 @@ pub async fn replace_exercise_identity(
 
     #[derive(Deserialize, SurrealValue)]
     struct IdentityRows {
+        managed: Vec<String>,
         tags: Vec<ExerciseTag>,
         weights: Vec<WeightWrite>,
     }
     let mut response = db
         .query(
             "RETURN {
+                 managed: (SELECT VALUE name FROM exercises WHERE admin_managed = true AND name IN $names),
                  tags: (
                      SELECT exercise_name, kind, value FROM exercise_tags
                      WHERE exercise_name IN $names
@@ -730,9 +744,10 @@ pub async fn replace_exercise_identity(
         )
         .chain(reviewed.merge_names.iter().map(String::as_str))
         .collect();
-    let tag_authority = authority_order
-        .iter()
-        .find(|name| rows.tags.iter().any(|tag| tag.exercise_name == **name));
+    let tag_authority = authority_order.iter().find(|name| {
+        rows.managed.iter().any(|managed| managed == **name)
+            || rows.tags.iter().any(|tag| tag.exercise_name == **name)
+    });
     let mut tags: Vec<ExerciseTag> = tag_authority
         .into_iter()
         .flat_map(|name| {
@@ -750,9 +765,11 @@ pub async fn replace_exercise_identity(
     tags.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
 
     let weight_authority = authority_order.iter().find(|name| {
-        rows.weights
-            .iter()
-            .any(|weight| weight.exercise_name == **name)
+        rows.managed.iter().any(|managed| managed == **name)
+            || rows
+                .weights
+                .iter()
+                .any(|weight| weight.exercise_name == **name)
     });
     let weights: Vec<WeightWrite> = weight_authority
         .into_iter()
@@ -797,6 +814,8 @@ pub async fn replace_exercise_identity(
         .collect();
     let new_exercise = Exercise {
         name: reviewed.canonical_name.clone(),
+        admin_managed: tag_authority
+            .is_some_and(|name| rows.managed.iter().any(|managed| managed == *name)),
     };
 
     let mut response = db
@@ -1027,6 +1046,7 @@ async fn create_manual_workout_attempt(
         .filter(|exercise| !existing_exercises.contains(&exercise.name))
         .map(|exercise| Exercise {
             name: exercise.name.clone(),
+            admin_managed: false,
         })
         .collect();
     let missing_names: HashSet<&str> = missing_exercises
@@ -1320,8 +1340,8 @@ struct DeletionTarget {
 /// Deliberately narrow: `sets`, the `workouts` row, and the version counter.
 /// Exercise and tag rows are left alone even when this was an exercise's last
 /// set. That is the same invariant the CSV reset relies on — the snapshot
-/// never loads the `exercises` table, and every public count joins through
-/// sets, so an orphan is invisible rather than harmless-but-visible. Keeping
+/// includes exercise definitions separately; every archive count joins through
+/// sets; retained definitions remain available in the exercise library. Keeping
 /// them also preserves hand-corrected taxonomy across a delete-and-repaste.
 ///
 /// Records need no cleanup: they are derived at snapshot build, so the
@@ -1430,6 +1450,14 @@ pub async fn apply_import(
         }
         by_exercise
     };
+    let mut managed_response = db
+        .query("SELECT VALUE name FROM exercises WHERE admin_managed = true;")
+        .await?
+        .check()?;
+    let managed: HashSet<String> = managed_response
+        .take::<Vec<String>>(0)?
+        .into_iter()
+        .collect();
     let changed_exercises: HashSet<&str> = payload
         .exercises
         .iter()
@@ -1438,7 +1466,8 @@ pub async fn apply_import(
                 .get(&exercise.name)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            tag_signature(&exercise.tags) != tag_signature(stored)
+            !managed.contains(&exercise.name)
+                && tag_signature(&exercise.tags) != tag_signature(stored)
         })
         .map(|exercise| exercise.name.as_str())
         .collect();
@@ -1507,6 +1536,7 @@ pub async fn apply_import(
         .filter(|exercise| !existing_exercises.contains(&exercise.name))
         .map(|exercise| Exercise {
             name: exercise.name.clone(),
+            admin_managed: false,
         })
         .collect();
 
@@ -1579,13 +1609,17 @@ pub async fn apply_import(
              CREATE ONLY type::record('exercises', $exercise.name) CONTENT $exercise;
          };
          FOR $tag IN $removed_tags {
-             DELETE exercise_tags
-                 WHERE exercise_name = $tag.exercise_name
-                     AND kind = $tag.kind
-                     AND value = $tag.value;
+             IF ((SELECT VALUE admin_managed FROM type::record('exercises', $tag.exercise_name))[0] ?? false) = false {
+                 DELETE exercise_tags
+                     WHERE exercise_name = $tag.exercise_name
+                         AND kind = $tag.kind
+                         AND value = $tag.value;
+             };
          };
          FOR $tag IN $added_tags {
-             CREATE exercise_tags CONTENT $tag;
+             IF ((SELECT VALUE admin_managed FROM type::record('exercises', $tag.exercise_name))[0] ?? false) = false {
+                 CREATE exercise_tags CONTENT $tag;
+             };
          };
          FOR $set IN $sets {
              CREATE ONLY type::record('sets', $set.id) CONTENT $set;
@@ -1622,7 +1656,7 @@ mod tests {
 
     const TEST_SCHEMA: &str = include_str!("../../../../schema.surql");
 
-    async fn database() -> Db {
+    pub(super) async fn database() -> Db {
         let db = any::connect("mem://").await.unwrap();
         db.use_ns("fitness").use_db("fitness").await.unwrap();
         db.query(TEST_SCHEMA).await.unwrap().check().unwrap();
@@ -1643,7 +1677,7 @@ mod tests {
         db
     }
 
-    fn payload() -> Payload {
+    pub(super) fn payload() -> Payload {
         Payload {
             workouts: vec![IncomingWorkout {
                 id: "fitness:2026-07-24T14:38:00".into(),

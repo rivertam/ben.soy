@@ -53,6 +53,8 @@ DEFINE FIELD OVERWRITE imported_at ON workouts TYPE int;
 DEFINE TABLE OVERWRITE exercises SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD OVERWRITE id ON exercises TYPE string;
 DEFINE FIELD OVERWRITE name ON exercises TYPE string;
+-- Library definitions own even an intentionally empty classification/weight map.
+DEFINE FIELD OVERWRITE admin_managed ON exercises TYPE bool DEFAULT false;
 
 -- Alternate source names for one canonical exercise. Imports resolve these
 -- before writing sets or taxonomy; the public snapshot also resolves them so

@@ -160,7 +160,7 @@ impl FitnessStore {
         db::reconcile_muscle_weights(&handle, now)
             .await
             .map_err(|error| StoreError(error.to_string()))?;
-        let (version, workouts, sets, aliases, tags, weights, interruptions) =
+        let (version, workouts, sets, aliases, tags, weights, interruptions, exercises, references) =
             db::load_archive(&handle)
                 .await
                 .map_err(|error| StoreError(error.to_string()))?;
@@ -173,7 +173,7 @@ impl FitnessStore {
             weights,
             interruptions,
         )
-        .map(Arc::new)
+        .map(|snapshot| Arc::new(snapshot.with_catalog(exercises, references)))
         .map_err(|error| StoreError(error.to_string()))
     }
 }

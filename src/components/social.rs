@@ -283,6 +283,9 @@ fn description_for_path(path: &str) -> String {
     }
     let fixed = match path {
         "/" => DEFAULT_DESCRIPTION,
+        "/fitness/exercises" => {
+            "Ben Berman’s exercise library: movements, equipment, muscle involvement, and workout history."
+        }
         "/thoughts" => "Thoughts of varying seriousness and length from Ben Berman.",
         "/resume" => {
             "Ben Berman’s résumé: software engineering, technical leadership, and the projects behind the timeline."
@@ -327,7 +330,7 @@ fn is_indexable_path(path: &str) -> bool {
     }
     if matches!(
         path,
-        "/" | "/thoughts" | "/resume" | "/llms" | "/fitness/log"
+        "/" | "/thoughts" | "/resume" | "/llms" | "/fitness/log" | "/fitness/exercises"
     ) {
         return true;
     }

@@ -98,9 +98,7 @@ async fn exercise_page(cx: &Cx) -> Result {
         let target = with_raw_query(cx, &page_url(&name));
         return Err(redirect_permanent(&target).into());
     }
-    let Some(profile) = snapshot.exercise_profile(&name) else {
-        return Err(not_found().into());
-    };
+    let profile = snapshot.exercise_profile(&name);
     let weights: Vec<(&'static str, u32)> = snapshot
         .exercise_weight_map()
         .get(&name)
@@ -145,17 +143,24 @@ async fn exercise_page(cx: &Cx) -> Result {
         None
     };
 
-    let history = format!(
-        "{} {} across {} {}, {} through {}",
-        profile.set_count,
-        plural(profile.set_count, "set", "sets"),
-        profile.workout_count,
-        plural(profile.workout_count, "workout", "workouts"),
-        profile.first_date,
-        profile.last_date,
-    );
+    let history = profile
+        .as_ref()
+        .map(|profile| {
+            format!(
+                "{} {} across {} {}, {} through {}",
+                profile.set_count,
+                plural(profile.set_count, "set", "sets"),
+                profile.workout_count,
+                plural(profile.workout_count, "workout", "workouts"),
+                profile.first_date,
+                profile.last_date,
+            )
+        })
+        .unwrap_or_else(|| "No workouts logged yet".into());
     let log_href = format!("{LOG_PATH}?exercise={}#set-log", urlencode(&name));
     let title = format!("{name} · Fitness");
+    let definition =
+        super::archive::exercise_definition::Definition::from_snapshot(&snapshot, &name);
 
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
@@ -248,7 +253,12 @@ async fn exercise_page(cx: &Cx) -> Result {
                     }
                 </div>
             </div>
+            <p class="mt-8"><a class="text-oxide underline" href="/fitness/exercises">"All exercises"</a></p>
             if can_edit {
+                <details class="mt-8"><summary class="cursor-pointer text-oxide">"Movement, equipment, and muscle setup"</summary>
+                    super::exercise_library::wizard(definition: &definition, step: 2, editing: true, reference: "", choices: &[])
+                </details>
+                <script type="module" src=(super::exercise_library::WIZARD_JS)></script>
                 <section class="mt-12 border-t border-hairline pt-8">
                     <p class=(META_LABEL)>"name & aliases · edit"</p>
                     identity_form(name: name.as_str(), aliases: &aliases)

@@ -26,6 +26,10 @@ pub struct GuideConfig {
 #[serde(deny_unknown_fields)]
 pub struct ExerciseGuide {
     pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub equipment: Vec<String>,
     pub bodyweight: bool,
     /// Coarse fatigue metadata used only to avoid redundant recommendations.
     #[serde(default)]
@@ -80,7 +84,7 @@ impl LoadPreset {
 }
 
 impl GuideConfig {
-    pub(crate) fn validate(&self) -> Result<(), ActionError> {
+    pub fn validate(&self) -> Result<(), ActionError> {
         if self.today.parse::<jiff::civil::Date>().is_err() {
             return Err(ActionError::message(
                 "The server supplied an invalid Fitness guide date.",
@@ -131,6 +135,8 @@ impl GuideConfig {
 impl ExerciseGuide {
     pub(crate) fn fixture(name: &str) -> Self {
         Self {
+            aliases: Vec::new(),
+            equipment: Vec::new(),
             name: name.into(),
             bodyweight: false,
             high_fatigue: false,
@@ -851,18 +857,10 @@ fn search(draft: &Draft, guide: &GuideConfig, query: &str) -> (Vec<SearchHit>, S
         .iter()
         .map(|exercise| exercise.name.as_str())
         .collect();
-    let mut matches: Vec<&ExerciseGuide> = guide
-        .exercises
-        .iter()
+    let matches: Vec<_> = search_exercises(&guide.exercises, &query)
+        .into_iter()
         .filter(|item| !selected.contains(item.name.as_str()))
-        .filter(|item| matches_search_terms(&search_text(item), &terms))
         .collect();
-    matches.sort_by(|left, right| {
-        search_rank(left, &query, &terms)
-            .cmp(&search_rank(right, &query, &terms))
-            .then_with(|| right.workout_count.cmp(&left.workout_count))
-            .then_with(|| left.name.cmp(&right.name))
-    });
     let total = matches.len();
     let hits: Vec<SearchHit> = matches
         .into_iter()
@@ -885,9 +883,31 @@ fn search(draft: &Draft, guide: &GuideConfig, query: &str) -> (Vec<SearchHit>, S
     (hits, feedback)
 }
 
+/// Ranked catalog search shared by entry and the standalone library.
+pub fn search_exercises<'a>(exercises: &'a [ExerciseGuide], query: &str) -> Vec<&'a ExerciseGuide> {
+    let query = query.trim().to_lowercase();
+    let terms: Vec<&str> = query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .collect();
+    let mut matches: Vec<_> = exercises
+        .iter()
+        .filter(|item| matches_search_terms(&search_text(item), &terms))
+        .collect();
+    matches.sort_by(|left, right| {
+        search_rank(left, &query, &terms)
+            .cmp(&search_rank(right, &query, &terms))
+            .then_with(|| right.workout_count.cmp(&left.workout_count))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    matches
+}
+
 fn search_text(item: &ExerciseGuide) -> String {
     let muscles = item.muscles.iter().map(|(muscle, _)| muscle.as_str());
     std::iter::once(item.name.as_str())
+        .chain(item.aliases.iter().map(String::as_str))
+        .chain(item.equipment.iter().map(String::as_str))
         .chain(item.movements.iter().map(String::as_str))
         .chain(item.coarse_muscles.iter().map(String::as_str))
         .chain(muscles)
@@ -903,20 +923,26 @@ fn matches_search_terms(text: &str, terms: &[&str]) -> bool {
 }
 
 fn search_rank(item: &ExerciseGuide, query: &str, terms: &[&str]) -> u8 {
-    let name = item.name.to_lowercase();
-    if name == query {
-        0
-    } else if name.starts_with(query) {
-        1
-    } else if name.split_whitespace().any(|word| word.starts_with(query)) {
-        2
-    } else if name.contains(query) {
-        3
-    } else if matches_search_terms(&name, terms) {
-        4
-    } else {
-        5
-    }
+    std::iter::once(&item.name)
+        .chain(item.aliases.iter())
+        .map(|name| {
+            let name = name.to_lowercase();
+            if name == query {
+                0
+            } else if name.starts_with(query) {
+                1
+            } else if name.split_whitespace().any(|word| word.starts_with(query)) {
+                2
+            } else if name.contains(query) {
+                3
+            } else if matches_search_terms(&name, terms) {
+                4
+            } else {
+                5
+            }
+        })
+        .min()
+        .unwrap_or(5)
 }
 
 fn history_line(item: &ExerciseGuide, today: &str) -> String {
@@ -992,6 +1018,23 @@ mod tests {
     use super::*;
     use crate::draft::{DraftExercise, DraftSet};
 
+    #[test]
+    fn library_and_entry_search_find_aliases_and_equipment() {
+        let mut item = ExerciseGuide::fixture("Canonical Curl");
+        item.aliases = vec!["Old Hammer Curl".into()];
+        item.equipment = vec!["dumbbell".into()];
+        let catalog = vec![item];
+        assert_eq!(
+            search_exercises(&catalog, "hammer old")[0].name,
+            "Canonical Curl"
+        );
+        assert_eq!(
+            search_exercises(&catalog, "dumbbell curl")[0].name,
+            "Canonical Curl"
+        );
+        assert!(search_exercises(&catalog, "unrelated").is_empty());
+    }
+
     fn item(
         name: &str,
         workouts: usize,
@@ -1001,6 +1044,8 @@ mod tests {
         coarse: &[&str],
     ) -> ExerciseGuide {
         ExerciseGuide {
+            aliases: Vec::new(),
+            equipment: Vec::new(),
             name: name.into(),
             bodyweight: false,
             high_fatigue: false,

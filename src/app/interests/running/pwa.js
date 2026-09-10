@@ -1,4 +1,4 @@
-const FITNESS_ENTRY_PROTOCOL = 1;
+const FITNESS_ENTRY_PROTOCOL = 2;
 let fitnessRegistration = null;
 let fitnessRequestId = 0;
 const canResumeFitnessDraft = Boolean(

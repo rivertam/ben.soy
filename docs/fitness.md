@@ -184,7 +184,7 @@ reuse the local sync token or expose unrestricted SurrealQL.
   unsupported-browser fallback.
 - `/fitness/entry` is the owner-only, mobile-first lifting path. It keeps one
   Workout Draft in the worker-owned `fitness-entry` IndexedDB database, starts
-  from existing canonical exercises,
+  from the canonical exercise catalog, including exercises with no sets,
   and shows the current e1RM/load/volume/reps winners derived at snapshot
   build with the archive's normal record rules. The fixed app header is a
   sibling of the dedicated workout scroller, so focus panning and scroll
@@ -600,8 +600,8 @@ non-negative. The server
 derives the Eastern fields; callers never supply them. The response is
 `{received,added,skipped,version}`, where the counts refer to sets. Existing
 set IDs are skipped; a conflicting workout ordinal is an error rather than
-being silently ignored. Tags are replaced authoritatively for each exercise
-included in a chunk. The fitness version increments only when sets or
+being silently ignored. Tags are replaced authoritatively for each import-managed exercise
+included in a chunk; `admin_managed` definitions retain their tags. The fitness version increments only when sets or
 taxonomy change.
 The delete path is `DELETE /api/fitness/workouts/by-path/{path}` — the same
 resource the GET above serves, addressed by the same canonical path segment.
@@ -626,9 +626,8 @@ for corrections: delete, then repaste or resync.
 - Removes exactly the `workouts` row, its `sets`, and bumps the version.
   `exercises`, `exercise_tags`, `exercise_muscles`, and `exercise_aliases`
   rows survive even
-  when the deleted workout held an exercise's last set: the snapshot never
-  loads the `exercises` table and every public count joins through sets, so
-  orphans are invisible rather than merely harmless, and hand-corrected
+  when the deleted workout held an exercise's last set: archive counts join through sets, while the exercise library retains the
+  definitions for reuse, and hand-corrected
   taxonomy and weights survive a delete-and-repaste. Records need no
   cleanup — they are derived at snapshot build, so the remaining history
   re-derives its own podium.
@@ -710,7 +709,7 @@ sync endpoint continues to accept only
 - Seeding is insert-only at exercise granularity:
   `db::reconcile_muscle_weights` runs at the top of every snapshot load,
   upserts the `muscles` vocabulary rows, and gives weight rows only to
-  exercises that have none — the researched `muscle_seed::SEED_WEIGHTS`
+  import-managed exercises that have none — the researched `muscle_seed::SEED_WEIGHTS`
   table first (source `seed`), else ratios derived from the exercise's
   taxonomy tags at the old primary=100/secondary=50 split expanded to
   granular constituents (source `derived`). Any existing row — including
@@ -733,6 +732,54 @@ sync endpoint continues to accept only
   answer "how much" at the granular scale. An admin weight for a muscle
   whose coarse tag the exercise lacks will not surface in the filter;
   accepted drift, audited by `.claude/skills/audit-muscle-weights`.
+
+## Exercise library and creation
+
+`/fitness/exercises` is the public catalog, linked from Fitness. Its name,
+alias, equipment, movement, and muscle search shares the entry picker's Rust
+ranking. Catalog membership comes from canonicalized `exercises` rows plus
+joined set history; exercises need no workout to be listed or selectable.
+Retained rows from a deleted workout remain in this library. Archive facets,
+counts, records, calendars, and feeds still join through sets.
+
+Owner-only `/fitness/exercises/new` and the entry search's “Create” action use
+one server-rendered wizard: name, movement/equipment, then muscle weights.
+Name-only creation skips classification; suggestions copy one existing
+exercise's detailed seed/admin weights, ranking movement overlap, equipment,
+name tokens, then name. The source is shown and may be changed. No suitable
+reference means no guessed weights. Ratios are independent 0–100 values.
+The preview POST `/fitness/exercises/preview` is write-free. The create POST
+`/fitness/exercises` and edit POST `/fitness/exercise/{name}/definition`
+require exact-admin and positive same-origin evidence and bound the form to
+16 KiB. Names and aliases are checked case-insensitively; an existing identity
+is returned without an implicit overwrite or merge. Transaction/version
+conflicts retry the identity check, closing concurrent create races.
+
+`exercises.admin_managed` defaults to false for legacy/imported records.
+Library creation and definition editing set it true, making even empty tags
+or absent weights authoritative: CSV cannot retag them and reconciliation
+cannot seed them. Accepted weights use `source='admin'`. Identity changes
+retain ownership with their selected definition, including intentional empty
+values. Import-managed exercises retain their previous taxonomy/seeding rules.
+Exercise pages work before the first set and offer the same setup form later.
+
+In entry the wizard opens over the current Workout Draft. “Create and add”
+saves online, fetches `/fitness/entry/guide`, calls the worker's `refresh_guide`,
+then uses the normal add action. Repeat this for multiple exercises in one
+workout. Refresh changes only the durable guide and broadcasts to other tabs;
+it never bootstraps/rebases the draft, touches set values, or changes queued
+workouts. A stale guide cannot replace a newer one. Protocol 2 adds this
+operation and defaults alias/equipment fields when reading old guides;
+IndexedDB, draft, and outbox formats stay at version 1. Incompatible pages
+use the existing reload guard. Failed saves retain the form, and a committed
+save followed by attachment failure offers “Retry adding”. Offline exercise
+creation is not queued. Standalone forms also work without JavaScript.
+
+Primary regression coverage starts in entry with an existing exercise, creates
+three more through the wizard, fills sets after each, checks earlier values,
+reloads the draft, then publishes one workout. Worker tests verify preservation
+across repeated refresh/attachment and uploads; database tests verify catalog
+visibility, publication, ownership, and concurrent replay.
 
 ## Exercise aliases
 

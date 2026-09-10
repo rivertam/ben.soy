@@ -7,6 +7,7 @@ mod data;
 mod delete;
 mod entry;
 mod exercise;
+mod exercise_library;
 mod filter_ui;
 mod filters;
 mod format;

@@ -131,6 +131,7 @@ async fn workout_entry(cx: &Cx) -> Result {
                     type="module"
                     src=(crate::app::interests::running::PWA_JS)
                 ></script>
+                <script type="module" src=(super::exercise_library::WIZARD_JS)></script>
                 <script type="module" src=(ENTRY_JS)></script>
             } else {
                 <section class="fitness-entry">
@@ -169,6 +170,7 @@ async fn workout_entry(cx: &Cx) -> Result {
 #[component]
 async fn entry_surface(guide: &GuideConfig) -> Result {
     let guide_json = serde_json::to_string(guide).expect("entry guide serializes");
+    let empty_definition = super::archive::exercise_definition::Definition::default();
     view! {
         <section
             class="fitness-entry"
@@ -262,12 +264,16 @@ async fn entry_surface(guide: &GuideConfig) -> Result {
                                     )
                                 </div>
                             </section>
-                            quick_entry(guide: guide)
+                            quick_entry()
                         </aside>
                     </main>
                 </div>
             </div>
 
+            <dialog class="exercise-create-dialog" data-entry-create-dialog="" aria-label="Create an exercise"><div data-entry-create-content=""></div></dialog>
+            <template data-entry-create-template="">
+                super::exercise_library::wizard(definition: &empty_definition, step: 1, editing: false, reference: "", choices: &[])
+            </template>
             finish_review()
             exercise_template()
             set_template()
@@ -297,7 +303,7 @@ async fn suggestion_lane(lane: &str, label: &str, choice: &str, reason: &str) ->
 }
 
 #[component]
-async fn quick_entry(guide: &GuideConfig) -> Result {
+async fn quick_entry() -> Result {
     view! {
         <section class="entry-quick" aria-label="Add exercise">
             <div
@@ -353,6 +359,7 @@ async fn quick_entry(guide: &GuideConfig) -> Result {
                 >
             </label>
 
+            <button type="button" class="entry-button entry-create-exercise" data-action="create-exercise" data-entry-create="" hidden=""></button>
             <p class="sr-only" data-entry-search-feedback="" aria-live="polite"></p>
             <p
                 class="entry-quick__empty"
@@ -366,22 +373,13 @@ async fn quick_entry(guide: &GuideConfig) -> Result {
                 data-entry-search-results=""
                 hidden=""
             >
-                for exercise in guide.exercises.iter() {
-                    <button
-                        type="button"
-                        class="entry-picker-option"
-                        data-action="add-exercise"
-                        data-exercise-catalog=""
-                        data-name=(exercise.name.as_str())
-                        hidden=""
-                    >
-                        <span class="entry-picker-option__name">(exercise.name.as_str())</span>
-                        <span class="entry-picker-option__reason">(exercise.picker_meta.as_str())</span>
-                        if !exercise.picker_mark.is_empty() {
-                            <span class="entry-picker-option__action">(exercise.picker_mark.as_str())</span>
-                        }
+                <template data-entry-picker-template="">
+                    <button type="button" class="entry-picker-option" data-action="add-exercise" data-exercise-catalog="" hidden="">
+                        <span class="entry-picker-option__name" data-picker-name=""></span>
+                        <span class="entry-picker-option__reason" data-picker-meta=""></span>
+                        <span class="entry-picker-option__action" data-picker-mark=""></span>
                     </button>
-                }
+                </template>
             </div>
         </section>
     }
@@ -724,7 +722,7 @@ async fn set_template() -> Result {
     }
 }
 
-async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, String> {
+pub(super) async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, String> {
     let snapshot = store.snapshot().await.map_err(|error| error.to_string())?;
     let today = eastern::eastern_date(jiff::Timestamp::now());
     let page = snapshot.sets_page(&Filters {
@@ -795,11 +793,12 @@ async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, S
         .into_iter()
         .collect();
 
-    let mut names: Vec<String> = history.keys().cloned().collect();
+    let mut names = snapshot.exercise_names();
     names.sort_unstable_by_key(|name| name.to_ascii_lowercase());
     let mut exercises = Vec::with_capacity(names.len());
     for name in names {
-        let row = history.get(&name).expect("name came from history map");
+        let empty = ExerciseHistory::default();
+        let row = history.get(&name).unwrap_or(&empty);
         let muscles: Vec<(String, u32)> = snapshot
             .exercise_weight_map()
             .get(&name)
@@ -833,7 +832,9 @@ async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, S
             .collect();
         let loads = load_presets(row, bodyweight);
         let muscle_summary = primary_muscle_summary(&muscles);
-        let picker_meta = if muscle_summary.is_empty() {
+        let picker_meta = if row.set_count == 0 {
+            "No workouts logged yet".to_string()
+        } else if muscle_summary.is_empty() {
             format!(
                 "{} · last {}",
                 workout_count_label(row.workout_ids.len()),
@@ -852,6 +853,12 @@ async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, S
             .map(|mark| format!("{} {}", mark.kind, mark.value))
             .unwrap_or_default();
         exercises.push(ExerciseGuide {
+            aliases: snapshot.exercise_aliases(&name),
+            equipment: tags
+                .iter()
+                .filter(|(kind, _)| kind == "equipment")
+                .map(|(_, value)| value.clone())
+                .collect(),
             name,
             bodyweight,
             high_fatigue,
@@ -1414,7 +1421,7 @@ mod tests {
             .0;
         let exercises = surface.find("data-entry-exercises").unwrap();
         let suggestions = surface.find("data-entry-fork").unwrap();
-        let add_console = surface.find("quick_entry(guide: guide)").unwrap();
+        let add_console = surface.find("quick_entry()").unwrap();
         assert!(exercises < suggestions && suggestions < add_console);
 
         let quick = SELF

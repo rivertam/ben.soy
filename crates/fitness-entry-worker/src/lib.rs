@@ -119,3 +119,10 @@ fn encode<T: Serialize>(value: &T) -> Result<String, JsError> {
 fn domain_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
 }
+
+#[wasm_bindgen]
+pub fn fitness_validate_guide(guide_json: String) -> Result<String, JsError> {
+    let guide: GuideConfig = decode(&guide_json)?;
+    guide.validate().map_err(domain_error)?;
+    encode(&guide)
+}

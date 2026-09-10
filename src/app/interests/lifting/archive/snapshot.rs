@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 
 use benjisponge::data::fitness_models::{
-    ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout,
+    Exercise, ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout,
 };
 
 use super::aliases::AliasMap;
@@ -27,6 +27,8 @@ const PUBLISHED_WORKOUT_SOURCE: &str = "manual";
 
 pub struct Snapshot {
     pub version: i64,
+    catalog: HashSet<String>,
+    references: HashSet<String>,
     workouts: Vec<SnapWorkout>,
     aliases: AliasMap,
     tags_by_exercise: HashMap<String, Vec<(String, String)>>,
@@ -356,7 +358,18 @@ pub fn build(
         }
     });
 
+    let catalog = workouts
+        .iter()
+        .flat_map(|workout: &SnapWorkout| {
+            workout
+                .sets
+                .iter()
+                .map(|set| set.wire.exercise_name.clone())
+        })
+        .collect();
     Ok(Snapshot {
+        catalog,
+        references: HashSet::new(),
         version,
         workouts,
         aliases,
@@ -527,6 +540,29 @@ fn build_calendar(version: i64, workouts: &[SnapWorkout]) -> api::Calendar {
 }
 
 impl Snapshot {
+    pub fn with_catalog(mut self, exercises: Vec<Exercise>, references: Vec<String>) -> Self {
+        self.catalog.extend(
+            exercises
+                .into_iter()
+                .map(|exercise| self.aliases.resolve(&exercise.name)),
+        );
+        self.references = references
+            .into_iter()
+            .map(|name| self.aliases.resolve(&name))
+            .collect();
+        self
+    }
+
+    pub fn exercise_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.catalog.iter().cloned().collect();
+        names.sort_by_key(|name| (name.to_lowercase(), name.clone()));
+        names
+    }
+
+    pub fn is_weight_reference(&self, name: &str) -> bool {
+        self.references.contains(name)
+    }
+
     /// Full manual workouts for the `/log` timeline and `/feed.xml`,
     /// newest-first. CSV imports remain archive-only; publishing one must
     /// never dump the historical corpus into subscribers' readers.
@@ -649,11 +685,11 @@ impl Snapshot {
             .unwrap_or_default()
     }
 
-    /// Resolve a route/filter name to its canonical exercise, but only when
-    /// that canonical name has visible set history.
+    /// Resolve a route/entry name to a canonical catalog exercise, including
+    /// definitions that have no workout history yet.
     pub fn canonical_exercise_name(&self, name: &str) -> Option<String> {
         let canonical = self.aliases.resolve(name);
-        self.exercise_profile(&canonical).map(|_| canonical)
+        self.catalog.get(&canonical).cloned()
     }
 
     pub fn exercise_aliases(&self, canonical_name: &str) -> Vec<String> {

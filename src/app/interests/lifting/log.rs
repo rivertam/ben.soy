@@ -126,7 +126,8 @@ pub(super) async fn fitness_content(cx: &Cx, filters: &Filters) -> Result {
                         "Lifts, runs, steps, and the breaks between them—one training history."
                     </p>
                 </div>
-                if can_edit { home::log_launcher() }
+                <div class="flex items-center gap-3"><a href="/fitness/exercises" class="text-sm text-oxide underline">"Exercises"</a>
+                if can_edit { home::log_launcher() }</div>
             </div>
         </header>
         <div class="relative min-[90rem]:min-h-[40rem]">

@@ -49,7 +49,7 @@ function worker() {
       addEventListener: (name, handler) => handlers.set(name, handler),
       crypto: { randomUUID: () => "queue-new-0001" },
       registration: { sync: { register: async () => {} } },
-      clients: { matchAll: async () => [{ id: "page-1", postMessage: (value) => broadcasts.push(value) }] },
+      clients: { matchAll: async () => ["page-1", "page-2"].map((id) => ({ id, postMessage: (value) => broadcasts.push({ clientId: id, ...value }) })) },
     },
     fetch: (path, options) => {
       const result = deferred();
@@ -65,6 +65,8 @@ function worker() {
     readState: async () => structuredClone(state),
     readAllOutbox: async () => structuredClone([...outbox.values()]),
     readOutbox: async (_, id) => structuredClone(outbox.get(id)),
+    writeGuide: async (_, next) => { state.guide = structuredClone(next); },
+    writeState: async (_, next, guide) => { state.draft = structuredClone(next); state.guide = structuredClone(guide); },
     writeDraft: async (_, next) => { state.draft = structuredClone(next); },
     writeOutbox: async (_, row) => outbox.set(row.queue_id, structuredClone(row)),
     commitFinalization: async (_, next, queued) => {
@@ -113,6 +115,10 @@ test("finalization acknowledges its commit while multiple uploads remain in flig
   await turn();
   assert.equal(w.requests.length, 1);
 
+  const refreshed = await w.rpc('refresh_guide', { guide: { ...guide(), version: 2, exercises: [exerciseGuide('Squat')] } }).reply;
+  assert.equal(refreshed.ok, true, 'guide refresh does not wait for the delayed upload');
+  assert.equal(w.requests.length, 1);
+  assert.equal(w.outbox.size, 3);
   const edit = await w.rpc("transition", { action: { type: "set_title", value: "Next workout" } }).reply;
   assert.equal(edit.ok, true);
   assert.equal(w.state.draft.title, "Next workout");
@@ -150,4 +156,59 @@ test("retryable upload failures keep exact queued bytes for a later pass", { tim
   w.requests[1].respond(401);
   await retry.lifetime;
   assert.deepEqual(w.outbox.get(row.queue_id), row);
+});
+
+const exerciseGuide = (name) => ({
+  name, aliases: [], equipment: [], bodyweight: false, high_fatigue: false, high_axial_load: false,
+  last_date: '', set_count: 0, workout_count: 0, muscles: [], movements: [], coarse_muscles: [], marks: [], loads: [], picker_meta: 'No workouts logged yet', picker_mark: '',
+});
+
+test('repeated catalog refresh and attachment preserve one workout and every earlier set', async () => {
+  const w = worker();
+  const queued = finalization('queue-kept-0001', 1).queued;
+  w.outbox.set(queued.queue_id, queued);
+  const started = w.state.draft.started_at_utc;
+  for (let index = 1; index <= 3; index++) {
+    const before = structuredClone(w.state.draft);
+    const updatedGuide = { ...guide(), version: index + 1, exercises: ['Squat', ...Array.from({ length: index }, (_, i) => `Created exercise ${i + 1}`)].map(exerciseGuide) };
+    const refreshed = await w.rpc('refresh_guide', { guide: updatedGuide }).reply;
+    assert.equal(refreshed.ok, true);
+    assert.deepEqual(w.state.draft, before, 'refresh leaves the entire draft byte-for-byte unchanged');
+    assert.deepEqual(w.outbox.get(queued.queue_id), queued);
+    const name = `Created exercise ${index}`;
+    const exercise_id = `exercise-new-${index}`;
+    const set_id = `set-created-${index}`;
+    const added = await w.rpc('transition', { action: { type: 'add_exercise', name, exercise_id, set_id } }).reply;
+    assert.equal(added.ok, true);
+    assert.equal(added.value.error, null);
+    for (const [field, value] of [['weight', String(index * 20)], ['reps', '8']]) {
+      await w.rpc('transition', { action: { type: 'set_field', exercise_id, set_id, field, value } }).reply;
+    }
+    const completed = await w.rpc('transition', { action: { type: 'toggle_set', exercise_id, set_id } }).reply;
+    assert.equal(completed.value.error, null);
+    assert.deepEqual(w.state.draft.exercises.slice(0, -1), before.exercises);
+    assert.equal(w.state.draft.started_at_utc, started);
+    assert.equal(w.state.draft.exercises.length, index + 1);
+  }
+  assert.ok(w.broadcasts.some((message) => message.clientId === 'page-2' && message.type === 'fitness-entry-changed'));
+  const before = structuredClone(w.state.draft);
+  await w.rpc('bootstrap', { guide: guide(), now_utc: '2026-09-03 15:00:00' }).reply;
+  assert.deepEqual(w.state.draft, before, 'reload restores all three creations and earlier sets');
+  assert.equal(w.state.guide.exercises.length, 4, 'an older page cannot erase the refreshed catalog');
+  const frozen = JSON.parse(core.fitness_finalize(JSON.stringify({ draft: w.state.draft, guide: w.state.guide, ended_at_utc: '2026-09-03 15:00:00', queue_id: 'queue-created-workout', enqueued_at_ms: 2, context: {} })));
+  assert.equal(frozen.error, null);
+  const publication = JSON.parse(core.fitness_publication(JSON.stringify(frozen.queued)));
+  const payload = typeof publication.body === 'string' ? JSON.parse(publication.body) : publication;
+  assert.equal(payload.exercises.length, 4);
+  assert.deepEqual(payload.exercises.map((exercise) => exercise.sets[0].weight_milli), [100000, 20000, 40000, 60000]);
+});
+
+test('stale or invalid guide refresh cannot change the saved guide, draft, or outbox', async () => {
+  const w = worker();
+  w.state.guide.version = 5;
+  const before = structuredClone(w.state);
+  assert.equal((await w.rpc('refresh_guide', { guide: guide() }).reply).ok, true);
+  assert.deepEqual(w.state, before);
+  assert.equal((await w.rpc('refresh_guide', { guide: { ...guide(), version: 6, today: 'invalid' } }).reply).ok, false);
+  assert.deepEqual(w.state, before);
 });

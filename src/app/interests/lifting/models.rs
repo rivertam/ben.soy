@@ -29,6 +29,8 @@ pub struct Workout {
 #[derive(Clone, Debug, Deserialize, Serialize, SurrealValue)]
 pub struct Exercise {
     pub name: String,
+    #[serde(default)]
+    pub admin_managed: bool,
 }
 
 /// An alternate imported/display name that resolves to one canonical

@@ -12,6 +12,7 @@ pub fn site_routes() -> Vec<String> {
         "/resume".to_string(),
         "/llms".to_string(),
         "/login".to_string(),
+        "/fitness/exercises".to_string(),
     ];
     routes.extend(POSTS.iter().map(|post| format!("/thoughts/{}", post.slug)));
     routes.extend(INTERESTS.iter().map(|i| format!("/{}", i.slug)));

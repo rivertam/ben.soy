@@ -108,6 +108,7 @@ async function wasm() {
         "fitness_bootstrap",
         "fitness_transition",
         "fitness_derive",
+        "fitness_validate_guide",
         "fitness_finalize",
         "fitness_publication",
         "fitness_order_outbox",
@@ -156,6 +157,8 @@ async function dispatch(request, sourceClientId) {
     case "snapshot":
     case "derive":
       return snapshot(module, db, payload.context);
+    case "refresh_guide":
+      return refreshGuide(module, db, payload, sourceClientId);
     case "transition":
       return transitionDraft(module, db, payload, sourceClientId);
     case "finalize":
@@ -181,7 +184,7 @@ async function bootstrap(module, db, payload, sourceClientId) {
     module.fitness_bootstrap(
       JSON.stringify({
         stored_draft: stored.draft,
-        guide: payload.guide,
+        guide: stored.guide?.version > payload.guide?.version ? stored.guide : payload.guide,
         now_utc: payload.now_utc,
         context: payload.context || {},
       }),
@@ -194,6 +197,15 @@ async function bootstrap(module, db, payload, sourceClientId) {
   });
   await broadcastChange(sourceClientId);
   return value;
+}
+
+async function refreshGuide(module, db, payload, sourceClientId) {
+  const state = await requireState(db);
+  const guide = decode(module.fitness_validate_guide(JSON.stringify(payload.guide)));
+  if (guide.version < state.guide.version) return snapshot(module, db, payload.context);
+  await writeGuide(db, guide);
+  await broadcastChange(sourceClientId);
+  return snapshot(module, db, payload.context);
 }
 
 async function snapshot(module, db, context = {}) {
@@ -493,6 +505,13 @@ async function requireState(db) {
     throw new Error("Fitness entry has not initialized on this device.");
   }
   return state;
+}
+
+async function writeGuide(db, guide) {
+  const tx = db.transaction(STATE_STORE, "readwrite");
+  const done = transactionDone(tx);
+  tx.objectStore(STATE_STORE).put({ key: "guide", value: guide });
+  await done;
 }
 
 async function writeState(db, draft, guide) {

@@ -20,6 +20,7 @@
 pub(crate) mod aliases;
 pub(crate) mod api;
 pub(crate) mod db;
+pub(crate) mod exercise_definition;
 // The lightweight projection is shared by the native server and both wasm
 // workers without making Fitness entry pull in Diary's database engine.
 pub(crate) use eastern_time as eastern;

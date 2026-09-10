@@ -29,7 +29,7 @@ pub use text::{
     SetType, hundredths_text, js_trim, pounds_to_milli, utf16_len, valid_set_type, weight_text,
 };
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const PUBLISH_PATH: &str = "/fitness/entry/publish";
 
 pub const MAX_EXERCISES: usize = 75;
@@ -39,3 +39,5 @@ pub const MAX_WEIGHT_MILLI: i64 = 1_000_000_000;
 pub const MAX_REPS: u64 = 1_000_000;
 pub const MIN_EFFORT_HUNDREDTHS: u64 = 600;
 pub const MAX_EFFORT_HUNDREDTHS: u64 = 1_000;
+
+pub use guidance::search_exercises;
