@@ -10,6 +10,7 @@
 use std::fmt::Write;
 
 use font8x8::{BASIC_FONTS, LATIN_FONTS, UnicodeFonts};
+use jiff::civil::{DateTime, Weekday};
 use resvg::{
     render,
     tiny_skia::{Paint, Pixmap, Rect, Transform},
@@ -29,7 +30,7 @@ pub(super) const WIDTH: u32 = 1200;
 pub(super) const HEIGHT: u32 = 600;
 pub(super) const CONTENT_TYPE: &str = "image/png";
 // Bump when the rendered design changes, independently of workout data.
-const RENDER_REVISION: u32 = 4;
+const RENDER_REVISION: u32 = 5;
 const MAX_EXERCISES: usize = 4;
 const MAX_BADGES: usize = 13;
 const EXERCISE_TOP: i32 = 288;
@@ -46,7 +47,7 @@ const OXIDE: (u8, u8, u8, u8) = (232, 163, 61, 255);
 /// Open Graph images much more consistently.
 pub(super) fn render_png(workout: &Workout, involvement: &MuscleInvolvement) -> Vec<u8> {
     let copy = CardCopy::new(workout, involvement);
-    let tree = Tree::from_str(&card_svg(involvement, &copy), &Options::default())
+    let tree = Tree::from_str(&card_svg(workout, involvement, &copy), &Options::default())
         .expect("the workout card SVG is application-authored");
     let mut pixmap = Pixmap::new(WIDTH, HEIGHT).expect("fixed social-card dimensions are valid");
     render(&tree, Transform::identity(), &mut pixmap.as_mut());
@@ -174,13 +175,35 @@ fn draw_copy(pixmap: &mut Pixmap, copy: &CardCopy<'_>) {
     }
 }
 
-fn card_svg(involvement: &MuscleInvolvement, copy: &CardCopy<'_>) -> String {
+fn card_svg(workout: &Workout, involvement: &MuscleInvolvement, copy: &CardCopy<'_>) -> String {
     let panel_height = HEIGHT - 56;
+    // Use the archive's Eastern start date, even when UTC or the end date
+    // falls on another day. The cloth matches the site's Plaid Thursday theme.
+    let background = if workout
+        .started_at_local
+        .parse::<DateTime>()
+        .is_ok_and(|start| start.weekday() == Weekday::Thursday)
+    {
+        "plaid"
+    } else {
+        "grid"
+    };
     let mut svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">
 <defs>
   <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
     <path d="M48 0H0V48" fill="none" stroke="#465232" stroke-width="1" opacity="0.42"/>
+  </pattern>
+  <pattern id="plaid" width="90.4" height="90.4" patternUnits="userSpaceOnUse" patternTransform="rotate(10)">
+    <rect width="90.4" height="90.4" fill="#192b24"/>
+    <rect x="20.8" width="21.6" height="90.4" fill="#071426" opacity="0.58"/>
+    <rect x="53.6" width="5.12" height="90.4" fill="#7e252d" opacity="0.58"/>
+    <rect x="58.72" width="1.44" height="90.4" fill="#e2c168" opacity="0.38"/>
+    <rect x="60.16" width="5.12" height="90.4" fill="#7e252d" opacity="0.58"/>
+    <rect y="20.8" width="90.4" height="21.6" fill="#071426" opacity="0.58"/>
+    <rect y="53.6" width="90.4" height="5.12" fill="#7e252d" opacity="0.58"/>
+    <rect y="58.72" width="90.4" height="1.44" fill="#e2c168" opacity="0.38"/>
+    <rect y="60.16" width="90.4" height="5.12" fill="#7e252d" opacity="0.58"/>
   </pattern>
   <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
     <stop offset="0" stop-color="#333c29"/>
@@ -189,7 +212,7 @@ fn card_svg(involvement: &MuscleInvolvement, copy: &CardCopy<'_>) -> String {
 </defs>
 <rect width="{WIDTH}" height="{HEIGHT}" fill="#1e241a"/>
 <rect x="30" y="28" width="1140" height="{panel_height}" rx="8" fill="url(#page)"/>
-<rect x="30" y="28" width="1140" height="{panel_height}" rx="8" fill="url(#grid)"/>
+<rect x="30" y="28" width="1140" height="{panel_height}" rx="8" fill="url(#{background})"/>
 <rect x="30" y="28" width="1140" height="8" rx="4" fill="#e8a33d"/>
 <path d="M88 112H1112" stroke="#465232" stroke-width="2"/>
 <path d="M675 132V526" stroke="#465232" stroke-width="2"/>
@@ -693,7 +716,7 @@ mod tests {
     fn image_path_is_versioned_and_uses_the_canonical_workout_url() {
         assert_eq!(
             image_path("2026-09-07T11-06-51-04-00", 149),
-            "/fitness/lift/2026-09-07T11-06-51-04-00/social.png?v=149&r=4"
+            "/fitness/lift/2026-09-07T11-06-51-04-00/social.png?v=149&r=5"
         );
     }
 
@@ -704,6 +727,37 @@ mod tests {
         assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), WIDTH);
         assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), HEIGHT);
         assert!(png.len() < 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn background_follows_the_workouts_eastern_start_date() {
+        let background = |start: &str, end: &str| {
+            let mut workout = workout();
+            workout.started_at_local = start.into();
+            workout.ended_at_local = end.into();
+            let png = render_png(&workout, &involvement());
+            let pixmap = Pixmap::decode_png(&png).unwrap();
+            // Sample the cloth beside the title, clear of all foreground art.
+            (130..200)
+                .map(|y| pixmap.pixel(50, y).unwrap())
+                .collect::<Vec<_>>()
+        };
+        // Wednesday Eastern is already Thursday UTC, and this lift ends Thursday.
+        let grid = background("2026-09-09 23:45:00", "2026-09-10 00:15:00");
+        let plaid = background("2026-09-10 00:15:00", "2026-09-10 00:45:00");
+        assert_ne!(grid, plaid);
+        assert_eq!(
+            plaid,
+            background("2026-09-10 23:45:00", "2026-09-11 00:15:00")
+        );
+        assert_eq!(
+            grid,
+            background("2026-09-11 00:15:00", "2026-09-11 00:45:00")
+        );
+        assert_eq!(
+            plaid,
+            background("2026-01-01 23:45:00", "2026-01-02 00:15:00")
+        );
     }
 
     #[test]
@@ -721,7 +775,7 @@ mod tests {
             .collect();
         assert_eq!(numbers, [None, Some(1), Some(1), Some(2)]);
         assert!(copy.facts.contains("3 WORKING SETS"));
-        let svg = card_svg(&involvement, &copy);
+        let svg = card_svg(&workout, &involvement, &copy);
         assert_eq!(svg.matches("class=\"lift-set-bar\"").count(), 12);
         assert!(svg.contains(&badge::seal_shapes(&workout.sets[3], "#2e3626")));
         assert!(!svg.contains("volume points"));

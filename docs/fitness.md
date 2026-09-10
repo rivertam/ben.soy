@@ -138,6 +138,8 @@ reuse the local sync token or expose unrestricted SurrealQL.
   thin inset effort bars, dashed warm-ups, and hollow unrated marks. Extra
   groups or sets get explicit `+N` counts; the card never silently implies a
   partial preview is the whole workout. The old volume-points label is gone.
+  Workouts starting on Thursday in Eastern time use the site's forest/navy,
+  oxblood, and gold plaid background; other days retain the grid.
   Its URL includes both snapshot version and render revision (`v` and `r`).
   Only an exact match gets immutable caching; bump the render revision for
   image design changes so previews can refresh even when workout data did not.
