@@ -60,8 +60,8 @@ pub(super) async fn workout_summary(
                         <time datetime=(card.datetime.as_str())>(card.time_range.as_str())</time>
                         " · "
                     }
-                    (format!("{} · {} {}", card.duration, card.set_count,
-                        plural(card.set_count, "set", "sets")))
+                    (format!("{} · {} {}", card.duration, card.working_set_count,
+                        plural(card.working_set_count, "set", "sets")))
                     if card.duration_suspicious {
                         <span class="text-oxide" title="The source timer recorded zero or at least four hours.">
                             " · timer outlier"
@@ -162,6 +162,18 @@ mod tests {
             workout.sets.len() * 2
         );
         let card = WorkoutCard::from(&workout);
+        let working_sets = workout
+            .sets
+            .iter()
+            .filter(|set| set.set_type != "WARMUP_SET")
+            .count();
+        assert!(working_sets < workout.sets.len());
+        assert_eq!(card.working_set_count, working_sets);
+        assert!(html.contains(&format!(
+            " · {} {}",
+            card.working_set_count,
+            plural(card.working_set_count, "set", "sets"),
+        )));
         let groups: usize = card.blocks.iter().map(|block| block.groups.len()).sum();
         assert_eq!(html.matches("<h4>").count(), groups * 2);
         assert!(html.contains("Exercise 5"));

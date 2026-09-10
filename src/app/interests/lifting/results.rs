@@ -22,6 +22,7 @@ pub(super) struct WorkoutCard<'a> {
     pub(super) description: Option<&'a str>,
     pub(super) notes: Option<&'a str>,
     pub(super) set_count: usize,
+    pub(super) working_set_count: usize,
     pub(super) blocks: Vec<ExerciseBlock<'a>>,
 }
 
@@ -44,6 +45,11 @@ impl<'a> From<&'a fitness::Workout> for WorkoutCard<'a> {
             description: workout.description.as_deref(),
             notes: workout.notes.as_deref(),
             set_count: workout.sets.len(),
+            working_set_count: workout
+                .sets
+                .iter()
+                .filter(|set| set.set_type != "WARMUP_SET")
+                .count(),
             blocks: exercise_blocks(&workout.sets, &workout.path),
         }
     }
