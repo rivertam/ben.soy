@@ -342,7 +342,11 @@ reuse the local sync token or expose unrestricted SurrealQL.
   intercepts navigations, caches pages, or provides offline reads. Page/worker
   calls use a versioned request/reply protocol over `MessageChannel`; the
   worker serializes mutations, commits them before replying, and broadcasts
-  queue changes to every open Fitness client. Flushes run oldest-first after
+  queue changes to every open Fitness client. Finalize and flush RPCs acknowledge
+  local state before publication starts. One separate upload task serializes
+  network requests, while only its queue reads and receipt writes join the
+  local operation queue; editing the next draft never waits for an upload.
+  Flushes run oldest-first after
   enqueue and on worker activation, Fitness-page startup, `online`,
   `pageshow`, visibility, and Background Sync when available. A 200 becomes
   `saved` only when its canonical location and share text parse; 401/404 pause
@@ -853,6 +857,7 @@ verify row counts afterwards rather than trusting the status.
 just check
 just build
 just fitness-wasm
+just test-browser
 just wasm
 node --check src/app/interests/lifting/entry.js
 node --check src/app/interests/lifting/auto-filter.js

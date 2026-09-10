@@ -99,3 +99,8 @@ check:
 # Run the test suite
 test:
     cargo test
+
+# Execute browser adapters against the built Rust/Wasm core.
+test-browser:
+    just fitness-wasm
+    node --test tests/browser/*.test.cjs

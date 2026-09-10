@@ -17,6 +17,8 @@ importScripts(self.FITNESS_ENTRY_WASM.glue);
 
 let wasmReady = null;
 let operationTail = Promise.resolve();
+let flushTask = null;
+let lastFlush = null;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -27,10 +29,7 @@ self.addEventListener("activate", (event) => {
     (async () => {
       await self.clients.claim();
       try {
-        await enqueueOperation(async () => {
-          const db = await openDatabase();
-          await flushOutbox(db);
-        });
+        await flushOutbox();
       } catch (_error) {
         // A page startup reports the actionable error. Activation itself
         // still succeeds so a later storage/network recovery can retry.
@@ -42,13 +41,12 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("sync", (event) => {
   if (event.tag === SYNC_TAG) {
     event.waitUntil(
-      enqueueOperation(async () => {
-        const db = await openDatabase();
-        const flush = await flushOutbox(db);
+      (async () => {
+        const flush = await flushOutbox();
         if (flush.retry_pending) {
           throw new Error("Fitness entry flush interrupted; sync will retry.");
         }
-      }),
+      })(),
     );
   }
 });
@@ -61,13 +59,24 @@ self.addEventListener("message", (event) => {
   const work = enqueueOperation(() => dispatch(request, sourceClientId));
   event.waitUntil(
     work.then(
-      (value) => {
+      async (value) => {
         port.postMessage({
           protocol: self.FITNESS_ENTRY_WASM.protocol,
           request_id: request?.request_id || "",
           ok: true,
           value,
         });
+        // Acknowledge durable local work before any publication. waitUntil
+        // keeps this separate network task alive after the RPC has replied.
+        if (value.enqueued_queue_id || request.method === "flush" || request.method === "flush_only") {
+          if (value.enqueued_queue_id) await registerBackgroundSync();
+          try {
+            await flushOutbox();
+          } catch (_error) {
+            // The committed row remains available to Background Sync and
+            // the next foreground retry; finalization already succeeded.
+          }
+        }
       },
       (error) => {
         port.postMessage({
@@ -152,9 +161,9 @@ async function dispatch(request, sourceClientId) {
     case "finalize":
       return finalizeDraft(module, db, payload, sourceClientId);
     case "flush":
-      return flushAndSnapshot(module, db, payload.context, sourceClientId);
+      return { ...(await snapshot(module, db, payload.context)), flush: lastFlush };
     case "flush_only":
-      return flushOutbox(db, sourceClientId);
+      return { ...lastFlush, scheduled: true };
     case "draft_status":
       return draftStatus(db);
     case "restore":
@@ -242,11 +251,7 @@ async function finalizeDraft(module, db, payload, sourceClientId) {
   // The reset and immutable payload insertion share one IDB transaction.
   // A crash can happen before both or after both, never between them.
   await commitFinalization(db, output.draft, output.queued);
-  // Arm browser-managed retry while this foreground enqueue is known to
-  // exist. A sync event itself must never re-register its firing tag.
-  await registerBackgroundSync();
   await broadcastChange(sourceClientId);
-  const flush = await flushOutbox(db, sourceClientId);
   const derived = decode(
     module.fitness_derive(
       JSON.stringify({
@@ -258,15 +263,7 @@ async function finalizeDraft(module, db, payload, sourceClientId) {
   );
   return composeSnapshot(db, output.draft, state.guide, derived, {
     enqueued_queue_id: queueId,
-    flush,
   });
-}
-
-async function flushAndSnapshot(module, db, context = {}, sourceClientId = null) {
-  const flush = await flushOutbox(db, sourceClientId);
-  const value = await snapshot(module, db, context);
-  value.flush = flush;
-  return value;
 }
 
 async function restoreWorkout(module, db, payload, sourceClientId) {
@@ -311,16 +308,24 @@ async function dismissReceipt(module, db, payload, sourceClientId) {
   return value;
 }
 
-async function flushOutbox(db, sourceClientId = null) {
+function flushOutbox() {
+  if (!flushTask) {
+    flushTask = publishOutbox().finally(() => { flushTask = null; });
+  }
+  return flushTask;
+}
+
+async function publishOutbox() {
   const module = await wasm();
-  const pending = decode(
-    module.fitness_pending_outbox(JSON.stringify(await readAllOutbox(db))),
-  );
+  const db = await openDatabase();
   let authBlocked = false;
   let retryPending = false;
-  let changed = false;
 
-  for (const queued of pending) {
+  while (true) {
+    const queued = await enqueueOperation(async () =>
+      decode(module.fitness_pending_outbox(JSON.stringify(await readAllOutbox(db))))[0],
+    );
+    if (!queued) break;
     const publication = decode(module.fitness_publication(JSON.stringify(queued)));
     let disposition;
     try {
@@ -351,10 +356,15 @@ async function flushOutbox(db, sourceClientId = null) {
     const applied = decode(
       module.fitness_apply_response(JSON.stringify({ queued, disposition })),
     );
-    if (JSON.stringify(applied.queued) !== JSON.stringify(queued)) {
-      await writeOutbox(db, applied.queued);
-      changed = true;
-    }
+    await enqueueOperation(async () => {
+      const current = await readOutbox(db, queued.queue_id);
+      if (JSON.stringify(current) === JSON.stringify(queued) &&
+          JSON.stringify(applied.queued) !== JSON.stringify(queued)) {
+        await writeOutbox(db, applied.queued);
+        // Publication has no requesting client: every page needs the receipt.
+        await broadcastChange();
+      }
+    });
     if (applied.auth_blocked) authBlocked = true;
     if (!applied.continue_flushing) {
       retryPending = !applied.auth_blocked;
@@ -362,14 +372,13 @@ async function flushOutbox(db, sourceClientId = null) {
     }
   }
 
-  const stillPending =
-    decode(module.fitness_pending_outbox(JSON.stringify(await readAllOutbox(db)))).length > 0;
-  if (changed) await broadcastChange(sourceClientId);
-  return {
+  lastFlush = await enqueueOperation(async () => ({
     auth_blocked: authBlocked,
     retry_pending: retryPending,
-    pending: stillPending,
-  };
+    pending: decode(module.fitness_pending_outbox(JSON.stringify(await readAllOutbox(db)))).length > 0,
+  }));
+  await broadcastChange();
+  return lastFlush;
 }
 
 async function draftStatus(db) {
@@ -389,6 +398,7 @@ async function composeSnapshot(db, draft, guide, derived, extras = {}) {
     draft,
     guide,
     derived,
+    flush: lastFlush,
     outbox: decode(module.fitness_order_outbox(JSON.stringify(await readAllOutbox(db)))),
     ...extras,
   };
