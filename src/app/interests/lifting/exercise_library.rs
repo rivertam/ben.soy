@@ -287,9 +287,9 @@ fn owner_gate(cx: &Cx, writing: bool) -> Option<Response> {
     None
 }
 
-async fn input(cx: &Cx, body: Body) -> std::result::Result<WizardInput, Response> {
+async fn input(cx: &Cx, body: Body) -> std::result::Result<WizardInput, Box<Response>> {
     if let Some(response) = owner_gate(cx, true) {
-        return Err(response);
+        return Err(Box::new(response));
     }
     if !headers(cx)
         .get(header::CONTENT_TYPE)
@@ -302,22 +302,26 @@ async fn input(cx: &Cx, body: Body) -> std::result::Result<WizardInput, Response
             })
         })
     {
-        return Err(error(
+        return Err(Box::new(error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Expected an exercise form.",
-        ));
+        )));
     }
-    let bytes = to_bytes(body, 16 * 1024)
-        .await
-        .map_err(|_| error(StatusCode::PAYLOAD_TOO_LARGE, "Exercise form is too large."))?;
-    parse_form(&bytes).map_err(|message| error(StatusCode::UNPROCESSABLE_ENTITY, &message))
+    let bytes = to_bytes(body, 16 * 1024).await.map_err(|_| {
+        Box::new(error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Exercise form is too large.",
+        ))
+    })?;
+    parse_form(&bytes)
+        .map_err(|message| Box::new(error(StatusCode::UNPROCESSABLE_ENTITY, &message)))
 }
 
 #[route(POST "/fitness/exercises/preview")]
 async fn preview(cx: &Cx, body: Body) -> Result<Response> {
     let mut input = match input(cx, body).await {
         Ok(input) => input,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let snapshot = match app_context::<FitnessStore>(cx).snapshot().await {
         Ok(snapshot) => snapshot,
@@ -382,7 +386,7 @@ async fn update_definition(cx: &Cx, body: Body) -> Result<Response> {
 async fn save(cx: &Cx, body: Body, editing: Option<&str>) -> Result<Response> {
     let mut input = match input(cx, body).await {
         Ok(input) => input,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     if !matches!(input.intent.as_str(), "save" | "name_only" | "suggest_save") {
         return Ok(error(
