@@ -48,6 +48,15 @@ access. The browser's ordinary site login cookie is not accepted by `/mcp`.
   operations in one transaction. The batch is capped at 256 KiB and must carry
   `confirmed: true` plus a human-readable reason.
 
+Writes pass through the shared Rust Fitness command validators used by lift
+imports and browser publication. Merge/upsert validation checks the complete
+resulting record; an atomic comparison rejects a concurrent edit to any input.
+Eastern projections, suspicious-duration flags, and incomplete-set flags are
+derived again. JSON null clears optional fields. Set types, effort/failure,
+units, bounds, and workout identity are validated before any write, and the
+transaction preserves set references and one-hop aliases. The code-owned
+`muscles` vocabulary and `fitness_meta` remain read-only.
+
 Any lifting change requires the version just read from
 `fitness_meta:version`. A mismatched version aborts the whole transaction; a
 successful batch bumps it exactly once so the site's in-memory snapshot

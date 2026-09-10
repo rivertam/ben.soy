@@ -144,13 +144,15 @@ pub(crate) fn build_native_entry(
         source: SOURCE.to_string(),
     };
 
+    let payload = Payload {
+        workouts: vec![workout],
+        exercises: exercises.into_values().collect(),
+        sets: incoming_sets,
+    };
+    benjisponge::fitness::commands::payload(&payload).map_err(NativeEntryError::new)?;
     Ok(BuiltNativeEntry {
         public_path: eastern::public_path(&projection),
-        payload: Payload {
-            workouts: vec![workout],
-            exercises: exercises.into_values().collect(),
-            sets: incoming_sets,
-        },
+        payload,
     })
 }
 

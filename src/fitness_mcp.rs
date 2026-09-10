@@ -244,7 +244,7 @@ const TABLES: &[TableSpec] = &[
         name: "muscles",
         description: "The code-aligned 28-muscle vocabulary.",
         fields: MUSCLE_FIELDS,
-        mutable: true,
+        mutable: false,
         bumps_version: true,
     },
     TableSpec {
@@ -1076,19 +1076,25 @@ async fn apply_changes(
     request: &ApplyChangesRequest,
     subject_hash: &str,
 ) -> Result<Value, String> {
-    let built = build_mutation(request)?;
+    let built = prepare_mutation(db, request).await?;
     let mut query = db.query(built.sql);
     for (name, value) in built.bindings {
         query = query.bind((name, SerdeWrapper(value)));
     }
-    tokio::time::timeout(QUERY_TIMEOUT, query)
+    let mut result = tokio::time::timeout(QUERY_TIMEOUT, query)
         .await
         .map_err(|_| {
             "fitness mutation timed out; check the current version before retrying".to_string()
         })?
-        .map_err(|error| error.to_string())?
-        .check()
         .map_err(|error| error.to_string())?;
+    let errors = result.take_errors();
+    if !errors.is_empty() {
+        return Err(errors
+            .into_values()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; "));
+    }
 
     let mut response = db
         .query("SELECT VALUE v FROM fitness_meta:version;")
@@ -1130,6 +1136,93 @@ async fn apply_changes(
             "id": change.id,
         })).collect::<Vec<_>>(),
     }))
+}
+
+/// Read the complete inputs to partial commands, validate their resulting
+/// records in Rust, and fence those inputs inside the atomic write. The fence
+/// also protects running records, which do not participate in fitness_version.
+async fn prepare_mutation(db: &Db, request: &ApplyChangesRequest) -> Result<BuiltMutation, String> {
+    let mut built = build_mutation(request)?;
+    let projections: Vec<String> = request.changes.iter().enumerate().map(|(index, change)| {
+        let fields = change.table.spec().fields.iter()
+            .filter(|(field, _)| *field != "id")
+            .map(|(field, _)| format!("{field}: {field} ?? NULL"))
+            .collect::<Vec<_>>().join(", ");
+        format!("((SELECT VALUE {{ {fields} }} FROM type::record($table_{index}, $id_{index}))[0] ?? NULL)")
+    }).collect();
+    let mut query = db.query(format!("RETURN [{}];", projections.join(", ")));
+    for (name, value) in &built.bindings {
+        query = query.bind((name.clone(), SerdeWrapper(value.clone())));
+    }
+    let mut response = tokio::time::timeout(QUERY_TIMEOUT, query)
+        .await
+        .map_err(|_| "fitness validation read timed out".to_string())?
+        .map_err(|e| e.to_string())?
+        .check()
+        .map_err(|e| e.to_string())?;
+    let before: Vec<SerdeWrapper<Value>> = response.take(0).map_err(|e| e.to_string())?;
+    if before.len() != request.changes.len() {
+        return Err("incomplete fitness validation read".into());
+    }
+    let mut guards = String::new();
+    for (index, (change, before)) in request.changes.iter().zip(before).enumerate() {
+        if !matches!(change.action, ChangeAction::Delete) {
+            let mut complete = match change.action {
+                ChangeAction::Merge | ChangeAction::Upsert => {
+                    before.0.as_object().cloned().unwrap_or_default()
+                }
+                _ => Map::new(),
+            };
+            complete.extend(change.data.clone().expect("checked command data"));
+            let validated = crate::fitness::commands::record(
+                change.table.spec().name,
+                &change.id,
+                Value::Object(complete),
+            )
+            .map_err(|e| format!("change {index}: {e}"))?;
+            // JSON null is the wire spelling of an absent optional field;
+            // SurrealDB option<T> accepts NONE, not NULL. Replace complete
+            // content so clearing a nullable field cannot retain old data.
+            let content = validated
+                .as_object()
+                .expect("validated record")
+                .keys()
+                .map(|field| format!("{field}: $data_{index}.{field} ?? NONE"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            for operation in ["CONTENT", "MERGE"] {
+                built.sql = built.sql.replace(
+                    &format!("{operation} $data_{index} RETURN"),
+                    &format!("CONTENT {{ {content} }} RETURN"),
+                );
+            }
+            built.bindings.insert(format!("data_{index}"), validated);
+        }
+        built.bindings.insert(format!("before_{index}"), before.0);
+        guards.push_str(&format!("IF {} != $before_{index} {{ THROW 'fitness record changed; read and review the batch again'; }};\n", projections[index]));
+    }
+    built.sql = built.sql.replacen(
+        "BEGIN TRANSACTION;\n",
+        &format!("BEGIN TRANSACTION;\n{guards}"),
+        1,
+    );
+    if built.bumps_version {
+        let integrity = "LET $canonical_names = SELECT VALUE name FROM exercises;
+            LET $alias_names = SELECT VALUE alias_name FROM exercise_aliases;
+            IF array::len(SELECT VALUE id FROM exercise_aliases WHERE alias_name = canonical_name OR alias_name IN $canonical_names OR canonical_name IN $alias_names) > 0 {
+                THROW 'exercise aliases must remain one-hop and separate from canonical names';
+            };
+            IF array::len(SELECT VALUE id FROM sets WHERE !record::exists(type::record('workouts', workout_id)) OR exercise_name NOT IN $canonical_names) > 0 {
+                THROW 'sets must reference existing workouts and canonical exercises';
+            };
+            ";
+        built.sql = built.sql.replacen(
+            "UPSERT fitness_meta:version",
+            &format!("{integrity}UPSERT fitness_meta:version"),
+            1,
+        );
+    }
+    Ok(built)
 }
 
 #[derive(Clone)]
@@ -1643,16 +1736,11 @@ mod tests {
             .use_db("fitness_mcp_test")
             .await
             .unwrap();
-        db.query(
-            "DEFINE TABLE exercises SCHEMALESS PERMISSIONS FULL;
-             DEFINE TABLE workouts SCHEMALESS PERMISSIONS FULL;
-             DEFINE TABLE sets SCHEMALESS PERMISSIONS FULL;
-             DEFINE TABLE fitness_meta SCHEMALESS PERMISSIONS FULL;",
-        )
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+        db.query(include_str!("schema.surql"))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
         db
     }
 
@@ -1690,6 +1778,152 @@ mod tests {
         assert_eq!(page["records"][0]["name"], "Test Exercise");
     }
 
+    const WORKOUT_ID: &str = "fitness:2026-07-21T14:39:04";
+    const SET_ID: &str = "fitness:2026-07-21T14:39:04:0001";
+
+    fn workout_record() -> Value {
+        json!({"title":"Test", "raw_title":"Test", "started_at_utc":"2026-07-21 14:39:04",
+            "duration_seconds":3600, "notes":null, "description":null,
+            "source":"manual", "imported_at":1})
+    }
+
+    fn set_record() -> Value {
+        json!({"workout_id":WORKOUT_ID, "ordinal":1, "exercise_name":"Survivor",
+            "raw_exercise_name":"Survivor", "exercise_note":null, "superset_id":null,
+            "weight_milli":-45000, "weight_unit":"lbs", "reps":10,
+            "effort_hundredths":900, "failure":false, "distance_milli":null,
+            "set_time_seconds":null, "set_type":"NORMAL_SET"})
+    }
+
+    async fn seeded_db() -> Db {
+        let db = mutation_db().await;
+        let request = ApplyChangesRequest {
+            confirmed: true,
+            reason: "seed validated workout".into(),
+            expected_version: Some(0),
+            changes: vec![
+                change(
+                    ChangeAction::Create,
+                    FitnessTable::Workouts,
+                    WORKOUT_ID,
+                    Some(workout_record()),
+                ),
+                change(
+                    ChangeAction::Create,
+                    FitnessTable::Sets,
+                    SET_ID,
+                    Some(set_record()),
+                ),
+                change(
+                    ChangeAction::Create,
+                    FitnessTable::Exercises,
+                    "survivor",
+                    Some(json!({"name":"Survivor"})),
+                ),
+            ],
+        };
+        apply_changes(&db, &request, &"a".repeat(64)).await.unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn invalid_partial_commands_leave_the_whole_batch_and_version_unchanged() {
+        let db = seeded_db().await;
+        for action in [ChangeAction::Merge, ChangeAction::Upsert] {
+            for data in [
+                json!({"set_type":"unknown"}),
+                json!({"failure":true}),
+                json!({"reps":-1}),
+                json!({"weight_milli":-1_000_000_001}),
+            ] {
+                let request = ApplyChangesRequest {
+                    confirmed: true,
+                    reason: "reject malformed set".into(),
+                    expected_version: Some(1),
+                    changes: vec![
+                        change(
+                            ChangeAction::Merge,
+                            FitnessTable::Workouts,
+                            WORKOUT_ID,
+                            Some(json!({"title":"must not commit"})),
+                        ),
+                        change(action, FitnessTable::Sets, SET_ID, Some(data)),
+                    ],
+                };
+                assert!(apply_changes(&db, &request, &"a".repeat(64)).await.is_err());
+            }
+        }
+        let mut response = db.query("RETURN {version:fitness_meta:version.v, title:(SELECT VALUE title FROM workouts)[0], kind:(SELECT VALUE set_type FROM sets)[0]};")
+            .await.unwrap().check().unwrap();
+        let state: Option<SerdeWrapper<Value>> = response.take(0).unwrap();
+        assert_eq!(
+            state.unwrap().0,
+            json!({"version":1,"title":"Test","kind":"NORMAL_SET"})
+        );
+    }
+
+    #[tokio::test]
+    async fn valid_merge_checks_the_result_and_recomputes_derived_fields() {
+        let db = seeded_db().await;
+        let request = ApplyChangesRequest {
+            confirmed: true,
+            reason: "correct set effort".into(),
+            expected_version: Some(1),
+            changes: vec![change(
+                ChangeAction::Merge,
+                FitnessTable::Sets,
+                SET_ID,
+                Some(json!({"failure":true,"effort_hundredths":null,"reps":null})),
+            )],
+        };
+        apply_changes(&db, &request, &"a".repeat(64)).await.unwrap();
+        let mut response = db
+            .query("SELECT failure, effort_hundredths, weight_milli, incomplete FROM sets;")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let rows: Vec<SerdeWrapper<Value>> = response.take(0).unwrap();
+        assert_eq!(
+            rows[0].0,
+            json!({"failure":true,"effort_hundredths":null,"weight_milli":-45000,"incomplete":true})
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_command_refuses_changed_inputs_even_without_a_version_bump() {
+        let db = seeded_db().await;
+        let request = ApplyChangesRequest {
+            confirmed: true,
+            reason: "correct set reps".into(),
+            expected_version: Some(1),
+            changes: vec![change(
+                ChangeAction::Merge,
+                FitnessTable::Sets,
+                SET_ID,
+                Some(json!({"reps":8})),
+            )],
+        };
+        let built = prepare_mutation(&db, &request).await.unwrap();
+        db.query("UPDATE sets SET effort_hundredths = 800;")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let mut query = db.query(built.sql);
+        for (name, value) in built.bindings {
+            query = query.bind((name, SerdeWrapper(value)));
+        }
+        assert!(query.await.unwrap().check().is_err());
+        let mut response = db
+            .query("SELECT VALUE reps FROM sets;")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert_eq!(response.take::<Vec<i64>>(0).unwrap(), vec![10]);
+    }
+
     #[tokio::test]
     async fn deleting_a_workout_cascades_sets_only() {
         let db = mutation_db().await;
@@ -1701,14 +1935,14 @@ mod tests {
                 change(
                     ChangeAction::Create,
                     FitnessTable::Workouts,
-                    "workout-1",
-                    Some(json!({"title": "Test"})),
+                    WORKOUT_ID,
+                    Some(workout_record()),
                 ),
                 change(
                     ChangeAction::Create,
                     FitnessTable::Sets,
-                    "set-1",
-                    Some(json!({"workout_id": "workout-1"})),
+                    SET_ID,
+                    Some(set_record()),
                 ),
                 change(
                     ChangeAction::Create,
@@ -1726,7 +1960,7 @@ mod tests {
             changes: vec![change(
                 ChangeAction::Delete,
                 FitnessTable::Workouts,
-                "workout-1",
+                WORKOUT_ID,
                 None,
             )],
         };

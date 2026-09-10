@@ -6,6 +6,7 @@
 //! `records` array. Records are derived from history, never imported —
 //! `fitness_sync` moves in lockstep (import contract v2).
 
+use serde::Serialize;
 use serde_json::Value;
 
 use super::eastern;
@@ -25,7 +26,7 @@ pub struct Payload {
     pub sets: Vec<IncomingSet>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct IncomingWorkout {
     pub id: String,
     pub title: String,
@@ -41,19 +42,19 @@ pub struct IncomingWorkout {
     pub source: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct IncomingExercise {
     pub name: String,
     pub tags: Vec<IncomingTag>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct IncomingTag {
     pub kind: String,
     pub value: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct IncomingSet {
     pub id: String,
     pub workout_id: String,
@@ -118,6 +119,11 @@ pub fn parse_import_payload(value: &Value) -> Result<Payload, String> {
 
     let mut workouts = Vec::with_capacity(raw_workouts.len());
     for (index, raw) in raw_workouts.iter().enumerate() {
+        if raw.get("source").and_then(Value::as_str) != Some("workout-data-csv") {
+            return Err(format!(
+                "workouts[{index}]: source must be workout-data-csv"
+            ));
+        }
         workouts.push(parse_workout(raw).map_err(|err| format!("workouts[{index}]: {err}"))?);
     }
     let mut exercises = Vec::with_capacity(raw_exercises.len());
@@ -178,7 +184,7 @@ pub fn parse_import_payload(value: &Value) -> Result<Payload, String> {
     })
 }
 
-fn parse_workout(value: &Value) -> Result<IncomingWorkout, String> {
+pub(super) fn parse_workout(value: &Value) -> Result<IncomingWorkout, String> {
     let Some(workout) = value.as_object() else {
         return Err("must be an object".to_string());
     };
@@ -231,9 +237,11 @@ fn parse_workout(value: &Value) -> Result<IncomingWorkout, String> {
         .ok_or("notes must be null or 1-10000 characters")?;
     let description = validate::nullable_text_value(workout.get("description"), 10_000)
         .ok_or("description must be null or 1-10000 characters")?;
-    if workout.get("source").and_then(Value::as_str) != Some("workout-data-csv") {
-        return Err("source must be workout-data-csv".to_string());
-    }
+    let source = workout
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|source| matches!(*source, "workout-data-csv" | "manual"))
+        .ok_or("source must be workout-data-csv or manual")?;
     let eastern = eastern::eastern_instant(started_at_utc, 0)
         .map_err(|_| "started_at_utc must be a real YYYY-MM-DD HH:MM:SS UTC time".to_string())?;
     Ok(IncomingWorkout {
@@ -247,11 +255,11 @@ fn parse_workout(value: &Value) -> Result<IncomingWorkout, String> {
         duration_suspicious,
         notes,
         description,
-        source: "workout-data-csv".to_string(),
+        source: source.to_string(),
     })
 }
 
-fn parse_exercise(value: &Value) -> Result<IncomingExercise, String> {
+pub(super) fn parse_exercise(value: &Value) -> Result<IncomingExercise, String> {
     let Some(exercise) = value.as_object() else {
         return Err("must be an object".to_string());
     };
@@ -297,7 +305,7 @@ fn parse_exercise(value: &Value) -> Result<IncomingExercise, String> {
     })
 }
 
-fn parse_set(value: &Value) -> Result<IncomingSet, String> {
+pub(super) fn parse_set(value: &Value) -> Result<IncomingSet, String> {
     let Some(set) = value.as_object() else {
         return Err("must be an object".to_string());
     };

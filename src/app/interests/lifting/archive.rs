@@ -24,7 +24,7 @@ pub(crate) mod db;
 // workers without making Fitness entry pull in Diary's database engine.
 pub(crate) use eastern_time as eastern;
 pub(crate) mod filters;
-pub(crate) mod import;
+pub(crate) use benjisponge::fitness::import;
 pub(crate) mod manual;
 pub(crate) mod native_entry;
 pub(crate) mod records;
@@ -33,4 +33,4 @@ pub(crate) mod scoring;
 pub(crate) mod snapshot;
 pub(crate) mod steps;
 pub(crate) mod store;
-mod validate;
+use benjisponge::fitness::validate;

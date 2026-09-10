@@ -46,9 +46,7 @@ const MAX_RANGE_DAYS: i32 = 365;
 /// Default heatmap marker; also the coalesce for rows written before emoji shipped.
 pub(super) const DEFAULT_EMOJI: &str = "🤒";
 /// Curated choices for the admin form — keep in sync with form radios + validation.
-pub(super) const EMOJI_CHOICES: &[&str] = &[
-    "🤒", "🤧", "🤢", "🤕", "😷", "😴", "😭", "✈️", "🏖️", "🚗", "🏥", "💊",
-];
+pub(super) use benjisponge::fitness::commands::INTERRUPTION_EMOJIS as EMOJI_CHOICES;
 
 const META: &str = "font-meta text-[0.7rem] leading-[1.55] text-muted";
 const NOTE_TEXT: &str = "font-meta text-[0.82rem] leading-[1.45] text-ink2";

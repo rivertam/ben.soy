@@ -168,13 +168,15 @@ pub fn parse_lyfta(input: &str) -> Result<ParsedWorkout, ParseError> {
         description: None,
         source: SOURCE.to_string(),
     };
+    let payload = Payload {
+        workouts: vec![workout],
+        exercises: exercises.into_values().collect(),
+        sets,
+    };
+    benjisponge::fitness::commands::payload(&payload).map_err(ParseError::new)?;
     Ok(ParsedWorkout {
         public_path: eastern::public_path(&projection),
-        payload: Payload {
-            workouts: vec![workout],
-            exercises: exercises.into_values().collect(),
-            sets,
-        },
+        payload,
     })
 }
 
