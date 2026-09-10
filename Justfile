@@ -9,6 +9,7 @@ install-hooks:
 # Start local SurrealDB, Topcoat with live reload, and Podrick if .env.dev configures it
 dev *args:
     just fitness-wasm
+    just thoughts-wasm
     bash scripts/dev.sh {{args}}
 
 # Replace local fitness tables and import a Strong CSV (run while `just dev` is active)
@@ -18,6 +19,7 @@ reset-fitness-local csv="/home/benji/Downloads/WorkoutData.csv":
 # Build the debug binary and extract its assets
 build:
     just fitness-wasm
+    just thoughts-wasm
     cargo build
     topcoat asset bundle --bin benjisponge
 
@@ -36,12 +38,13 @@ diary-wasm:
     wasm-bindgen --target no-modules --out-dir wasm-dist --out-name diary_sync \
         crates/diary-worker/target/wasm32-unknown-unknown/wasm/diary_worker.wasm
 
-# Build both browser Rust modules into wasm-dist/.
-wasm: diary-wasm fitness-wasm
+# Build all browser Rust modules into wasm-dist/.
+wasm: diary-wasm fitness-wasm thoughts-wasm
 
 # Build the release binary and extract its assets
 release:
     just fitness-wasm
+    just thoughts-wasm
     cargo build --release
     topcoat asset bundle --release --bin benjisponge
 
@@ -103,4 +106,11 @@ test:
 # Execute browser adapters against the built Rust/Wasm core.
 test-browser:
     just fitness-wasm
+    just thoughts-wasm
     node --test tests/browser/*.test.cjs
+
+# Build the small shared calculator/search module for public thought pages.
+thoughts-wasm:
+    cargo build -p thoughts-worker --profile wasm --target wasm32-unknown-unknown
+    wasm-bindgen --target web --out-dir wasm-dist --out-name thoughts_core \
+        target/wasm32-unknown-unknown/wasm/thoughts_worker.wasm

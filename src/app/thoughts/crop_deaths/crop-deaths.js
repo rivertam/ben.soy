@@ -1,3 +1,5 @@
+import { core } from "/thoughts-core.js";
+
 // Progressive enhancement for the lifestyle calculator. The server-rendered
 // GET form remains the no-JavaScript path; once this module loads, every input
 // updates the receipt in place and the current assumptions stay in the URL.
@@ -20,18 +22,7 @@ if (calculator && form) {
     if (node) node.textContent = value;
   };
 
-  const numberFormats = [0, 1, 2, 3].map(
-    (digits) =>
-      new Intl.NumberFormat("en-US", {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: digits,
-      }),
-  );
-
-  const formatNumber = (value) => {
-    const digits = value >= 100 ? 0 : value >= 10 ? 1 : value >= 1 ? 2 : 3;
-    return numberFormats[digits].format(value);
-  };
+  const formatNumber = (value) => core.crop_number(value);
 
   const plural = (amount, singular, pluralForm) =>
     amount === 1 ? singular : pluralForm;
@@ -270,10 +261,8 @@ if (calculator && form) {
     const data = scenario.dataset;
     const yieldKg = Number(data.yieldKg);
     const cropUnit = data.cropUnit;
-    const mealsPerHectare = yieldKg / cropKg;
-    const hectares = 1 / rate;
-    const foodKg = hectares * yieldKg;
-    const mealCount = foodKg / cropKg;
+    const { meals_per_hectare: mealsPerHectare, food_kg: foodKg, meal_count: mealCount } =
+      JSON.parse(core.crop_calculation(yieldKg, rate, cropKg));
     const mealLabel = plural(mealCount, meal.singular, meal.plural);
     const rateAnimalLabel = plural(rate, data.animalSingular, data.animalPlural);
     const formattedMealsPerHectare = formatNumber(mealsPerHectare);

@@ -12,6 +12,9 @@ use topcoat::{
 };
 
 use crate::components::{ext_link, inline_popover};
+use thoughts_core::crop::{
+    Calculation, Receipt, format_decimal as format_recipe_grams, format_number,
+};
 
 mod recipes;
 
@@ -116,9 +119,7 @@ impl Scenario {
     }
 
     fn calculate(self, deaths_per_hectare: f64) -> Calculation {
-        let hectares = 1.0 / deaths_per_hectare;
-        let food_kg = hectares * self.yield_kg_per_hectare;
-        Calculation { hectares, food_kg }
+        Calculation::new(self.yield_kg_per_hectare, deaths_per_hectare)
     }
 }
 
@@ -598,18 +599,6 @@ pub struct State {
     warning: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Calculation {
-    hectares: f64,
-    food_kg: f64,
-}
-
-impl Calculation {
-    fn meals(self, meal: LifestyleMeal) -> f64 {
-        self.food_kg / meal.crop_kg()
-    }
-}
-
 impl Scenario {
     fn from_key(key: Option<&str>) -> Option<Self> {
         SCENARIOS
@@ -684,51 +673,6 @@ pub fn state(food: Option<&str>, rate: Option<&str>, meal: Option<&str>) -> Stat
     }
 }
 
-fn grouped_integer(value: u64) -> String {
-    let digits = value.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, character) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(character);
-    }
-    grouped
-}
-
-fn trim_decimal(mut value: String) -> String {
-    while value.ends_with('0') {
-        value.pop();
-    }
-    if value.ends_with('.') {
-        value.pop();
-    }
-    value
-}
-
-fn format_number(value: f64) -> String {
-    if value >= 100.0 {
-        grouped_integer(value.round() as u64)
-    } else if value >= 10.0 {
-        let rounded = (value * 10.0).round() / 10.0;
-        trim_decimal(format!("{rounded:.1}"))
-    } else if value >= 1.0 {
-        let rounded = (value * 100.0).round() / 100.0;
-        trim_decimal(format!("{rounded:.2}"))
-    } else {
-        let rounded = (value * 1_000.0).round() / 1_000.0;
-        trim_decimal(format!("{rounded:.3}"))
-    }
-}
-
-fn format_recipe_grams(value: f64, decimals: usize) -> String {
-    if decimals == 0 {
-        return grouped_integer(value.round() as u64);
-    }
-    let scale = 10_f64.powi(decimals as i32);
-    trim_decimal(format!("{:.decimals$}", (value * scale).round() / scale))
-}
-
 fn plural<'a>(amount: f64, singular: &'a str, plural: &'a str) -> &'a str {
     if (amount - 1.0).abs() < f64::EPSILON {
         singular
@@ -763,9 +707,14 @@ pub async fn calculator(state: State) -> Result {
     let scenario = state.scenario;
     let meal = state.meal;
     let calculation = scenario.calculate(state.deaths_per_hectare);
-    let meal_count = calculation.meals(meal);
+    let receipt = Receipt::new(
+        scenario.yield_kg_per_hectare,
+        state.deaths_per_hectare,
+        meal.crop_kg(),
+    );
+    let meal_count = receipt.meal_count;
     let yield_kg = format_number(scenario.yield_kg_per_hectare);
-    let meals_per_hectare = format_number(scenario.yield_kg_per_hectare / meal.crop_kg());
+    let meals_per_hectare = format_number(receipt.meals_per_hectare);
     let meal_grams = format_recipe_grams(meal.recipe.grams(), meal.recipe.decimals);
     let rate = format_number(state.deaths_per_hectare);
     let result_meals = format_number(meal_count);
@@ -810,7 +759,7 @@ pub async fn calculator(state: State) -> Result {
         .copied()
         .filter(|candidate| candidate.key != meal.key)
         .map(|candidate| {
-            let count = calculation.meals(candidate);
+            let count = calculation.meals(candidate.crop_kg());
             (
                 candidate,
                 format_number(count),
@@ -1119,7 +1068,7 @@ mod tests {
         assert_eq!(burger.meal.key, "cheeseburger");
         let calc = WHEAT.calculate(WHEAT.default_rate());
         // Feed grain for the patty dwarfs a pasta bowl, so one death corresponds to fewer burgers.
-        assert!(calc.meals(burger.meal) < calc.meals(pasta.meal));
+        assert!(calc.meals(burger.meal.crop_kg()) < calc.meals(pasta.meal.crop_kg()));
         assert!((burger.meal.crop_kg() / pasta.meal.crop_kg()) > 5.0);
     }
 
@@ -1380,14 +1329,14 @@ mod tests {
         let result = AVOCADO.calculate(1.0);
         assert!((result.hectares - 1.0).abs() < 1e-9);
         assert!((result.food_kg - 8_563.302_833).abs() < 1e-6);
-        assert!((result.meals(AVOCADO_MEALS[0]) - 42_816.514_165).abs() < 1e-6);
+        assert!((result.meals(AVOCADO_MEALS[0].crop_kg()) - 42_816.514_165).abs() < 1e-6);
     }
 
     #[test]
     fn result_scales_inverse_to_the_assumed_death_rate() {
         let pasta = WHEAT_MEALS[0];
-        let one = WHEAT.calculate(1.0).meals(pasta);
-        let ten = WHEAT.calculate(10.0).meals(pasta);
+        let one = WHEAT.calculate(1.0).meals(pasta.crop_kg());
+        let ten = WHEAT.calculate(10.0).meals(pasta.crop_kg());
         assert!((one / ten - 10.0).abs() < 1e-9);
     }
 

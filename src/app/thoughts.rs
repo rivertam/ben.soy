@@ -5,6 +5,7 @@ pub mod planes;
 pub mod puzzles;
 pub mod saamd;
 pub mod simulation;
+mod wasm;
 
 use topcoat::{Result, router::page, view::view};
 

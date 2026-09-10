@@ -20,11 +20,14 @@ members = [
     "crates/eastern-time",
     "crates/fitness-entry-core",
     "crates/fitness-entry-worker",
+    "crates/thoughts-core",
+    "crates/thoughts-worker",
 ]
 exclude = ["crates/diary-worker"]
 resolver = "3"
 
 [workspace.dependencies]
+thoughts-core = { path = "crates/thoughts-core" }
 diary-core = { path = "crates/diary-core" }
 eastern-time = { path = "crates/eastern-time" }
 fitness-entry-core = { path = "crates/fitness-entry-core" }
@@ -51,6 +54,7 @@ name = "podrick"
 path = "src/app/interests/podrick/podrick.rs"
 
 [dependencies]
+thoughts-core = { workspace = true }
 anyhow = "1.0.104"
 axum = "0.8.9"
 base64 = "0.22"

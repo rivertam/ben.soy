@@ -52,6 +52,10 @@ RUN cargo build -p fitness-entry-worker --profile wasm --target wasm32-unknown-u
 RUN wasm-bindgen --target no-modules --out-dir wasm-dist --out-name fitness_entry \
     target/wasm32-unknown-unknown/wasm/fitness_entry_worker.wasm
 
+RUN cargo build -p thoughts-worker --profile wasm --target wasm32-unknown-unknown
+RUN wasm-bindgen --target web --out-dir wasm-dist --out-name thoughts_core \
+    target/wasm32-unknown-unknown/wasm/thoughts_worker.wasm
+
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

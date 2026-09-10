@@ -435,6 +435,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "surrealdb",
+ "thoughts-core",
  "tokio",
  "topcoat",
  "tracing",
@@ -5066,6 +5067,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "thoughts-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "thoughts-worker"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thoughts-core",
+ "wasm-bindgen",
 ]
 
 [[package]]
