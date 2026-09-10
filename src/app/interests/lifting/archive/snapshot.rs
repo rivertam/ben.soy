@@ -54,14 +54,32 @@ pub struct PublishedWorkout {
     pub start_time: i64,
 }
 
-/// One lift admitted by the full-log filters before page-level composition.
-/// This is deliberately not a public API envelope: the exact UTC instant is
-/// only needed to interleave lifts with sibling fitness activity types.
+/// One visible lift, materialized after composite fitness-log pagination.
 #[derive(Clone, Debug)]
 pub(in crate::app::interests::lifting) struct FilteredWorkout {
     pub workout: api::Workout,
     pub date: String,
+}
+
+/// Borrowed matching payloads plus the metadata needed to interleave lifts
+/// and runs. Keeping these borrowed avoids cloning off-page set history.
+#[derive(Debug)]
+pub(in crate::app::interests::lifting) struct WorkoutMatch<'a> {
+    pub workout: &'a api::Workout,
+    pub sets: Vec<&'a api::Set>,
+    pub date: &'a str,
     pub start_time: i64,
+}
+
+impl WorkoutMatch<'_> {
+    pub(in crate::app::interests::lifting) fn materialize(self) -> FilteredWorkout {
+        let mut workout = self.workout.clone();
+        workout.sets = self.sets.into_iter().cloned().collect();
+        FilteredWorkout {
+            workout,
+            date: self.date.to_string(),
+        }
+    }
 }
 
 /// The exercise page's history summary, derived from the joined set history
@@ -706,26 +724,25 @@ impl Snapshot {
         self.ids.clone()
     }
 
-    /// Every workout admitted by `filters`, newest-first, with only its
-    /// matching sets. Pagination belongs to the page-only composite fitness
-    /// log; public lifting endpoints continue to use [`sets_page`].
+    /// Every workout admitted by `filters`, newest-first, borrowing only its
+    /// matching sets. The composite fitness log paginates these matches before
+    /// materializing payloads; public lifting endpoints use [`Self::sets_page`].
     pub(in crate::app::interests::lifting) fn filtered_workouts(
         &self,
         filters: &Filters,
-    ) -> Vec<FilteredWorkout> {
+    ) -> Vec<WorkoutMatch<'_>> {
         let (_, matching) = self.matching_set_indexes(filters);
         matching
             .into_iter()
             .map(|(workout_index, set_indexes)| {
                 let snap = &self.workouts[workout_index];
-                let mut workout = snap.wire.clone();
-                workout.sets = set_indexes
-                    .into_iter()
-                    .map(|index| snap.sets[index].wire.clone())
-                    .collect();
-                FilteredWorkout {
-                    workout,
-                    date: snap.local_date.clone(),
+                WorkoutMatch {
+                    workout: &snap.wire,
+                    sets: set_indexes
+                        .into_iter()
+                        .map(|index| &snap.sets[index].wire)
+                        .collect(),
+                    date: &snap.local_date,
                     start_time: snap.start_time,
                 }
             })
@@ -1313,7 +1330,7 @@ mod tests {
         );
         let unpaginated = snap.filtered_workouts(&filters);
         assert_eq!(unpaginated.len(), 2);
-        assert_eq!(unpaginated[0].workout.sets.len(), 1);
+        assert_eq!(unpaginated[0].sets.len(), 1);
         assert_eq!(unpaginated[0].date, "2026-07-21");
         assert_eq!(
             unpaginated[0].start_time,
@@ -1329,6 +1346,30 @@ mod tests {
 
         let incomplete = parse_filters(&[("incomplete".into(), "true".into())]).unwrap();
         assert_eq!(snap.sets_page(&incomplete).total_sets, 1);
+    }
+
+    #[test]
+    fn composite_matches_borrow_snapshot_payloads_before_pagination() {
+        let snap = snapshot();
+        let filters = parse_filters(&[("movement".into(), "squat-type".into())]).unwrap();
+        let matches = snap.filtered_workouts(&filters);
+        assert_eq!(matches.len(), 2);
+        for (matching, stored) in matches.iter().zip(&snap.workouts) {
+            assert!(std::ptr::eq(matching.workout, &stored.wire));
+            assert!(std::ptr::eq(matching.date, stored.local_date.as_str()));
+            assert_eq!(matching.sets.len(), 1, "only squat sets match");
+            assert!(std::ptr::eq(matching.sets[0], &stored.sets[0].wire));
+        }
+
+        let visible: Vec<_> = matches
+            .into_iter()
+            .map(|matching| matching.materialize().workout)
+            .collect();
+        assert_eq!(
+            serde_json::to_value(visible).unwrap(),
+            serde_json::to_value(snap.sets_page(&filters).workouts).unwrap(),
+            "materialized matches retain the public endpoint's filter semantics"
+        );
     }
 
     #[test]

@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn merge_puts_same_day_interruptions_after_primary_activities() {
-        let lift = |id: &str, local: &str, start_time: i64| {
+        let lift = |id: &str, local: &str| {
             fitness::LogActivity::Lift(
                 crate::app::interests::lifting::archive::snapshot::FilteredWorkout {
                     workout: fitness::Workout {
@@ -930,13 +930,12 @@ mod tests {
                         sets: Vec::new(),
                     },
                     date: local[..10].into(),
-                    start_time,
                 },
             )
         };
         let activities = [
-            lift("w1", "2026-08-09 10:00:00", 1),
-            lift("w0", "2026-08-11 10:00:00", 2),
+            lift("w1", "2026-08-09 10:00:00"),
+            lift("w0", "2026-08-11 10:00:00"),
         ];
         let rows = [Interruption {
             id: "i".into(),
@@ -979,7 +978,6 @@ mod tests {
                         sets: Vec::new(),
                     },
                     date: "2026-08-09".into(),
-                    start_time: 0,
                 },
             )
         };

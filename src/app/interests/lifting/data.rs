@@ -10,7 +10,7 @@ use std::fmt;
 
 use super::archive::eastern;
 use super::archive::filters::{Filters, parse_filters};
-use super::archive::snapshot::FilteredWorkout;
+use super::archive::snapshot::{FilteredWorkout, WorkoutMatch};
 use super::archive::store::FitnessStore;
 use super::training_focus::TrainingFocus;
 use benjisponge::data::running_models::RunningActivity;
@@ -19,13 +19,18 @@ pub use super::archive::api::{Calendar, CalendarDay, Facets, Record, Set, Workou
 pub use benjisponge::data::fitness_models::Interruption;
 
 /// A running activity admitted by the universal fitness-log filters. The
-/// stored run stays a sibling model; this wrapper adds only page-local sort
-/// projections and never enters `FitnessStore` or a public JSON envelope.
+/// stored run stays a sibling model; this wrapper adds the page-local date
+/// and never enters `FitnessStore` or a public JSON envelope.
 #[derive(Clone, Debug)]
 pub(in crate::app::interests::lifting) struct FilteredRun {
     pub activity: RunningActivity,
     pub date: String,
-    pub start_time: i64,
+}
+
+struct RunMatch<'a> {
+    activity: &'a RunningActivity,
+    date: &'a str,
+    start_time: i64,
 }
 
 /// One primary row in the composite fitness log.
@@ -40,6 +45,22 @@ impl LogActivity {
         match self {
             Self::Lift(lift) => &lift.date,
             Self::Run(run) => &run.date,
+        }
+    }
+}
+
+/// Matching metadata before pagination. Lift payloads stay in the snapshot
+/// until this row is admitted to the visible page.
+enum LogMatch<'a> {
+    Lift(WorkoutMatch<'a>),
+    Run(RunMatch<'a>),
+}
+
+impl LogMatch<'_> {
+    fn date(&self) -> &str {
+        match self {
+            Self::Lift(lift) => lift.date,
+            Self::Run(run) => run.date,
         }
     }
 
@@ -61,6 +82,16 @@ impl LogActivity {
         match self {
             Self::Lift(lift) => &lift.workout.id,
             Self::Run(run) => &run.activity.id,
+        }
+    }
+
+    fn materialize(self) -> LogActivity {
+        match self {
+            Self::Lift(lift) => LogActivity::Lift(lift.materialize()),
+            Self::Run(run) => LogActivity::Run(FilteredRun {
+                activity: run.activity.clone(),
+                date: run.date.to_string(),
+            }),
         }
     }
 }
@@ -183,22 +214,19 @@ pub(in crate::app::interests::lifting) async fn load(
 }
 
 fn compose_log_page(
-    lifts: Vec<FilteredWorkout>,
+    lifts: Vec<WorkoutMatch<'_>>,
     runs: &[RunningActivity],
     interruptions: &[Interruption],
     filters: &Filters,
 ) -> FitnessLogPage {
-    let total_sets = lifts
-        .iter()
-        .map(|lift| lift.workout.sets.len() as u64)
-        .sum();
+    let total_sets = lifts.iter().map(|lift| lift.sets.len() as u64).sum();
     let total_lifts = lifts.len() as u64;
-    let mut activities: Vec<LogActivity> = lifts.into_iter().map(LogActivity::Lift).collect();
+    let mut activities: Vec<LogMatch<'_>> = lifts.into_iter().map(LogMatch::Lift).collect();
     if filters.admits_runs() {
         activities.extend(
             runs.iter()
                 .filter_map(|activity| filtered_run(activity, filters))
-                .map(LogActivity::Run),
+                .map(LogMatch::Run),
         );
     }
     activities.sort_by(|left, right| {
@@ -211,13 +239,13 @@ fn compose_log_page(
 
     let total_runs = activities
         .iter()
-        .filter(|activity| matches!(activity, LogActivity::Run(_)))
+        .filter(|activity| matches!(activity, LogMatch::Run(_)))
         .count() as u64;
     let matching_runs = activities
         .iter()
         .filter_map(|activity| match activity {
-            LogActivity::Run(run) => Some(run.activity.clone()),
-            LogActivity::Lift(_) => None,
+            LogMatch::Run(run) => Some(run.activity.clone()),
+            LogMatch::Lift(_) => None,
         })
         .collect();
     let page_interruptions = interruptions_for_page(&activities, interruptions, filters);
@@ -226,6 +254,7 @@ fn compose_log_page(
         .into_iter()
         .skip(offset)
         .take(filters.per_page)
+        .map(LogMatch::materialize)
         .collect();
     FitnessLogPage {
         page: filters.page,
@@ -239,7 +268,7 @@ fn compose_log_page(
     }
 }
 
-fn filtered_run(activity: &RunningActivity, filters: &Filters) -> Option<FilteredRun> {
+fn filtered_run<'a>(activity: &'a RunningActivity, filters: &Filters) -> Option<RunMatch<'a>> {
     let date = activity.started_at_local.get(..10)?;
     if filters.from.as_deref().is_some_and(|from| date < from)
         || filters.to.as_deref().is_some_and(|to| date > to)
@@ -262,9 +291,9 @@ fn filtered_run(activity: &RunningActivity, filters: &Filters) -> Option<Filtere
     let start_time = eastern::utc_timestamp(&activity.started_at_utc)
         .ok()?
         .as_second();
-    Some(FilteredRun {
-        activity: activity.clone(),
-        date: date.to_string(),
+    Some(RunMatch {
+        activity,
+        date,
         start_time,
     })
 }
@@ -279,7 +308,7 @@ fn weekday_sunday_zero(date: &str) -> Option<u8> {
 }
 
 fn interruptions_for_page(
-    activities: &[LogActivity],
+    activities: &[LogMatch<'_>],
     interruptions: &[Interruption],
     filters: &Filters,
 ) -> Vec<Interruption> {
@@ -349,7 +378,26 @@ pub async fn load_workout_by_path(
 mod tests {
     use super::*;
 
-    fn lift(id: &str, utc: &str, local: &str, set_count: usize) -> FilteredWorkout {
+    struct LiftFixture {
+        workout: Workout,
+        sets: Vec<Set>,
+        date: String,
+        start_time: i64,
+    }
+
+    fn lift_matches(lifts: &[LiftFixture]) -> Vec<WorkoutMatch<'_>> {
+        lifts
+            .iter()
+            .map(|lift| WorkoutMatch {
+                workout: &lift.workout,
+                sets: lift.sets.iter().collect(),
+                date: &lift.date,
+                start_time: lift.start_time,
+            })
+            .collect()
+    }
+
+    fn lift(id: &str, utc: &str, local: &str, set_count: usize) -> LiftFixture {
         let sets = (0..set_count)
             .map(|index| Set {
                 id: format!("{id}:s{index}"),
@@ -369,7 +417,7 @@ mod tests {
                 records: Vec::new(),
             })
             .collect();
-        FilteredWorkout {
+        LiftFixture {
             workout: Workout {
                 id: id.into(),
                 path: id.into(),
@@ -383,8 +431,9 @@ mod tests {
                 duration_suspicious: false,
                 notes: None,
                 description: None,
-                sets,
+                sets: Vec::new(),
             },
+            sets,
             date: local[..10].into(),
             start_time: eastern::utc_timestamp(utc).unwrap().as_second(),
         }
@@ -480,11 +529,12 @@ mod tests {
             per_page: 2,
             ..Filters::default()
         };
+        let lifts = [
+            lift("lift-new", "2026-08-21 15:00:00", "2026-08-21 11:00:00", 2),
+            lift("lift-old", "2026-08-21 13:00:00", "2026-08-21 09:00:00", 1),
+        ];
         let page = compose_log_page(
-            vec![
-                lift("lift-new", "2026-08-21 15:00:00", "2026-08-21 11:00:00", 2),
-                lift("lift-old", "2026-08-21 13:00:00", "2026-08-21 09:00:00", 1),
-            ],
+            lift_matches(&lifts),
             &[
                 run("run-middle", "2026-08-21 14:00:00", "2026-08-21 10:00:00"),
                 run("run-old", "2026-08-20 14:00:00", "2026-08-20 10:00:00"),
@@ -502,6 +552,77 @@ mod tests {
             [LogActivity::Lift(lift), LogActivity::Run(run)]
                 if lift.workout.id == "lift-new" && run.activity.id == "run-middle"
         ));
+    }
+
+    #[test]
+    fn composite_pages_keep_all_totals_and_materialize_only_visible_sets() {
+        let lifts: Vec<_> = (1..=30)
+            .map(|day| {
+                lift(
+                    &format!("lift-{day:02}"),
+                    &format!("2026-08-{day:02} 15:00:00"),
+                    &format!("2026-08-{day:02} 11:00:00"),
+                    day % 4 + 1,
+                )
+            })
+            .collect();
+        let runs: Vec<_> = (3..=30)
+            .step_by(3)
+            .map(|day| {
+                run(
+                    &format!("run-{day:02}"),
+                    &format!("2026-08-{day:02} 15:00:00"),
+                    &format!("2026-08-{day:02} 11:00:00"),
+                )
+            })
+            .collect();
+        let expected_ids: Vec<_> = (1..=30)
+            .rev()
+            .flat_map(|day| {
+                let mut ids = vec![format!("lift-{day:02}")];
+                if day % 3 == 0 {
+                    ids.push(format!("run-{day:02}"));
+                }
+                ids
+            })
+            .collect();
+        let total_sets: u64 = lifts.iter().map(|lift| lift.sets.len() as u64).sum();
+        for page_number in 1..=5 {
+            let page = compose_log_page(
+                lift_matches(&lifts),
+                &runs,
+                &[],
+                &Filters {
+                    page: page_number,
+                    per_page: 10,
+                    ..Filters::default()
+                },
+            );
+            assert_eq!(page.total_lifts, 30);
+            assert_eq!(page.total_sets, total_sets);
+            assert_eq!(page.total_runs, 10);
+            assert_eq!(page.matching_runs.len(), 10, "calendar keeps every run");
+            let ids: Vec<_> = page
+                .activities
+                .iter()
+                .map(|activity| match activity {
+                    LogActivity::Lift(lift) => {
+                        let source = lifts
+                            .iter()
+                            .find(|source| source.workout.id == lift.workout.id)
+                            .unwrap();
+                        assert_eq!(
+                            serde_json::to_value(&lift.workout.sets).unwrap(),
+                            serde_json::to_value(&source.sets).unwrap()
+                        );
+                        lift.workout.id.as_str()
+                    }
+                    LogActivity::Run(run) => run.activity.id.as_str(),
+                })
+                .collect();
+            let offset = (page_number - 1) * 10;
+            assert_eq!(ids, &expected_ids[offset..(offset + 10).min(40)]);
+        }
     }
 
     #[test]
@@ -554,7 +675,7 @@ mod tests {
             run("run-b", "2026-08-20 14:00:00", "2026-08-20 10:00:00"),
         ];
         let first = compose_log_page(
-            lifts.clone(),
+            lift_matches(&lifts),
             &runs,
             &rows,
             &Filters {
@@ -567,7 +688,7 @@ mod tests {
         assert!(first.interruptions.is_empty());
 
         let second = compose_log_page(
-            lifts,
+            lift_matches(&lifts),
             &runs,
             &rows,
             &Filters {
