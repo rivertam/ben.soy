@@ -2,7 +2,7 @@
 
 The /diary system is written in Rust on both sides of the wire, and the
 larger idea it started as — Remix-style loader/clientLoader isomorphism for
-a topcoat + SurrealDB app — is BUILT: one local table is both outbox and
+a topcoat + SurrealDB app — is BUILT: Now’s local table is both outbox and
 mirror; Entry Keys are predicted at enqueue with the same probe
 the server runs; the transcript markup is ONE set of pure components
 rendered by the server page, by the service worker's offline SSR
@@ -13,6 +13,109 @@ through a two-method transport trait whose direct implementation wraps
 another `Surreal<Any>` handle plus the remote server's validation clock. The
 page JS cannot tell which renderer drew the HTML it reconciles against — that
 sentence is the whole design.
+
+## Now and Today (schema epoch 4)
+
+`/diary` opens `/diary/now`; existing `/diary/{timestamp}` links keep working.
+Now is untimed. Existing entries are text-only Now entries, without rewriting
+ids or assigning an inferred mood. A new entry has text, one Unicode emoji, or
+both. The separate `occurred_at` epoch supports backdating without changing
+its permalink, while `saved_at_ms` records when it was saved. Old entries use
+`written_at` as their event time. These values stay structured for future
+graphs; no numerical mood score is inferred from an emoji.
+
+The compact emoji picker sits to the left of the Now text input, with recent
+choices first. New entries use the current time; backdating is available when
+editing an existing entry. The picker updates recency only on save.
+`diary_emojis` stores the latest usage time
+per distinct emoji; its top ten sort by save time, never backdate. Merging
+uses the maximum timestamp, so delayed sync cannot reorder recent choices
+backwards. The palette survives edits/deletions without retaining old text.
+The worker exchanges this small history through the private Today API even
+when Now uses direct database sync.
+
+Now edits carry a revision and the revision they replace. Several offline
+edits retain the intervening revision fingerprints so a delayed create or
+edit acknowledgement cannot resurrect stale content. Deletions are permanent,
+body/emoji/reply-clearing tombstones. A conflicting edit stays failed locally
+with its text intact; no last-writer-wins text overwrite. These mutations use
+the same queue, mirror, snapshot and shared bubble template as new entries.
+
+`/diary/today` requires a live connection and has one server `diary_days`
+row per civil date. `today` owns the day boundary (04:00 America/New_York,
+including DST), 900,000 ms budget, closure policy and monotonic interaction
+clock. `today_session` owns Start/Resume, draft state, autosave scheduling,
+connection timeouts, exact-command retries, conflict handling, and closure.
+It consumes browser events and explicit time/focus/connection facts, then
+returns a view projection and effects. The `DiaryToday` Wasm wrapper exposes
+that same session without duplicating rules. The page only binds events,
+executes requests/Web Locks, and paints the result. `today_store` owns the
+authoritative autosave transactions. Day
+metadata is body, spent milliseconds, closed/closed-at, update time and
+revision. Today never writes daily text to IndexedDB or Cache Storage.
+
+Today initially shows **Start**, with the editor and prompts hidden. Start
+loads the current server budget and creates the daily row if needed, then
+opens/focuses the editor and starts the clock. Waiting for a live response
+does not spend writing time. Returning to an unfinished reflection shows
+**Resume** and preserves its saved budget. Past and closed entries are
+browsable online. There is no device reservation or handoff action.
+
+Only active interaction with the editor spends writing time. Keyboard,
+pointer, scrolling and composition events resume it; five seconds without
+interaction pause it. Blur, hiding or leaving the page pause immediately.
+Focus and reconnection alone do not resume. Autosave sends text and cumulative
+spent time together after a short typing debounce and at least once per
+second while active; idle heartbeats check the connection without revising
+the entry. Finish and expiry save and make the row permanently read-only.
+Crossing 04:00 stops the old editor; incomplete days remain started, never
+silently awarded completion credit.
+
+A network failure, offline event or five seconds without a server response
+pauses writing. Unacknowledged text remains visible in the open page, with a
+warning before leaving. Reconnection retries the exact unacknowledged command
+before any newer change. The server acknowledges an identical replay once,
+rejects spent-time decreases, and uses revision compare-and-swap to prevent
+silent overwrites by another device. A conflict freezes that editor with its
+unsaved text available to copy. A browser lock also excludes simultaneous
+writing tabs. Text and time survive reloads/devices through acknowledged
+server saves; closing or killing the browser before acknowledgement can lose
+that last unsaved change. There is no offline Today queue.
+
+The service worker owns **all** network synchronization. Today always uses
+owner-gated `GET/POST /api/diary/today`, with exact epoch and same-origin write
+checks, even when Now syncs directly. Live responses contain only the selected
+day; autosaves never download the entire reflection archive. Its live
+MessageChannel requests bypass
+the `diary-store` lock, so a slow Now outbox flush cannot block autosaves.
+`diary_days` has `PERMISSIONS NONE`: a Now record token cannot bypass daily
+budget, ownership, or closure rules. Offline navigation to Today shows only
+a connection notice and a link to Now, never a cached daily reflection.
+The forward-only epoch 4 migration preserves server reflections and spent
+time; retired epoch 3 device rows and the private writer table stay untouched
+for recovery, but current code neither reads nor writes them.
+
+The heatmap derives only from daily rows: absent = empty, saved/open = started,
+closed = closed. Every closure receives the same color/credit regardless of
+length or time spent. Now never contributes. Date navigation and the heatmap
+browse history; the selected day’s Now entries are memory cues. `today::memory_cues` filters
+and orders them for both server rendering and the device mirror.
+
+The optional prompts are original paraphrases inspired by
+[expressive writing](https://pmc.ncbi.nlm.nih.gov/articles/PMC2845742/),
+[CBT thought records](https://www.veterantraining.va.gov/apps/insomnia/resources/learn/documents/challenge_thoughts.pdf),
+and [positive-affect journaling](https://pmc.ncbi.nlm.nih.gov/articles/PMC6305886/).
+They are optional starting points, with no mood fields or efficacy claims.
+
+Validation: `just check` covers both native cores and server migrations;
+`just diary-wasm` compiles the excluded browser workspace;
+`just test-diary-browser` runs the shipped page adapter against the actual
+Wasm session for event wiring, idle/focus behavior, autosave, finish and
+expiry. Native `today_session` tests cover the same state machine directly,
+including in-flight text, lost replies, stale acknowledgements, conflict, and
+the civil-day cutoff. `just build`
+produces the asset bundle needed for an actual router/browser check. Test UI
+flows against synthetic diary data in a separate namespace, never real entries.
 
 ## Shape
 
@@ -64,7 +167,7 @@ The Diary Entry Module owns the lifecycle values used at the persistence and
 transport Seams:
 
 - `EntryContent` owns the business fields that determine replay equality: the
-  body and its optional Reply Target.
+  body, optional Reply Target and emoji, event/save times, and revision metadata.
 - `ComposedEntry` pairs `EntryContent` with the second proposed to placement;
   a same-device collision can re-anchor it to a later probed second.
 - `DiaryEntry` carries the placement-selected record key and second; ordinary
@@ -79,8 +182,8 @@ values instead of declaring parallel wire, snapshot, and report entry shapes.
 Adding a durable `EntryContent` field has four production field-list Seams:
 `EntryContent`, the shared explicit `PROJECTION`, the next server migration,
 and the next device migration. It does not add per-query binds,
-write branches, snapshot mappings, compatibility DTOs, flush-report content,
-placement or reconciliation comparisons, or CAS predicates. Replies are the
+snapshot mappings or compatibility DTOs. Now mutations add one explicit
+revision-CAS write branch; ordinary optional content still travels as a whole value. Replies are the
 worked example: `reply_to` is part of the canonical Entry Content and both
 migrations, while the existing Adapters continue carrying whole canonical
 values.
@@ -114,8 +217,9 @@ missing-CAS backfill remain standing before each flush.
 
 Direct database sync carries the same epoch in the signed JWT. The
 migration-owned table permission admits only the exact current claim. The
-first migration has one narrow claimless bridge for an already-authenticated
-pre-epoch session; current code never mints another. Because SurrealDB turns
+first migration had a narrow claimless bridge for an already-authenticated
+pre-epoch session. Epoch 3 removes that bridge: old readers cannot safely
+interpret emoji-only entries or tombstones. Because SurrealDB turns
 permission-denied creates into empty successful results, the store Adapter
 also requires CREATE to return the expected Entry Key before reporting
 success.

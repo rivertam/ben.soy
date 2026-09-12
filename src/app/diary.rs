@@ -62,6 +62,7 @@ use crate::util::{is_same_origin, urlencode};
 
 use super::login::viewer;
 use super::not_found::not_found_page;
+mod today;
 
 pub(crate) const PATH: &str = "/diary";
 const LOGIN_REDIRECT: &str = "/login?next=%2Fdiary";
@@ -88,7 +89,121 @@ struct DiaryQuery {
     q: Option<String>,
 }
 
-#[page("/diary")]
+#[route(GET "/diary")]
+async fn diary_home(cx: &Cx) -> Result<Response> {
+    let target = uri(cx)
+        .query()
+        .map(|query| format!("/diary/now?{query}"))
+        .unwrap_or_else(|| "/diary/now".into());
+    Ok(see_other(&target))
+}
+
+async fn recent_emojis(data: &Data) -> Vec<String> {
+    match data.db().await {
+        Ok(db) => diary_core::emoji_usage::choices(&db)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn form_fields(bytes: &[u8]) -> Option<std::collections::BTreeMap<String, String>> {
+    let mut fields = std::collections::BTreeMap::new();
+    for (key, value) in form_urlencoded::parse(bytes) {
+        if ![
+            "body", "reply_to", "emoji", "at", "path", "delete", "revision",
+        ]
+        .contains(&key.as_ref())
+            || fields
+                .insert(key.into_owned(), value.into_owned())
+                .is_some()
+        {
+            return None;
+        }
+    }
+    Some(fields)
+}
+
+fn parse_now_form(bytes: &[u8], now: i64) -> Option<ComposedEntry> {
+    let mut fields = form_fields(bytes)?;
+    let mut entry = ComposedEntry::new(now, fields.remove("body")?);
+    entry.reply_to = fields.remove("reply_to").filter(|value| !value.is_empty());
+    entry.emoji = fields.remove("emoji").filter(|value| !value.is_empty());
+    entry.occurred_at = Some(
+        match fields.remove("at").filter(|value| !value.is_empty()) {
+            Some(at) => views::parse_local_time(&at)?,
+            None => now,
+        },
+    );
+    entry.saved_at_ms = Some(now * 1000);
+    entry.revision = Some(diary_core::entry::new_revision(&entry));
+    if !fields.is_empty() {
+        return None;
+    }
+    Some(entry)
+}
+
+#[route(POST "/diary/edit")]
+async fn edit_now(cx: &Cx, body: Body) -> Result<Response> {
+    let bytes = match gate(cx, body).await {
+        Ok(bytes) => bytes,
+        Err(response) => return Ok(*response),
+    };
+    let Some(mut fields) = form_fields(&bytes) else {
+        return Ok(back("invalid"));
+    };
+    let Some(id) = fields
+        .remove("path")
+        .filter(|id| eastern::parse_public_path(id).is_some())
+    else {
+        return Ok(back("invalid"));
+    };
+    let db = match open_db(app_context::<Data>(cx)).await {
+        Ok(db) => db,
+        Err(_) => return Ok(back("unavailable")),
+    };
+    let Ok(Some(old)) = store::entry_by_id(&db, &id).await else {
+        return Ok(back("invalid"));
+    };
+    if old.deleted()
+        || fields
+            .remove("revision")
+            .filter(|revision| !revision.is_empty())
+            != old.revision
+    {
+        return Ok(back("invalid"));
+    }
+    let deleted = fields.remove("delete").as_deref() == Some("yes");
+    let mut entry = old.composed.clone();
+    entry.body = fields.remove("body").unwrap_or_default();
+    entry.emoji = fields.remove("emoji").filter(|value| !value.is_empty());
+    entry.occurred_at = match fields
+        .remove("at")
+        .and_then(|at| views::parse_local_time(&at))
+    {
+        Some(at) => Some(at),
+        None if deleted => Some(old.occurred_at()),
+        None => return Ok(back("invalid")),
+    };
+    if !fields.is_empty() {
+        return Ok(back("invalid"));
+    }
+    let now = Timestamp::now().as_second();
+    entry.saved_at_ms = Some(now * 1000);
+    entry.edit = Some(diary_core::entry::EntryEdit {
+        id,
+        base: old.revision.clone(),
+        deleted,
+        previous: old.revision_history(),
+    });
+    entry.revision = Some(diary_core::entry::new_revision(&entry));
+    Ok(match store::save_entry(&db, entry, now).await {
+        Ok(_) => back(if deleted { "deleted" } else { "saved" }),
+        Err(_) => back("invalid"),
+    })
+}
+
+#[page("/diary/now")]
 async fn diary(cx: &Cx) -> Result {
     let Some(current) = viewer(cx) else {
         return Err(redirect(LOGIN_REDIRECT).into());
@@ -193,6 +308,7 @@ async fn diary(cx: &Cx) -> Result {
                 store_ok: store_ok,
                 mode: mode,
                 notice: notice_view,
+                recent: recent_emojis(data).await,
             )
             <script type="module" src=(DIARY_JS)></script>
         )
@@ -229,7 +345,10 @@ async fn diary_entry(cx: &Cx) -> Result {
     }
     let loaded = entry_by_id(app_context::<Data>(cx), entry_path).await;
     let entry = match &loaded {
-        Ok(Some(entry)) => Some(entry),
+        Ok(Some(entry)) if !entry.deleted() => Some(entry),
+        Ok(Some(_)) => {
+            return view! { ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE))) not_found_page(requested: uri(cx).path()) };
+        }
         Ok(None) => {
             return view! {
                 ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
@@ -275,11 +394,11 @@ async fn write_entry(cx: &Cx, body: Body) -> Result<Response> {
         Ok(bytes) => bytes,
         Err(response) => return Ok(*response),
     };
-    let Some((raw, reply_to)) = parse_write_form(&bytes) else {
+    let validation_now = Timestamp::now().as_second();
+    let Some(entry) = parse_now_form(&bytes, validation_now) else {
         return Ok(back("invalid"));
     };
-    let validation_now = Timestamp::now().as_second();
-    let entry = ComposedEntry::new(validation_now, raw).with_reply_to(reply_to);
+
     match save_queued_entry(app_context::<Data>(cx), entry, validation_now).await {
         Ok(_) => Ok(back("saved")),
         Err(SaveError::Rejected(_)) => Ok(back("invalid")),
@@ -590,7 +709,18 @@ async fn entry_page(
     data: &Data,
     page_number: usize,
 ) -> std::result::Result<(Vec<DiaryEntry>, usize), String> {
-    store::entry_page(&open_db(data).await?, page_number).await
+    let mut entries = store::all_entries(&open_db(data).await?).await?;
+    entries.retain(|entry| !entry.deleted());
+    entries.sort_by_key(|entry| std::cmp::Reverse((entry.occurred_at(), entry.id.clone())));
+    let total = entries.len();
+    Ok((
+        entries
+            .into_iter()
+            .skip(page_number.saturating_sub(1) * PAGE_SIZE)
+            .take(PAGE_SIZE)
+            .collect(),
+        total,
+    ))
 }
 
 /// Fuzzy-rank every entry, then return one page of hit-list rows. A personal
@@ -601,7 +731,7 @@ async fn search_page(
     page_number: usize,
 ) -> std::result::Result<(Vec<SearchHit>, usize), String> {
     let entries = store::all_entries(&open_db(data).await?).await?;
-    let ranked = search::rank(needle, entries);
+    let ranked = search::rank(needle, entries.into_iter().filter(|entry| !entry.deleted()));
     let total = ranked.len();
     let hits = search::page_hits(&ranked, page_number)
         .into_iter()
@@ -615,7 +745,27 @@ async fn entry_by_id(data: &Data, id: &str) -> std::result::Result<Option<DiaryE
 }
 
 async fn remove_entry(data: &Data, id: &str) -> std::result::Result<(), String> {
-    store::remove_entry(&open_db(data).await?, id).await
+    let db = open_db(data).await?;
+    let Some(old) = store::entry_by_id(&db, id).await? else {
+        return Ok(());
+    };
+    if old.deleted() {
+        return Ok(());
+    }
+    let mut entry = old.composed.clone();
+    entry.body.clear();
+    entry.emoji = None;
+    entry.edit = Some(diary_core::entry::EntryEdit {
+        id: id.to_string(),
+        base: old.revision.clone(),
+        deleted: true,
+        previous: old.revision_history(),
+    });
+    entry.revision = Some(diary_core::entry::new_revision(&entry));
+    store::save_entry(&db, entry, Timestamp::now().as_second())
+        .await
+        .map(|_| ())
+        .map_err(|_| "delete did not commit".to_string())
 }
 
 /// The shared preamble both POSTs run before believing anything in the body.
@@ -662,6 +812,7 @@ fn parse_single_field(body: &[u8], name: &str) -> Option<String> {
 /// selected a synced parent, one optional permalink. Unknown or duplicate
 /// fields fail closed just like [`parse_single_field`]; the shared entry
 /// acceptance boundary trims and validates both values.
+#[cfg(test)]
 fn parse_write_form(body: &[u8]) -> Option<(String, Option<String>)> {
     let mut entry_body = None;
     let mut reply_to = None;
@@ -698,7 +849,7 @@ fn last_page(total: usize) -> usize {
 
 /// Bounce back to the diary with a static notice code — never echoed input.
 fn back(notice: &'static str) -> Response {
-    see_other(&format!("{PATH}?notice={notice}"))
+    see_other(&format!("/diary/now?notice={notice}"))
 }
 
 fn see_other(location: &str) -> Response {
@@ -869,10 +1020,10 @@ mod tests {
         assert_eq!(last_page(PAGE_SIZE + 1), 2);
         // URL shapes now live in views (the worker's SSR uses them too);
         // pinned here because these routes' redirects embed them.
-        assert_eq!(views::page_url(1), "/diary");
-        assert_eq!(views::page_url(3), "/diary?page=3");
-        assert_eq!(views::nav_url("coffee", 1), "/diary?q=coffee");
-        assert_eq!(views::nav_url("a b", 2), "/diary?q=a+b&page=2");
+        assert_eq!(views::page_url(1), "/diary/now");
+        assert_eq!(views::page_url(3), "/diary/now?page=3");
+        assert_eq!(views::nav_url("coffee", 1), "/diary/now?q=coffee");
+        assert_eq!(views::nav_url("a b", 2), "/diary/now?q=a+b&page=2");
         assert_eq!(
             views::entry_url("2026-07-27T10-00-00-04-00"),
             "/diary/2026-07-27T10-00-00-04-00"
@@ -936,7 +1087,7 @@ mod tests {
             "module_or_path: self.DIARY_SYNC.wasm",
             "diary_enqueue",
             "diary_schema_epoch",
-            "diary_snapshot",
+            "diary_now_data",
             "diary_discard",
             // the reconciliation contract: bubbles clone the server-shipped
             // template and are keyed by data-id — the page's whole dedupe

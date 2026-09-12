@@ -368,7 +368,66 @@ pub async fn enqueue(
     enqueued_at_ms: i64,
 ) -> Result<LocalEntry, OutboxError> {
     let entry = prepare_for_queue(entry).map_err(|_| OutboxError::InvalidBody)?;
-    place_local(db, &entry, STATE_PENDING, None, enqueued_at_ms).await
+    let row = place_local(db, &entry, STATE_PENDING, None, enqueued_at_ms).await?;
+    crate::emoji_usage::remember_entry(db, &row.composed)
+        .await
+        .map_err(OutboxError::Db)?;
+    Ok(row)
+}
+
+/// Revise a row in place, including an offline, not-yet-acknowledged create.
+/// Preserve the original remote base across several unsent edits. A rejected
+/// conflict keeps the local text for recovery rather than overwriting a peer.
+pub async fn revise(
+    db: &Db,
+    id: &str,
+    body: String,
+    emoji: Option<String>,
+    occurred_at: i64,
+    deleted: bool,
+    now_ms: i64,
+) -> Result<LocalEntry, OutboxError> {
+    let old = entry(db, id).await?.ok_or(OutboxError::InvalidBody)?;
+    if old.deleted() {
+        return Err(OutboxError::InvalidBody);
+    }
+    let base = if old.state != STATE_SYNCED {
+        old.edit
+            .as_ref()
+            .map(|edit| edit.base.clone())
+            .unwrap_or(old.revision.clone())
+    } else {
+        old.revision.clone()
+    };
+    let mut composed = old.composed.clone();
+    composed.body = body;
+    composed.emoji = emoji;
+    composed.occurred_at = Some(occurred_at);
+    composed.saved_at_ms = Some(now_ms);
+    let previous = old.revision_history();
+    composed.edit = Some(crate::entry::EntryEdit {
+        id: id.to_string(),
+        base,
+        deleted,
+        previous,
+    });
+    composed.revision = Some(write_fingerprint(&composed, now_ms));
+    let composed = prepare_for_queue(composed).map_err(|_| OutboxError::InvalidBody)?;
+    crate::emoji_usage::remember_entry(db, &old.composed)
+        .await
+        .map_err(OutboxError::Db)?;
+    crate::emoji_usage::remember_entry(db, &composed)
+        .await
+        .map_err(OutboxError::Db)?;
+    let row = LocalRow::new(composed, STATE_PENDING, None, now_ms);
+    db.query("UPDATE type::record('diary_entries', $id) CONTENT $row")
+        .bind(("id", id.to_string()))
+        .bind(("row", row))
+        .await
+        .map_err(db_error)?
+        .check()
+        .map_err(db_error)?;
+    entry(db, id).await?.ok_or(OutboxError::InvalidBody)
 }
 
 /// Every not-yet-synced row, oldest enqueue first — flush order and the page's
@@ -1031,7 +1090,10 @@ fn db_error(error: surrealdb::Error) -> OutboxError {
 }
 
 fn retryable_conflict(message: &str) -> bool {
-    message.contains("Resource busy") || message.contains("can be retried")
+    message.contains("Resource busy")
+        || message.contains("can be retried")
+        || message.contains("Transaction conflict")
+        || message.contains("not executed due to a failed transaction")
 }
 
 #[cfg(test)]

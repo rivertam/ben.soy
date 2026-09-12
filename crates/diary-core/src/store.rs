@@ -37,7 +37,15 @@ pub(crate) const TEST_SCHEMA: &str = "\
     DEFINE FIELD id ON diary_entries TYPE string;
     DEFINE FIELD written_at ON diary_entries TYPE int;
     DEFINE FIELD body ON diary_entries TYPE string;
-    DEFINE FIELD reply_to ON diary_entries TYPE option<string>;";
+    DEFINE FIELD reply_to ON diary_entries TYPE option<string>;
+    DEFINE FIELD emoji ON diary_entries TYPE option<string>;
+    DEFINE FIELD occurred_at ON diary_entries TYPE option<int>;
+    DEFINE FIELD saved_at_ms ON diary_entries TYPE option<int>;
+    DEFINE FIELD revision ON diary_entries TYPE option<string>;
+    DEFINE FIELD edit ON diary_entries TYPE option<object> FLEXIBLE;
+    DEFINE TABLE diary_emojis SCHEMAFULL PERMISSIONS NONE;
+    DEFINE FIELD emoji ON diary_emojis TYPE string;
+    DEFINE FIELD used_at_ms ON diary_emojis TYPE int;";
 
 /// The saved-or-deduped outcome [`save_entry`] reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +208,13 @@ pub async fn save_entry(
     validation_now: i64,
 ) -> Result<SavedWrite, SaveError> {
     let entry = accept_for_save(entry, validation_now).map_err(SaveError::Rejected)?;
+    if entry.edit.is_some() {
+        let saved = save_revision(db, entry).await?;
+        crate::emoji_usage::remember_entry(db, &saved.composed)
+            .await
+            .map_err(SaveError::Store)?;
+        return Ok(saved);
+    }
     let placed = placement::place(
         &entry,
         |epoch| {
@@ -209,11 +224,79 @@ pub async fn save_entry(
         |candidate| async move { insert_entry(db, &candidate).await.map_err(SaveError::Store) },
     )
     .await?;
-    match placed {
+    let saved = match placed {
         Placement::Placed(entry) => Ok(SavedWrite::new(entry, false)),
         Placement::Deduped(entry) => Ok(SavedWrite::new(entry, true)),
         Placement::Exhausted => Err(SaveError::Exhausted),
+    }?;
+    crate::emoji_usage::remember_entry(db, &saved.composed)
+        .await
+        .map_err(SaveError::Store)?;
+    Ok(saved)
+}
+
+async fn save_revision(db: &Db, entry: ComposedEntry) -> Result<SavedWrite, SaveError> {
+    let edit = entry.edit.as_ref().expect("mutation branch");
+    let id = edit.id.clone();
+    if entry_key(entry.written_at).as_deref() != Some(&id) {
+        return Err(SaveError::Rejected(
+            crate::entry::EntryRejection::InvalidBody,
+        ));
     }
+    for _ in 0..5 {
+        let old = entry_by_id(db, &id).await.map_err(SaveError::Store)?;
+        if let Some(old) = old {
+            if old.is_replay_of(&entry.content) {
+                return Ok(SavedWrite::new(old, true));
+            }
+            if old.deleted()
+                || (old.revision != edit.base
+                    && !old
+                        .revision
+                        .as_ref()
+                        .is_some_and(|v| edit.previous.contains(v)))
+            {
+                return Err(SaveError::Exhausted);
+            }
+            crate::emoji_usage::remember_entry(db, &old.composed)
+                .await
+                .map_err(SaveError::Store)?;
+            let updated = db
+                .query(
+                    "UPDATE type::record('diary_entries', $id) CONTENT $entry
+                 WHERE revision = $base AND edit.deleted != true RETURN VALUE record::id(id)",
+                )
+                .bind(("id", id.clone()))
+                .bind(("entry", entry.clone()))
+                .bind(("base", old.revision.clone()))
+                .await;
+            match updated {
+                Ok(response) => match response.check() {
+                    Ok(mut response) => {
+                        let ids: Vec<String> = response
+                            .take(0)
+                            .map_err(|e| SaveError::Store(e.to_string()))?;
+                        if ids.contains(&id) {
+                            return Ok(SavedWrite::new(DiaryEntry::new(id, entry), false));
+                        }
+                    }
+                    Err(error) if error.to_string().contains("Transaction conflict") => continue,
+                    Err(error) => return Err(SaveError::Store(error.to_string())),
+                },
+                Err(error) => return Err(SaveError::Store(error.to_string())),
+            }
+        } else {
+            // An unsent create can be edited or deleted offline. A tombstone
+            // occupies its predicted key so the original cannot resurrect it.
+            let row = DiaryEntry::new(id.clone(), entry.clone());
+            if insert_entry(db, &row).await.is_ok() {
+                return Ok(SavedWrite::new(row, false));
+            }
+        }
+    }
+    Err(SaveError::Store(
+        "diary revision could not be committed".into(),
+    ))
 }
 
 #[cfg(test)]

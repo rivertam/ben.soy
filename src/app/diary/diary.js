@@ -56,6 +56,8 @@ function init() {
   hookForm();
   hookDiscards();
   hookReplies();
+  hookNow();
+  initToday();
   positionTranscript();
   renderFromStore();
   kick();
@@ -177,74 +179,52 @@ function clearReplyTarget(box) {
 
 /* The synchronous half: the bubble is in the DOM before ANY await, so the
  * message never blinks out of existence while wasm instantiates. */
-function save(form, box) {
+async function save(form, box) {
   const raw = box.value;
-  if (!raw.trim()) {
+  const emojiBox = document.getElementById("diary-emoji");
+  const emoji = emojiBox.value.trim();
+  const status = document.getElementById("diary-now-status");
+  if (!raw.trim() && !emoji) {
+    status.textContent = "Add an emoji, some words, or both.";
     return;
   }
+  if (form.dataset.saving) return;
+  form.dataset.saving = "true";
   const parent = replyTarget();
-  const draft = {
-    id: null,
-    written_at: Math.floor(Date.now() / 1000),
-    body: raw.replace(/\r\n?/g, "\n").trim(),
-    state: "draft",
-    reason: null,
-  };
-  if (parent) {
-    draft.reply_to = parent;
-  }
-  const bubble = appendBubble(draft, true);
-  box.value = "";
-  clearReplyTarget(box);
-  persist(form, box, raw, draft, bubble, parent);
-}
-
-async function persist(form, box, raw, draft, bubble, parent) {
+  let wasm;
   try {
-    const wasm = await ensureWasm();
-    const content = { written_at: draft.written_at, body: raw };
-    // Absence is the canonical top-level-entry shape. In particular, do not
-    // send a null optional field through the exact wire decoder.
-    if (parent) {
-      content.reply_to = parent;
-    }
-    const entry = JSON.parse(
-      await withStoreLock(() => wasm.diary_enqueue(
-        JSON.stringify({
-          schema_epoch: wasm.diary_schema_epoch(),
-          entry: content,
-          enqueued_at_ms: Date.now(),
-        }),
-      )),
-    );
-    const existing = byId(entry.id);
-    if (existing && existing !== bubble) {
-      // A same-second twin (double-tap): the store returned the original
-      // row, whose bubble is already on the page.
-      if (bubble) {
-        bubble.remove();
-      }
-      hideQueueIfEmpty();
-    } else {
-      applyEntry(bubble, entry);
-    }
-    kick();
+    wasm = await ensureWasm();
   } catch (error) {
-    // The Rust store refused (no wasm build served, private-mode IndexedDB,
-    // exhausted probes). Put the text back and fall back to the plain form
-    // POST — but never while offline, where submitting would only lose it.
-    if (bubble) {
-      bubble.remove();
-    }
-    hideQueueIfEmpty();
-    box.value = box.value ? raw + "\n\n" + box.value : raw;
-    if (parent) {
-      setReplyTarget(parent, null);
-    }
+    delete form.dataset.saving;
     if (navigator.onLine === false) {
+      status.textContent = "The device store is unavailable. Your entry is still here.";
       return;
     }
     form.submit();
+    return;
+  }
+  try {
+    const now = Date.now();
+    const second = Math.floor(Date.now() / 1000);
+    const content = { written_at: second, body: raw, saved_at_ms: now,
+      occurred_at: second };
+    if (emoji) content.emoji = emoji;
+    if (parent) content.reply_to = parent;
+    const entry = JSON.parse(await withStoreLock(() => wasm.diary_enqueue(JSON.stringify({
+      schema_epoch: wasm.diary_schema_epoch(), entry: content, enqueued_at_ms: now,
+    }))));
+    if (box.value === raw) box.value = "";
+    emojiBox.value = "";
+    updateEmojiSelection();
+    clearReplyTarget(box);
+    appendBubble(entry, true);
+    status.textContent = "Saved on this device.";
+    await renderFromStore();
+    kick();
+  } catch (error) {
+    status.textContent = "Couldn’t save. Use one emoji, some words, or both; your entry is still here.";
+  } finally {
+    delete form.dataset.saving;
   }
 }
 
@@ -291,8 +271,14 @@ function applyEntry(bubble, entry) {
   }
   const body = bubble.querySelector(".diary-body");
   if (body) {
-    body.textContent = entry.body;
+    body.textContent = entry.edit?.deleted ? "The deletion couldn’t sync. Discard this failed change to restore the saved entry." : entry.body;
   }
+  const emoji = bubble.querySelector(".diary-entry-emoji");
+  if (emoji) { emoji.textContent = entry.emoji || ""; emoji.hidden = !entry.emoji; }
+  bubble.dataset.emoji = entry.emoji || "";
+  bubble.dataset.occurredAt = entry.occurred_at ?? entry.written_at;
+  const edit = bubble.querySelector(".diary-edit-now");
+  if (edit) edit.hidden = !entry.id || entry.edit?.deleted;
   const parent = entry.reply_to || "";
   bubble.dataset.replyTo = parent;
   const replyTo = bubble.querySelector(".diary-reply-to");
@@ -357,6 +343,11 @@ function stateLabel(entry) {
 /* Prefer the id's embedded Eastern wall clock (the permalink's truth);
  * fall back to the device clock for drafts and synthetic keys. */
 function stampOf(entry) {
+  if (entry.occurred_at != null) {
+    return new Date(entry.occurred_at * 1000).toLocaleString("en-US", {
+      timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+    });
+  }
   const id = entry.id || "";
   const match =
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-\d{2}-\d{2}-\d{2}$/.exec(id);
@@ -399,40 +390,152 @@ function hideQueueIfEmpty() {
  * bubbles, refresh states and labels, drop bubbles for rows discarded
  * elsewhere. Server-rendered articles always win a duplicate id (they sit
  * earlier in the document, so byId prefers them). */
+const nowRows = new Map();
+
 async function renderFromStore() {
-  let entries;
+  let data;
   try {
     const wasm = await ensureWasm();
-    entries = JSON.parse(await withStoreLock(() => wasm.diary_snapshot()));
-  } catch (error) {
-    return; // no store, no bubbles — the no-JS diary
+    data = JSON.parse(await withStoreLock(() => wasm.diary_now_data()));
+  } catch (error) { return; }
+  nowRows.clear();
+  for (const entry of data.entries) nowRows.set(entry.id, entry);
+  const recent = document.getElementById("diary-recent-emojis");
+  const emojiTemplate = document.getElementById("diary-emoji-button");
+  if (recent && emojiTemplate) {
+    recent.replaceChildren(...data.recent.map((emoji) => {
+      const button = emojiTemplate.content.firstElementChild.cloneNode(true);
+      button.dataset.emoji = emoji;
+      button.textContent = emoji;
+      button.setAttribute("aria-label", "Select " + emoji);
+      return button;
+    }));
   }
-  const known = new Set();
-  for (const entry of entries) {
-    known.add(entry.id);
-    const existing = byId(entry.id);
-    if (!existing) {
-      appendBubble(entry, false);
-    } else if (existing.dataset.state !== "synced") {
-      applyEntry(existing, entry);
-    }
-  }
+  updateEmojiSelection();
+  const room = document.querySelector(".diary-room");
+  if (!room) return;
+  const entries = data.entries.filter((entry) => !entry.edit?.deleted || entry.state === "failed");
+  const page = Number(room.dataset.page) || 1;
+  const sorted = [...entries].sort((a, b) =>
+    (b.occurred_at ?? b.written_at) - (a.occurred_at ?? a.written_at) || b.id.localeCompare(a.id));
+  const wanted = room.dataset.search ? entries.filter((entry) => entry.state !== "synced")
+    : sorted.slice((page - 1) * data.page_size, page * data.page_size).reverse();
+  // Until the first pull, the server HTML may contain rows not yet mirrored.
+  if (!data.entries.length) return;
   const queue = document.getElementById("diary-queue");
-  if (!queue) {
-    return;
+  const history = room.querySelector(".diary-history");
+  const target = history || queue;
+  const keep = new Set(wanted.map((entry) => entry.id));
+  for (const bubble of room.querySelectorAll(".diary-message[data-id]")) {
+    if (room.dataset.search && bubble.dataset.state === "synced"
+      && !nowRows.get(bubble.dataset.id)?.edit?.deleted) continue;
+    if (!keep.has(bubble.dataset.id)) bubble.remove();
   }
-  for (const bubble of Array.from(queue.children)) {
-    const id = bubble.dataset.id;
-    if (!id) {
-      continue; // a draft still waiting on its enqueue
-    }
-    const duplicate = byId(id) !== bubble;
-    const gone = bubble.dataset.state !== "synced" && !known.has(id);
-    if (duplicate || gone) {
-      bubble.remove();
-    }
+  for (const entry of wanted) {
+    const bubble = byId(entry.id) || appendBubble(entry, false);
+    applyEntry(bubble, entry);
+    if (bubble) target.appendChild(bubble);
   }
   hideQueueIfEmpty();
+  const empty = document.getElementById("diary-empty");
+  if (empty) empty.hidden = entries.length > 0;
+}
+
+function updateEmojiSelection() {
+  const input = document.getElementById("diary-emoji");
+  if (!input) return;
+  const emoji = input.value.trim();
+  const preview = document.getElementById("diary-emoji-preview");
+  if (preview) preview.textContent = emoji || "☺";
+  const trigger = document.querySelector("#diary-emoji-picker > summary");
+  if (trigger) {
+    trigger.setAttribute("aria-label", emoji ? "Change emoji " + emoji : "Choose an emoji");
+    trigger.title = emoji ? "Change emoji " + emoji : "Choose an emoji";
+  }
+  for (const choice of document.querySelectorAll("button[data-emoji]")) {
+    choice.setAttribute("aria-pressed", String(choice.dataset.emoji === emoji));
+  }
+}
+
+function hookNow() {
+  const picker = document.getElementById("diary-emoji-picker");
+  picker?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target.id === "diary-emoji") {
+      event.preventDefault();
+      updateEmojiSelection();
+      picker.open = false;
+      document.getElementById("diary-body")?.focus();
+    }
+    if (event.key === "Escape" && picker.open) {
+      event.preventDefault();
+      picker.open = false;
+      picker.querySelector("summary").focus();
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (picker?.open && !picker.contains(event.target)) picker.open = false;
+  });
+  document.getElementById("diary-emoji")?.addEventListener("input", updateEmojiSelection);
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-emoji]");
+    if (button) {
+      const input = document.getElementById("diary-emoji");
+      input.value = input.value === button.dataset.emoji ? "" : button.dataset.emoji;
+      updateEmojiSelection();
+      if (picker) picker.open = false;
+      document.getElementById("diary-body")?.focus();
+    }
+    const edit = event.target.closest(".diary-edit-now");
+    if (!edit) return;
+    const id = edit.closest(".diary-message").dataset.id;
+    await renderFromStore();
+    const row = nowRows.get(id);
+    const form = document.getElementById("diary-edit");
+    const dialog = document.getElementById("diary-edit-dialog");
+    if (!row || !form || !dialog) return;
+    const wasm = await ensureWasm();
+    form.elements.path.value = row.id;
+    form.elements.revision.value = row.revision || "";
+    form.elements.body.value = row.body;
+    form.elements.emoji.value = row.emoji || "";
+    form.elements.at.value = wasm.diary_local_time(BigInt(row.occurred_at ?? row.written_at));
+    document.getElementById("diary-edit-status").textContent = "";
+    dialog.showModal();
+  });
+  document.getElementById("diary-edit-cancel")?.addEventListener("click", () => {
+    document.getElementById("diary-edit-dialog").close();
+  });
+  const form = document.getElementById("diary-edit");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const deleted = event.submitter?.name === "delete";
+    if (deleted && !window.confirm("Delete this Now entry?")) return;
+    if (form.dataset.saving) return;
+    form.dataset.saving = "true";
+    const status = document.getElementById("diary-edit-status");
+    try {
+      const wasm = await ensureWasm();
+      const command = { id: form.elements.path.value, body: form.elements.body.value,
+        emoji: form.elements.emoji.value.trim() || null,
+        occurred_at: Number(wasm.diary_parse_time(form.elements.at.value)),
+        deleted, now_ms: Date.now(), expected_revision: form.elements.revision.value || null };
+      const row = JSON.parse(await withStoreLock(() => wasm.diary_revise(JSON.stringify(command))));
+      form.elements.revision.value = row.revision || "";
+      status.textContent = deleted ? "Deleted on this device." : "Saved on this device.";
+      document.getElementById("diary-edit-dialog")?.close();
+      if (deleted) {
+        byId(row.id)?.remove();
+        if (!document.getElementById("diary-edit-dialog")) {
+          for (const input of form.elements) input.disabled = true;
+        }
+      }
+      await renderFromStore();
+      kick();
+    } catch (error) {
+      status.textContent = error.message || "Couldn’t save. Your entry is still here.";
+    } finally { delete form.dataset.saving; }
+  });
 }
 
 /* A flush report: apply the delivered identities (the rare server bump
@@ -453,12 +556,14 @@ function onReport(report) {
     });
   }
   renderFromStore();
+  refreshCues().catch(() => {});
 }
 
 /* ---------------------------------------------------------- machinery ---- */
 
 function refresh() {
   renderFromStore();
+  refreshToday();
   kick();
 }
 
@@ -589,4 +694,159 @@ async function primeCaches() {
   } catch (error) {
     // best-effort
   }
+}
+
+/* Today is a Rust session with a DOM adapter. Browser facts/events go in;
+ * view state and effects come out. JS does not own drafts, budgets, save
+ * commands, connection policy, acknowledgement checks, or closure rules. */
+let todayEditor = null;
+
+async function initToday() {
+  const root = document.getElementById("diary-today");
+  if (!root) return;
+  const status = document.getElementById("diary-today-status");
+  try {
+    const wasm = await ensureWasm();
+    todayEditor = {
+      root, wasm, status, box: document.getElementById("diary-reflection"),
+      session: new wasm.DiaryToday(root.dataset.day, root.dataset.reflection || "null"),
+      view: null, requests: new Set(), releaseLock: null,
+    };
+    document.getElementById("diary-start").addEventListener("click", () => dispatchToday({ type: "start" }));
+    document.getElementById("diary-finish").addEventListener("click", () => dispatchToday({ type: "finish" }));
+    const box = todayEditor.box;
+    const interact = () => dispatchToday({ type: "interact" });
+    const pause = () => dispatchToday({ type: "pause" });
+    for (const name of ["keydown", "pointerdown", "wheel", "compositionstart", "compositionupdate"]) {
+      box.addEventListener(name, interact, { passive: true });
+    }
+    box.addEventListener("pointermove", (event) => { if (event.buttons) interact(); });
+    box.addEventListener("beforeinput", (event) => {
+      interact();
+      if (todayEditor.view.read_only) event.preventDefault();
+    });
+    box.addEventListener("input", () => dispatchToday({ type: "input", body: box.value }));
+    box.addEventListener("blur", pause);
+    window.addEventListener("blur", pause);
+    window.addEventListener("pagehide", pause);
+    window.addEventListener("offline", () => dispatchToday({ type: "offline" }));
+    window.addEventListener("beforeunload", (event) => {
+      pause();
+      if (todayEditor.view.warn_before_leave) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") pause();
+    });
+    setInterval(() => dispatchToday({ type: "tick" }), 100);
+    refreshToday();
+    refreshCues().catch(() => {});
+  } catch (error) {
+    status.textContent = "Connect and reload to start Today. Your saved reflection stays available on the server.";
+  }
+}
+
+function refreshToday() {
+  return dispatchToday({ type: "refresh" });
+}
+
+function dispatchToday(event) {
+  const ed = todayEditor;
+  if (!ed) return;
+  const output = JSON.parse(ed.session.dispatch(JSON.stringify({ event, environment: {
+    now_ms: performance.now(), wall_ms: Date.now(), visible: document.visibilityState === "visible",
+    focused: document.hasFocus(), online: navigator.onLine !== false,
+  } })));
+  ed.view = output.view;
+  paintToday(output);
+  for (const effect of output.effects) {
+    switch (effect.type) {
+      case "request": {
+        const request = todayRequest(effect).then((snapshot) => dispatchToday({ type: "response", id: effect.id, snapshot }))
+          .catch((error) => dispatchToday({ type: "failed", id: effect.id, reason: error.message }))
+          .finally(() => ed.requests.delete(request));
+        ed.requests.add(request);
+        break;
+      }
+      case "acquire_lock":
+        navigator.locks.request("diary-today-editor", { ifAvailable: true }, async (lock) => {
+          if (!lock) return void dispatchToday({ type: "lock", acquired: false });
+          const held = new Promise((resolve) => { ed.releaseLock = resolve; });
+          try {
+            dispatchToday({ type: "lock", acquired: true });
+            await held;
+          } finally { ed.releaseLock = null; }
+        }).catch(() => dispatchToday({ type: "lock", acquired: false }));
+        break;
+      case "release_lock": ed.releaseLock?.(); break;
+      case "focus_editor": ed.box.focus(); break;
+    }
+  }
+}
+
+function todayRequest(effect) {
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timeout = setTimeout(() => {
+      channel.port1.close(); reject(new Error("offline"));
+    }, effect.timeout_ms);
+    const fail = (error) => { clearTimeout(timeout); channel.port1.close(); reject(error); };
+    channel.port1.onmessage = (event) => {
+      clearTimeout(timeout);
+      channel.port1.close();
+      if (event.data.ok) resolve(event.data.snapshot);
+      else reject(new Error(event.data.error || "offline"));
+    };
+    navigator.serviceWorker.ready.then((registration) => {
+      if (!registration.active) return fail(new Error("offline"));
+      const command = effect.command ? JSON.stringify(effect.command) : "";
+      registration.active.postMessage({ type: "today-request", command, day: effect.day }, [channel.port2]);
+    }).catch(fail);
+  });
+}
+
+function paintToday(output) {
+  const ed = todayEditor;
+  const view = output.view;
+  if (output.replace_body !== null) ed.box.value = output.replace_body;
+  ed.box.readOnly = view.read_only;
+  ed.status.textContent = view.status;
+  ed.root.dataset.closed = String(view.closed);
+  document.getElementById("diary-time").textContent = view.time;
+  document.getElementById("diary-clock-state").textContent = view.phase;
+  document.getElementById("diary-writing").hidden = !view.editor_visible;
+  document.getElementById("diary-prompts").hidden = !view.prompts_visible;
+  const finish = document.getElementById("diary-finish");
+  finish.hidden = !view.finish_visible;
+  finish.disabled = view.finish_disabled;
+  const start = document.getElementById("diary-start");
+  start.hidden = !view.start_visible;
+  start.disabled = view.start_disabled;
+  start.textContent = view.start_label;
+  start.setAttribute("aria-expanded", String(view.prompts_visible));
+  const cell = ed.root.querySelector('.diary-heatmap [data-day="' + CSS.escape(ed.root.dataset.day) + '"]');
+  if (cell) {
+    cell.dataset.status = view.day_status;
+    cell.title = ed.root.dataset.day + ": " + view.day_status;
+    cell.setAttribute("aria-label", cell.title);
+  }
+}
+
+async function refreshCues() {
+  const ed = todayEditor;
+  if (!ed) return;
+  const data = JSON.parse(await withStoreLock(() => ed.wasm.diary_now_cues(ed.root.dataset.day)));
+  if (!data.has_history) return;
+  const target = document.getElementById("diary-cues");
+  const template = document.getElementById("diary-cue-template");
+  target.replaceChildren(...data.cues.map((entry) => {
+    const bubble = template.content.firstElementChild.cloneNode(true);
+    applyEntry(bubble, entry);
+    bubble.querySelector(".diary-edit-now").hidden = true;
+    bubble.querySelector(".diary-reply").hidden = true;
+    return bubble;
+  }));
+  if (!data.cues.length) target.textContent = "No Now entries for this day.";
 }

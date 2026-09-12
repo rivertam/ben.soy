@@ -32,6 +32,16 @@ const MIGRATIONS: &[Migration] = &[
         schema_sql: include_str!("outbox_migrations/0002_replies.surql"),
         data_sql: "",
     },
+    Migration {
+        epoch: 3,
+        schema_sql: include_str!("outbox_migrations/0003_now_today.surql"),
+        data_sql: "",
+    },
+    Migration {
+        epoch: 4,
+        schema_sql: include_str!("outbox_migrations/0004_today_live.surql"),
+        data_sql: "",
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "\
@@ -176,7 +186,7 @@ mod tests {
         let db = db().await;
         apply(&db).await.unwrap();
         apply(&db).await.unwrap();
-        assert_eq!(applied_epochs(&db).await.unwrap(), [1, 2]);
+        assert_eq!(applied_epochs(&db).await.unwrap(), [1, 2, 3, 4]);
     }
 
     #[tokio::test]
@@ -265,7 +275,7 @@ mod tests {
         assert_eq!(rows[0].body, "preserved");
         assert_eq!(rows[0].reply_to, None);
         assert_eq!(rows[0].write_fingerprint, fingerprint);
-        assert_eq!(applied_epochs(&db).await.unwrap(), [1, 2]);
+        assert_eq!(applied_epochs(&db).await.unwrap(), [1, 2, 3, 4]);
     }
 
     #[tokio::test]

@@ -56,7 +56,7 @@ where
         let written_at = requested.written_at + offset;
         let id = key_for(written_at)?;
         match read(id.clone()).await? {
-            Some(existing) if existing.has_content(&requested.content) => {
+            Some(existing) if existing.is_replay_of(&requested.content) => {
                 return Ok(Placement::Deduped(existing));
             }
             Some(_) => continue,
@@ -67,7 +67,7 @@ where
         match create(candidate.clone()).await {
             Ok(()) => return Ok(Placement::Placed(candidate)),
             Err(create_error) => match read(id).await? {
-                Some(existing) if existing.has_content(&requested.content) => {
+                Some(existing) if existing.is_replay_of(&requested.content) => {
                     return Ok(Placement::Deduped(existing));
                 }
                 Some(_) => continue,

@@ -360,25 +360,28 @@ mod tests {
     /// between those two operations.
     #[test]
     fn page_and_worker_fence_every_device_store_entry_with_one_lock() {
-        for (call, guarded) in [
-            (
-                "wasm.diary_enqueue",
-                "withStoreLock(() => wasm.diary_enqueue",
-            ),
-            (
-                "wasm.diary_snapshot",
-                "withStoreLock(() => wasm.diary_snapshot",
-            ),
-            (
-                "wasm.diary_discard",
-                "withStoreLock(() => wasm.diary_discard",
-            ),
+        for (method, count) in [
+            ("diary_enqueue", 1),
+            ("diary_now_data", 1),
+            ("diary_now_cues", 1),
+            ("diary_revise", 1),
+            ("diary_discard", 1),
         ] {
-            assert_eq!(DIARY_JS.matches(call).count(), 1, "unexpected {call} call");
-            assert!(
-                DIARY_JS.contains(guarded),
-                "{call} escaped the diary-store lock"
+            let call = format!("wasm.{method}(");
+            assert_eq!(
+                DIARY_JS.matches(&call).count(),
+                count,
+                "unexpected {method} call"
             );
+            let guarded = ["wasm", "ed.wasm"]
+                .into_iter()
+                .map(|receiver| {
+                    DIARY_JS
+                        .matches(&format!("withStoreLock(() => {receiver}.{method}("))
+                        .count()
+                })
+                .sum::<usize>();
+            assert_eq!(guarded, count, "{method} escaped the diary-store lock");
         }
         assert!(SW_JS.contains(
             "navigator.locks.request(STORE_LOCK, () =>\n        wasm_bindgen.diary_render"
@@ -391,6 +394,9 @@ mod tests {
     fn pwa_routes_stay_unlisted() {
         for path in [
             "/sw.js",
+            "/diary/now",
+            "/diary/today",
+            "/api/diary/today",
             "/diary.webmanifest",
             "/fitness/sw.js",
             "/fitness.webmanifest",

@@ -1154,6 +1154,7 @@ name = "diary-core"
 version = "0.1.0"
 dependencies = [
  "eastern-time",
+ "emojis",
  "jiff",
  "serde",
  "serde_json",
@@ -1398,6 +1399,15 @@ name = "email_address"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
+
+[[package]]
+name = "emojis"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a4d5d50b0b58df5173d8ff1192b4d1422ceae5d981b30d4b6f8ed1d673a2bc4"
+dependencies = [
+ "phf",
+]
 
 [[package]]
 name = "equivalent"

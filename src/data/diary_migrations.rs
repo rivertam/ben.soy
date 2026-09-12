@@ -45,6 +45,54 @@ const MIGRATIONS: &[Migration] = &[
             indexes: &["DEFINE INDEX diary_entries_written_at ON diary_entries FIELDS written_at"],
         },
     },
+    Migration {
+        epoch: 3,
+        sql: include_str!("diary_migrations/0003_now_today.surql"),
+        expected_schema: SchemaExpectation {
+            table: "DEFINE TABLE diary_entries TYPE NORMAL SCHEMAFULL PERMISSIONS FOR select, create, update WHERE $access = 'diary_sync' AND $token.diary_schema_epoch = 3, FOR delete NONE",
+            fields: &[
+                "DEFINE FIELD body ON diary_entries TYPE string ASSERT string::len($value) <= 65536 PERMISSIONS FULL",
+                "DEFINE FIELD edit ON diary_entries TYPE none | object PERMISSIONS FULL",
+                "DEFINE FIELD edit.base ON diary_entries TYPE none | string PERMISSIONS FULL",
+                "DEFINE FIELD edit.deleted ON diary_entries TYPE bool PERMISSIONS FULL",
+                "DEFINE FIELD edit.id ON diary_entries TYPE string PERMISSIONS FULL",
+                "DEFINE FIELD edit.previous ON diary_entries TYPE array<string> DEFAULT [] PERMISSIONS FULL",
+                "DEFINE FIELD edit.previous.* ON diary_entries TYPE string PERMISSIONS FULL",
+                "DEFINE FIELD emoji ON diary_entries TYPE none | string PERMISSIONS FULL",
+                "DEFINE FIELD id ON diary_entries TYPE string ASSERT string::matches(record::id($value), '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
+                "DEFINE FIELD occurred_at ON diary_entries TYPE none | int PERMISSIONS FULL",
+                "DEFINE FIELD reply_to ON diary_entries TYPE none | string ASSERT $value = NONE OR string::matches($value, '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
+                "DEFINE FIELD revision ON diary_entries TYPE none | string PERMISSIONS FULL",
+                "DEFINE FIELD saved_at_ms ON diary_entries TYPE none | int PERMISSIONS FULL",
+                "DEFINE FIELD written_at ON diary_entries TYPE int ASSERT $value >= 0 AND $value <= 253402300799 PERMISSIONS FULL",
+            ],
+            indexes: &["DEFINE INDEX diary_entries_written_at ON diary_entries FIELDS written_at"],
+        },
+    },
+    Migration {
+        epoch: 4,
+        sql: include_str!("diary_migrations/0004_today_live.surql"),
+        expected_schema: SchemaExpectation {
+            table: "DEFINE TABLE diary_entries TYPE NORMAL SCHEMAFULL PERMISSIONS FOR select, create, update WHERE $access = 'diary_sync' AND $token.diary_schema_epoch = 4, FOR delete NONE",
+            fields: &[
+                "DEFINE FIELD body ON diary_entries TYPE string ASSERT string::len($value) <= 65536 PERMISSIONS FULL",
+                "DEFINE FIELD edit ON diary_entries TYPE none | object PERMISSIONS FULL",
+                "DEFINE FIELD edit.base ON diary_entries TYPE none | string PERMISSIONS FULL",
+                "DEFINE FIELD edit.deleted ON diary_entries TYPE bool PERMISSIONS FULL",
+                "DEFINE FIELD edit.id ON diary_entries TYPE string PERMISSIONS FULL",
+                "DEFINE FIELD edit.previous ON diary_entries TYPE array<string> DEFAULT [] PERMISSIONS FULL",
+                "DEFINE FIELD edit.previous.* ON diary_entries TYPE string PERMISSIONS FULL",
+                "DEFINE FIELD emoji ON diary_entries TYPE none | string PERMISSIONS FULL",
+                "DEFINE FIELD id ON diary_entries TYPE string ASSERT string::matches(record::id($value), '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
+                "DEFINE FIELD occurred_at ON diary_entries TYPE none | int PERMISSIONS FULL",
+                "DEFINE FIELD reply_to ON diary_entries TYPE none | string ASSERT $value = NONE OR string::matches($value, '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{2}-[0-9]{2}$') PERMISSIONS FULL",
+                "DEFINE FIELD revision ON diary_entries TYPE none | string PERMISSIONS FULL",
+                "DEFINE FIELD saved_at_ms ON diary_entries TYPE none | int PERMISSIONS FULL",
+                "DEFINE FIELD written_at ON diary_entries TYPE int ASSERT $value >= 0 AND $value <= 253402300799 PERMISSIONS FULL",
+            ],
+            indexes: &["DEFINE INDEX diary_entries_written_at ON diary_entries FIELDS written_at"],
+        },
+    },
 ];
 
 struct SchemaExpectation {
@@ -515,7 +563,7 @@ mod tests {
                 .await
                 .is_none()
         );
-        assert!(create_as(&db, None, claimless_id).await.is_some());
+        assert!(create_as(&db, None, claimless_id).await.is_none());
         assert!(
             create_as_with_reply(&db, None, claimless_reply_id, Some(current_id))
                 .await
@@ -524,11 +572,100 @@ mod tests {
 
         assert_eq!(
             ids_as(&db, Some(CURRENT_SCHEMA_EPOCH)).await,
-            [current_id, reply_id, claimless_id]
+            [current_id, reply_id]
         );
         assert!(ids_as(&db, Some(CURRENT_SCHEMA_EPOCH - 1)).await.is_empty());
         assert!(ids_as(&db, Some(CURRENT_SCHEMA_EPOCH + 1)).await.is_empty());
-        assert_eq!(ids_as(&db, None).await, [current_id, claimless_id]);
+        assert!(ids_as(&db, None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_today_migration_preserves_reflection_text_and_spent_time() {
+        let db = db().await;
+        db.query(LEDGER_SCHEMA).await.unwrap().check().unwrap();
+        for migration in &MIGRATIONS[..3] {
+            apply_one(&db, migration).await.unwrap();
+        }
+        db.query(
+            "CREATE diary_days:`2026-09-10` CONTENT {
+            day: '2026-09-10', body: 'existing private reflection', used_ms: 123456,
+            closed: true, closed_at: 1789041600, updated_at: 1789041600,
+            revision: 7, generation: 2
+        }",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        apply(&db).await.unwrap();
+        let snapshot = diary_core::today_store::snapshot(&db).await.unwrap();
+        assert_eq!(snapshot.days.len(), 1);
+        let day = &snapshot.days[0];
+        assert_eq!(day.body, "existing private reflection");
+        assert_eq!(day.used_ms, 123456);
+        assert_eq!(day.revision, 7);
+        assert!(day.closed);
+    }
+
+    #[tokio::test]
+    async fn direct_tokens_cannot_read_or_bypass_daily_writing_rules() {
+        use diary_core::today_store::{self, Action, Command};
+        let db = db().await;
+        apply(&db).await.unwrap();
+        define_test_access(&db).await;
+        let now = "2026-09-10T12:00:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_second();
+        today_store::apply(
+            &db,
+            &Command::new(Action::Save {
+                day: "2026-09-10".into(),
+                body: "private daily reflection".into(),
+                used_ms: 0,
+                close: false,
+                expected_revision: 0,
+            }),
+            now,
+        )
+        .await
+        .unwrap();
+        let current = direct_session(&db, Some(CURRENT_SCHEMA_EPOCH)).await;
+        let mut response = current
+            .query(
+                "SELECT VALUE body FROM diary_days;
+             SELECT VALUE device FROM diary_writer;
+             UPDATE diary_days SET body = 'bypass' RETURN VALUE body;
+             UPDATE diary_writer SET device = '' RETURN VALUE device;",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        for index in 0..4 {
+            assert!(response.take::<Vec<String>>(index).unwrap().is_empty());
+        }
+        let snapshot = today_store::snapshot(&db).await.unwrap();
+        assert_eq!(snapshot.days[0].body, "private daily reflection");
+
+        let mut now_entry = diary_core::entry::ComposedEntry::new(now, "");
+        now_entry.emoji = Some("😌".into());
+        assert!(
+            diary_core::store::save_entry(&current, now_entry, now)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            diary_core::emoji_usage::choices(&current).await.unwrap(),
+            ["😌"]
+        );
+        let stale = direct_session(&db, Some(CURRENT_SCHEMA_EPOCH - 1)).await;
+        assert!(
+            diary_core::emoji_usage::choices(&stale)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

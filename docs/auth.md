@@ -67,15 +67,18 @@ mirror that validation as a backstop.
 
 `/diary` (`src/app/diary.rs`) is admin-only in the same way but lives at
 its own path: the admin's private diary, database-backed
-(`diary_entries`), deliberately NOT a `HIDDEN_PAGES` entry — a registry
-entry would render a grant form for it here, and one mistyped grant would
+(`diary_entries` for Now and `diary_days` for Today), deliberately NOT a
+`HIDDEN_PAGES` entry — a registry entry would render a grant form for it here,
+and one mistyped grant would
 share a diary. Its `/admin` tool card is its one listing; entry permalinks
 reuse the lifting archive's Eastern public-path shape as record keys.
 
 ## The diary as an installable offline app (PWA)
 
-`/diary` installs on Android as a standalone app with an offline write
-queue. `src/app/pwa.rs` serves the stable pieces (`/sw.js`,
+`/diary` installs on Android as a standalone app with two lanes:
+`/diary/now` keeps the existing device-local mirror/outbox; `/diary/today`
+requires a live connection and autosaves only to the server. `src/app/pwa.rs` serves the stable
+pieces (`/sw.js`,
 `/diary.webmanifest`, two icons); the diary pages load
 `src/app/diary/diary.js`; the worker `src/app/diary/sw.js` registers with
 scope `/diary`, so no public page is ever controlled and the CDN
@@ -89,7 +92,7 @@ Invariants:
   without credentials (a cookie gate breaks install), and the bytes only
   disclose that a diary app exists — which the public repo and the login
   redirect already do. Keep anything private out of them.
-- With JS, saves are local-first (the wasm store) and synced ONLY by the
+- With JS, Now saves are local-first (the wasm store) and synced ONLY by the
   service worker: `POST /api/diary/entries` + `GET /api/diary/snapshot`
   (admin-gated, `no-store`), or straight to the database over a websocket
   when direct sync is flagged on (docs/diary-sync.md). Never add a
@@ -106,8 +109,20 @@ Invariants:
   fresh key per replay and double-post). At every candidate second,
   identical Entry Content is "already saved" and different content probes
   forward ≤5 s. A device collision may re-anchor the queued entry before
-  sync, and a server collision may re-anchor it again. Overwriting an entry
-  stays impossible.
+  sync, and a server collision may re-anchor it again. New creates never
+  overwrite entries. Explicit Now edits use revision compare-and-swap;
+  deletion clears content and leaves a tombstone so delayed offline writes
+  cannot restore it.
+- Today uses the same owner gate and `no-store` response rules. The service
+  worker brokers live `GET/POST /api/diary/today` requests without opening a
+  local daily store or waiting for the Now outbox lock. Writes require
+  same-origin and the current schema epoch. Database record tokens have no
+  permissions on `diary_days`; only server transactions can autosave or
+  close daily reflections. Revision checks reject concurrent stale writes
+  and spent-time decreases; identical retries are idempotent. Connection
+  loss pauses the editor, preserving unsaved text only in the open page.
+  There is no offline grant or handoff. An additional browser lock excludes
+  concurrent writing tabs. See `docs/diary-sync.md` for timing and closure.
 - Replies carry an optional Reply Target in Entry Content. It is a soft,
   valid-permalink Entry Reference, not a SurrealDB record link: acceptance
   validates the key shape but does not require a target row to exist. For now,
@@ -115,18 +130,19 @@ Invariants:
   predicted Entry Key is not selectable until delivery or a snapshot confirms
   it as an Entry Reference.
 - Offline reads are deliberate, device-local, and Ben's choice — and they
-  cover the WHOLE diary: the local store mirrors every entry, and when a
+  cover Now: the local store mirrors every Now entry, and when a
   navigation's network fetch fails the worker RENDERS the page from that
   mirror (the same Rust router and views the server runs, compiled to
   wasm) — pagination, permalinks, and pending rows included. There is no
   cached-HTML copy anymore; only hashed assets and the versioned wasm
   pair sit in Cache Storage. The mirror, those caches, and the queue
   OUTLIVE sign-out and `COOKIE_KEY` rotation — a signed-out or stolen
-  device reads the full diary offline; wiping it means clearing the
+  device reads its Now history offline; wiping it means clearing the
   site's data in Chrome on the device. That is the accepted trust model:
   device possession is the boundary, and the server stays the auth
   boundary whenever it is reachable (offline SSR answers only after the
-  network fetch fails).
+  network fetch fails). Today navigation instead renders a connection notice;
+  daily reflections are never cached or mirrored by current code.
 - A flush stops and keeps the queue on 401/404 (sign in again) and on
   400/403/5xx/network trouble (retry later); a 400 can be an older server
   rejecting a newer strict envelope during rollout. Every HTTP sync request

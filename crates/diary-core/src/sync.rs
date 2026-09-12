@@ -511,4 +511,103 @@ mod tests {
         let rows = outbox::all_local(&device_a).await.unwrap();
         assert!(rows.iter().all(|row| row.id != bumped_id));
     }
+
+    #[tokio::test]
+    async fn now_edits_backdate_and_delete_without_replaying_old_content() {
+        let server = TestServer::start().await;
+        let now = 1_753_640_000;
+        let remote = DirectRemote::new(server.db.clone(), now);
+        let local = device().await;
+        let mut original = ComposedEntry::new(now, "");
+        original.emoji = Some("😌".into());
+        original.occurred_at = Some(now - 86400);
+        original.saved_at_ms = Some(now * 1000);
+        original.revision = Some(crate::entry::new_revision(&original));
+        let row = outbox::enqueue(&local, original.clone(), 1).await.unwrap();
+        assert_eq!(run(&local, &remote).await.unwrap().saved, 1);
+        let edit = outbox::revise(
+            &local,
+            &row.id,
+            "edited".into(),
+            Some("🙂".into()),
+            now - 200,
+            false,
+            2,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            remote.push(edit.composed.clone()).await,
+            SendOutcome::Saved(_)
+        ));
+        // The acknowledgement was lost; a further offline edit must still
+        // recognize that intermediate revision when it finally syncs.
+        outbox::revise(
+            &local,
+            &row.id,
+            "latest".into(),
+            Some("🙂".into()),
+            now - 300,
+            false,
+            3,
+        )
+        .await
+        .unwrap();
+        let report = run(&local, &remote).await.unwrap();
+        assert_eq!((report.saved, report.failed), (1, 0));
+        let saved = store::entry_by_id(&server.db, &row.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.body, "latest");
+        assert_eq!(saved.occurred_at(), now - 300);
+        assert_eq!(saved.written_at, now);
+        outbox::revise(&local, &row.id, "".into(), None, now - 300, true, 4)
+            .await
+            .unwrap();
+        assert_eq!(run(&local, &remote).await.unwrap().saved, 1);
+        assert!(matches!(remote.push(original).await, SendOutcome::Saved(_)));
+        assert!(matches!(
+            remote.push(edit.composed.clone()).await,
+            SendOutcome::Saved(_)
+        ));
+        let entries = store::all_entries(&server.db).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].deleted());
+        assert!(entries[0].body.is_empty());
+        assert!(entries[0].emoji.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_now_edits_preserve_the_losing_devices_text() {
+        let server = TestServer::start().await;
+        let now = 1_753_640_000;
+        let remote = DirectRemote::new(server.db.clone(), now);
+        let a = device().await;
+        let b = device().await;
+        let row = outbox::enqueue(&a, ComposedEntry::new(now, "original"), 1)
+            .await
+            .unwrap();
+        run(&a, &remote).await.unwrap();
+        run(&b, &remote).await.unwrap();
+        outbox::revise(&a, &row.id, "from A".into(), None, now, false, 2)
+            .await
+            .unwrap();
+        outbox::revise(&b, &row.id, "from B".into(), None, now, false, 3)
+            .await
+            .unwrap();
+        assert_eq!(run(&a, &remote).await.unwrap().saved, 1);
+        assert_eq!(run(&b, &remote).await.unwrap().failed, 1);
+        let losing = outbox::entry(&b, &row.id).await.unwrap().unwrap();
+        assert_eq!(losing.body, "from B");
+        assert_eq!(losing.state, "failed");
+        assert_eq!(
+            store::entry_by_id(&server.db, &row.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .body,
+            "from A"
+        );
+    }
 }

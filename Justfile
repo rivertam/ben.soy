@@ -113,6 +113,11 @@ test-browser:
     just airport-wasm
     node --test tests/browser/*.test.cjs
 
+# Diary's optional, larger Wasm build plus actual browser adapter/clock tests.
+test-diary-browser:
+    just diary-wasm
+    node --test tests/diary/*.test.cjs
+
 # Build the small shared calculator/search module for public thought pages.
 thoughts-wasm:
     cargo build -p thoughts-worker --profile wasm --target wasm32-unknown-unknown

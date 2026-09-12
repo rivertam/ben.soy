@@ -22,7 +22,7 @@ use crate::outbox::{LocalEntry, STATE_FAILED, STATE_SYNCED};
 use crate::search;
 use crate::store::PAGE_SIZE;
 
-pub const DIARY_PATH: &str = "/diary";
+pub const DIARY_PATH: &str = "/diary/now";
 
 const META_LABEL: &str =
     "font-meta text-[0.6875rem] leading-normal tracking-[0.13em] uppercase text-muted";
@@ -39,6 +39,8 @@ const TEXTAREA: &str = "w-full min-w-0 min-h-[3rem] px-3 py-[0.65rem] text-ink b
 pub struct Bubble {
     pub id: String,
     pub body: String,
+    pub emoji: Option<String>,
+    pub occurred_at: Option<i64>,
     pub reply_to: Option<String>,
     pub state: BubbleState,
 }
@@ -61,6 +63,8 @@ impl Bubble {
         Bubble {
             id: entry.id.clone(),
             body: entry.body.clone(),
+            emoji: entry.emoji.clone(),
+            occurred_at: entry.occurred_at,
             reply_to: entry.reply_to.clone(),
             state: BubbleState::Synced,
         }
@@ -82,9 +86,18 @@ impl Bubble {
         Bubble {
             id: entry.id.clone(),
             body: entry.body.clone(),
+            emoji: entry.emoji.clone(),
+            occurred_at: entry.occurred_at,
             reply_to: entry.reply_to.clone(),
             state,
         }
+    }
+
+    fn stamp(&self) -> String {
+        self.occurred_at
+            .and_then(crate::store::entry_key)
+            .map(|key| entry_stamp(&key))
+            .unwrap_or_else(|| entry_stamp(&self.id))
     }
 
     fn state_attr(&self) -> &'static str {
@@ -120,7 +133,7 @@ impl Bubble {
 
     fn anchor_text(&self) -> String {
         match self.state {
-            BubbleState::Synced => entry_stamp(&self.id),
+            BubbleState::Synced => self.stamp(),
             _ => String::new(),
         }
     }
@@ -131,7 +144,7 @@ impl Bubble {
         match &self.state {
             BubbleState::Draft | BubbleState::Synced => String::new(),
             BubbleState::Pending { blocked } => {
-                let stamp = entry_stamp(&self.id);
+                let stamp = self.stamp();
                 if *blocked {
                     format!("{stamp} · queued — will sync")
                 } else {
@@ -139,7 +152,7 @@ impl Bubble {
                 }
             }
             BubbleState::Failed { reason } => {
-                let stamp = entry_stamp(&self.id);
+                let stamp = self.stamp();
                 let reason = reason.as_deref().unwrap_or("rejected");
                 format!("{stamp} · failed — {reason}")
             }
@@ -191,6 +204,8 @@ pub async fn bubble(item: Bubble) -> Result {
             class=(item.article_class())
             data-id=(item.id.as_str())
             data-state=(item.state_attr())
+            data-occurred-at=(item.occurred_at.unwrap_or(0))
+            data-emoji=(item.emoji.as_deref().unwrap_or(""))
             data-reply-to=(item.reply_to.as_deref().unwrap_or(""))
         >
             <p
@@ -201,6 +216,7 @@ pub async fn bubble(item: Bubble) -> Result {
                     (item.reply_to_text())
                 </a>
             </p>
+            <span class="diary-entry-emoji" hidden=(item.emoji.is_none())>(item.emoji.as_deref().unwrap_or(""))</span>
             <p class="diary-body leading-relaxed whitespace-pre-wrap text-ink2">(item.body.as_str())</p>
             <p class="mt-2 text-right font-meta text-[0.6875rem] text-muted">
                 <span class="diary-note text-ink2" hidden=(item.note_hidden())>
@@ -211,6 +227,7 @@ pub async fn bubble(item: Bubble) -> Result {
                     hidden=(item.anchor_hidden())
                     href=(item.synced_href())
                 >(item.anchor_text())</a>
+                <button type="button" class="diary-edit-now quiet-link ml-3" hidden=(item.id.is_empty())>"edit"</button>
                 <button
                     type="button"
                     class="diary-reply quiet-link ml-3 cursor-pointer font-meta text-xs"
@@ -271,10 +288,13 @@ pub async fn diary_room(
     store_ok: bool,
     mode: RoomMode,
     notice: View,
+    recent: Vec<String>,
 ) -> Result {
     let template_seed = Bubble {
         id: String::new(),
         body: String::new(),
+        emoji: None,
+        occurred_at: None,
         reply_to: None,
         state: BubbleState::Draft,
     };
@@ -305,9 +325,10 @@ pub async fn diary_room(
             data-page=(page_number)
             data-search=(if searching { "1" } else { "" })
         >
+            crate::today_views::lane_nav(active: "now")
             <div class="diary-room-bar">
                 <div class="diary-room-bar-meta">
-                    <span class=(META_LABEL)>"diary · just you"</span>
+                    <span class=(META_LABEL)>"Now · untimed"</span>
                     if searching {
                         <a class="quiet-link font-meta text-xs" href=(DIARY_PATH)>"clear"</a>
                     }
@@ -416,6 +437,7 @@ pub async fn diary_room(
                 </div>
                 <input type="hidden" id="diary-reply-to" name="reply_to" value="">
                 <div class="diary-compose-row">
+                    emoji_picker(recent: recent)
                     <label class="min-w-0 flex-1" for="diary-body">
                         <span class="sr-only">"New diary message"</span>
                         // autofocus lands the cursor in the box on desktop;
@@ -428,7 +450,6 @@ pub async fn diary_room(
                             id="diary-body"
                             name="body"
                             rows="2"
-                            required=""
                             autofocus=(!searching)
                             placeholder="Message yourself…"
                         ></textarea>
@@ -436,9 +457,14 @@ pub async fn diary_room(
                     <button
                         type="submit"
                         class="oxlink mb-3 shrink-0 cursor-pointer font-meta text-sm"
-                    >"send ↑"</button>
+                    >"Save"</button>
                 </div>
             </form>
+            <p id="diary-now-status" class="diary-day-note" role="status"></p>
+            <dialog id="diary-edit-dialog" class="diary-edit-dialog">
+                now_editor(entry: None)
+                <button type="button" id="diary-edit-cancel">"Cancel"</button>
+            </dialog>
         </div>
     }
 }
@@ -463,28 +489,73 @@ async fn search_hit(hit: SearchHit) -> Result {
 #[component]
 pub async fn entry_detail(entry: DiaryEntry) -> Result {
     view! {
-        <section class="mt-8 max-w-prose">
-            <p class="font-meta text-xs text-muted">(entry_stamp(&entry.id))</p>
-            if let Some(parent) = entry.reply_to.as_ref() {
-                <p class="mt-2 font-meta text-[0.6875rem] text-muted">
-                    <a class="quiet-link" href=(entry_url(parent))>
-                        (format!("↳ {}", entry_stamp(parent)))
-                    </a>
-                </p>
-            }
-            <p class="mt-3 leading-relaxed whitespace-pre-wrap text-ink2">(entry.body.as_str())</p>
-            <form
-                method="post"
-                action="/diary/delete"
-                class="mt-10 border-t border-hairline pt-4 text-right"
-            >
-                <input type="hidden" name="path" value=(entry.id.as_str())>
-                <button
-                    type="submit"
-                    class="quiet-link cursor-pointer font-meta text-xs"
-                >"delete this entry"</button>
-            </form>
-        </section>
+        crate::today_views::lane_nav(active: "now")
+        now_editor(entry: Some(entry))
+    }
+}
+
+pub fn local_time(second: i64) -> String {
+    jiff::Timestamp::from_second(second)
+        .ok()
+        .and_then(|at| {
+            jiff::tz::TimeZone::get(crate::today::ZONE)
+                .ok()
+                .map(|zone| at.to_zoned(zone))
+        })
+        .map(|at| at.strftime("%Y-%m-%dT%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+pub fn parse_local_time(raw: &str) -> Option<i64> {
+    let wall = raw.parse::<jiff::civil::DateTime>().ok()?;
+    Some(
+        wall.to_zoned(jiff::tz::TimeZone::get(crate::today::ZONE).ok()?)
+            .ok()?
+            .timestamp()
+            .as_second(),
+    )
+}
+
+#[component]
+pub async fn now_editor(entry: Option<DiaryEntry>) -> Result {
+    view! {
+        <form id="diary-edit" method="post" action="/diary/edit" class="diary-now-editor">
+            <h2>"Edit Now entry"</h2>
+            <input type="hidden" name="path" value=(entry.as_ref().map(|entry| entry.id.as_str()).unwrap_or(""))>
+            <input type="hidden" name="revision" value=(entry.as_ref().and_then(|entry| entry.revision.as_deref()).unwrap_or(""))>
+            <label>"Emoji (optional)"<input name="emoji" maxlength="32" value=(entry.as_ref().and_then(|entry| entry.emoji.as_deref()).unwrap_or("")) autocomplete="off"></label>
+            <label>"Entry"<textarea name="body" rows="6" maxlength=(crate::entry::MAX_ENTRY_CHARS.to_string())>(entry.as_ref().map(|entry| entry.body.as_str()).unwrap_or(""))</textarea></label>
+            <label>"New York time"<input name="at" type="datetime-local" required="" value=(entry.as_ref().map(|entry| local_time(entry.occurred_at())).unwrap_or_default())></label>
+            <p>"Use an emoji, some words, or both."</p>
+            <div><button type="submit">"Save changes"</button>
+                <button type="submit" name="delete" value="yes" formnovalidate="">"Delete entry"</button></div>
+            <p id="diary-edit-status" role="status"></p>
+        </form>
+    }
+}
+
+#[component]
+async fn emoji_picker(recent: Vec<String>) -> Result {
+    view! {
+        <details id="diary-emoji-picker" class="diary-emoji-picker">
+            <summary aria-label="Choose an emoji" title="Choose an emoji">
+                <span id="diary-emoji-preview" aria-hidden="true">"☺"</span>
+            </summary>
+            <div class="diary-emoji-panel">
+                <div id="diary-recent-emojis" aria-label="Recently used emojis">
+                    for emoji in recent {
+                        <button type="button" data-emoji=(emoji.as_str()) aria-label=(format!("Select {emoji}")) aria-pressed="false">(emoji.as_str())</button>
+                    }
+                </div>
+                <div class="diary-emoji-options" aria-label="Emojis">
+                    for emoji in ["🙂", "😊", "🥰", "😌", "😂", "🥹", "😢", "😔", "😟", "😤", "😡", "😴", "🤔", "😐", "😵‍💫", "🥳", "❤️", "✨", "☀️", "🌧️", "🌱", "💪", "🎉", "🙏"] {
+                        <button type="button" data-emoji=(emoji) aria-label=(format!("Select {emoji}")) aria-pressed="false">(emoji)</button>
+                    }
+                </div>
+                <label for="diary-emoji">"Emoji"<input id="diary-emoji" name="emoji" maxlength="32" autocomplete="off" placeholder="optional"></label>
+                <template id="diary-emoji-button"><button type="button" data-emoji="" aria-pressed="false"></button></template>
+            </div>
+        </details>
     }
 }
 
@@ -533,7 +604,7 @@ pub async fn offline_page(
 
 /// `/diary/{id}` — the permalink an entry is born with.
 pub fn entry_url(id: &str) -> String {
-    format!("{DIARY_PATH}/{id}")
+    format!("/diary/{id}")
 }
 
 pub fn page_url(page_number: usize) -> String {
@@ -636,11 +707,11 @@ mod tests {
             entry_url("2026-07-27T14-30-45-04-00"),
             "/diary/2026-07-27T14-30-45-04-00"
         );
-        assert_eq!(page_url(1), "/diary");
-        assert_eq!(page_url(3), "/diary?page=3");
-        assert_eq!(nav_url("coffee", 1), "/diary?q=coffee");
-        assert_eq!(nav_url("coffee", 2), "/diary?q=coffee&page=2");
-        assert_eq!(nav_url("a b", 1), "/diary?q=a+b");
+        assert_eq!(page_url(1), "/diary/now");
+        assert_eq!(page_url(3), "/diary/now?page=3");
+        assert_eq!(nav_url("coffee", 1), "/diary/now?q=coffee");
+        assert_eq!(nav_url("coffee", 2), "/diary/now?q=coffee&page=2");
+        assert_eq!(nav_url("a b", 1), "/diary/now?q=a+b");
         assert_eq!(
             display_parts("2026-01-05 00:07:00").unwrap(),
             ("Jan 5, 2026".to_string(), "12:07 AM".to_string())

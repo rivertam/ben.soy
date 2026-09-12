@@ -62,6 +62,34 @@ pub struct EntryContent {
     /// JSON wires and store it as `NONE` in SurrealDB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
+    /// Event time is independent of the stable placement key (backdating).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<i64>,
+    /// Save time, not event time, determines the recent emoji ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<EntryEdit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, SurrealValue)]
+#[serde(deny_unknown_fields)]
+pub struct EntryEdit {
+    pub id: String,
+    pub base: Option<String>,
+    pub deleted: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous: Vec<String>,
+}
+
+pub fn new_revision(entry: &ComposedEntry) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(serde_json::to_vec(entry).expect("entry serializes"));
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 impl EntryContent {
@@ -69,7 +97,35 @@ impl EntryContent {
         Self {
             body: body.into(),
             reply_to: None,
+            emoji: None,
+            occurred_at: None,
+            saved_at_ms: None,
+            revision: None,
+            edit: None,
         }
+    }
+
+    /// Revision identities only; old text is never retained. Every mutation
+    /// carries the whole chain so delayed writes cannot recreate an old row.
+    pub fn revision_history(&self) -> Vec<String> {
+        let mut history = self
+            .edit
+            .as_ref()
+            .map(|edit| edit.previous.clone())
+            .unwrap_or_default();
+        if let Some(base) = self.edit.as_ref().and_then(|edit| edit.base.as_ref()) {
+            history.push(base.clone());
+        }
+        if let Some(revision) = &self.revision {
+            history.push(revision.clone());
+        }
+        history.sort();
+        history.dedup();
+        history
+    }
+
+    pub fn deleted(&self) -> bool {
+        self.edit.as_ref().is_some_and(|edit| edit.deleted)
     }
 }
 
@@ -136,6 +192,9 @@ pub struct DiaryEntry {
 }
 
 impl DiaryEntry {
+    pub fn occurred_at(&self) -> i64 {
+        self.occurred_at.unwrap_or(self.written_at)
+    }
     pub fn new(id: impl Into<String>, composed: ComposedEntry) -> Self {
         Self {
             id: id.into(),
@@ -151,6 +210,18 @@ impl DiaryEntry {
     /// business content in one place.
     pub fn has_content(&self, content: &EntryContent) -> bool {
         self.content == *content
+    }
+
+    /// A delayed create or edit remains acknowledged after it was revised
+    /// or deleted. Keeping revision ids (never old text) prevents resurrection.
+    pub fn is_replay_of(&self, content: &EntryContent) -> bool {
+        self.has_content(content)
+            || content.revision.as_ref().is_some_and(|revision| {
+                self.revision.as_ref() == Some(revision)
+                    || self.edit.as_ref().is_some_and(|edit| {
+                        edit.base.as_ref() == Some(revision) || edit.previous.contains(revision)
+                    })
+            })
     }
 }
 
@@ -196,7 +267,7 @@ impl From<&DiaryEntry> for SavedRef {
 /// The explicit projection every flat diary-entry row read shares. Optional
 /// business fields added later are added here once, then inherited by both
 /// server and device-store reads.
-pub const PROJECTION: &str = "record::id(id) AS id, written_at, body, reply_to";
+pub const PROJECTION: &str = "record::id(id) AS id, written_at, body, reply_to, emoji, occurred_at, saved_at_ms, revision, edit";
 
 pub fn written_at_in_window(written_at: i64, now: i64) -> bool {
     written_at > now - MAX_PAST_SECONDS && written_at <= now + MAX_FUTURE_SECONDS
@@ -227,7 +298,29 @@ pub fn normalize_reply_to(raw: Option<&str>) -> Result<Option<String>, EntryReje
 pub fn prepare_for_queue(mut entry: ComposedEntry) -> Result<ComposedEntry, EntryRejection> {
     entry.body = normalize_lines(&entry.body);
     entry.reply_to = normalize_reply_to(entry.reply_to.as_deref())?;
-    if entry.body.is_empty() {
+    entry.emoji = entry.emoji.take().filter(|emoji| !emoji.trim().is_empty());
+    if entry
+        .emoji
+        .as_ref()
+        .is_some_and(|emoji| !valid_emoji(emoji))
+    {
+        return Err(EntryRejection::InvalidBody);
+    }
+    if let Some(edit) = &entry.edit {
+        if crate::eastern::parse_public_path(&edit.id).is_none()
+            || entry.revision.as_ref().is_none_or(|v| !valid_revision(v))
+            || edit.base.as_ref().is_some_and(|v| !valid_revision(v))
+        {
+            return Err(EntryRejection::InvalidBody);
+        }
+        if edit.deleted {
+            entry.body.clear();
+            entry.emoji = None;
+            entry.reply_to = None;
+            return Ok(entry);
+        }
+    }
+    if entry.body.is_empty() && entry.emoji.is_none() {
         Err(EntryRejection::InvalidBody)
     } else {
         Ok(entry)
@@ -238,7 +331,11 @@ pub fn prepare_for_queue(mut entry: ComposedEntry) -> Result<ComposedEntry, Entr
 /// adapters reach this through `store::save_entry`, and the plain form uses
 /// it before insertion, so acceptance cannot drift between transports.
 pub fn accept_for_save(entry: ComposedEntry, now: i64) -> Result<ComposedEntry, EntryRejection> {
-    if !written_at_in_window(entry.written_at, now) {
+    if (entry.edit.is_none() && !written_at_in_window(entry.written_at, now))
+        || entry
+            .occurred_at
+            .is_some_and(|at| at < 0 || at > now.saturating_add(MAX_FUTURE_SECONDS))
+    {
         return Err(EntryRejection::TimestampOutOfRange);
     }
     let entry = prepare_for_queue(entry)?;
@@ -248,9 +345,34 @@ pub fn accept_for_save(entry: ComposedEntry, now: i64) -> Result<ComposedEntry, 
     Ok(entry)
 }
 
+fn valid_revision(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The picker permits one complete Unicode emoji sequence, including flags,
+/// skin tones and ZWJ families. The emoji dataset supplies exact validation.
+pub fn valid_emoji(value: &str) -> bool {
+    emojis::get(value).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_or_text_is_required_and_emoji_sequences_stay_structured() {
+        for emoji in ["😌", "👩🏽‍💻", "🇺🇸", "❤️"] {
+            let mut entry = ComposedEntry::new(100, "");
+            entry.emoji = Some(emoji.into());
+            assert!(accept_for_save(entry, 100).is_ok(), "{emoji}");
+        }
+        for emoji in ["word", "🙂🙂", " "] {
+            let mut entry = ComposedEntry::new(100, "");
+            entry.emoji = Some(emoji.into());
+            assert!(accept_for_save(entry, 100).is_err());
+        }
+        assert!(accept_for_save(ComposedEntry::new(100, "words only"), 100).is_ok());
+    }
 
     #[test]
     fn lifecycle_values_keep_the_flat_external_shape() {

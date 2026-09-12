@@ -15,6 +15,7 @@
 
 pub mod contract;
 pub mod eastern;
+pub mod emoji_usage;
 pub mod entry;
 pub mod outbox;
 mod outbox_migrations;
@@ -22,6 +23,11 @@ pub mod placement;
 pub mod search;
 pub mod store;
 pub mod sync;
+pub mod today;
+pub mod today_session;
+pub mod today_store;
+#[cfg(feature = "view")]
+pub mod today_views;
 #[cfg(feature = "view")]
 pub mod views;
 

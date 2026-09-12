@@ -1,11 +1,12 @@
 /* The /diary service worker (registered by diary.js with scope "/diary" —
  * public pages are never controlled). Two jobs:
  *
- * 1. Offline reads: when a navigation's network fetch fails, RENDER the
+ * 1. Offline Now reads: when a navigation's network fetch fails, RENDER the
  *    page from the device mirror — the same Rust router and views the
  *    server runs, compiled to wasm (diary_render). Hashed assets and the
  *    versioned wasm pair ride a cache-first cache (immutable by contract);
  *    there is no cached-HTML copy anymore, the mirror is the offline copy.
+ *    Today renders only a connection notice offline; its autosaves are live.
  * 2. The write queue: one sync pass (flush then pull) against the JSON
  *    endpoints. The policy is Rust — crates/diary-core over a local
  *    SurrealDB (docs/diary-sync.md) — and this file is only the browser
@@ -270,6 +271,17 @@ self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "flush") {
     event.waitUntil(flushGuarded());
   }
+  if (event.data?.type === "today-request" && event.ports[0]) {
+    event.waitUntil((async () => {
+      try {
+        await ensureWasm();
+        const snapshot = JSON.parse(await wasm_bindgen.diary_today_request(event.data.command || "", event.data.day || ""));
+        event.ports[0].postMessage({ ok: true, snapshot });
+      } catch (error) {
+        event.ports[0].postMessage({ ok: false, error: error.message });
+      }
+    })());
+  }
 });
 
 // One active drain, plus a dirty bit for every kick that arrives while it is
@@ -313,6 +325,13 @@ async function flush() {
   await migrateLegacy();
   const direct = (self.DIARY_SYNC.assets && self.DIARY_SYNC.assets.direct) || "";
   const report = JSON.parse(await wasm_bindgen.diary_sync(API_PATH, SNAPSHOT_PATH, direct));
+  if (report.blocked !== "auth") {
+    try { await wasm_bindgen.diary_emojis_sync(); }
+    catch (error) {
+      if (error.message === "auth") report.blocked = "auth";
+      else report.blocked = "net";
+    }
+  }
   await broadcast(report);
   if (report.blocked === "net") {
     throw new Error("diary flush interrupted; sync will retry");

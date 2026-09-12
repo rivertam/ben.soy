@@ -63,10 +63,193 @@ pub async fn diary_enqueue(command_json: String) -> Result<String, JsError> {
     let command =
         decode_compose_command(&command_json).map_err(|error| JsError::new(&error.to_string()))?;
     let db = db().await?;
-    let placed = outbox::enqueue(&db, command.entry, command.enqueued_at_ms)
+    let mut entry = command.entry;
+    entry.revision = Some(diary_core::entry::new_revision(&entry));
+    let placed = outbox::enqueue(&db, entry, command.enqueued_at_ms)
         .await
         .map_err(outbox_error)?;
     serde_json::to_string(&placed).map_err(json_error)
+}
+
+#[wasm_bindgen]
+pub async fn diary_now_data() -> Result<String, JsError> {
+    let db = db().await?;
+    let entries = outbox::all_local(&db).await.map_err(outbox_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "entries": entries, "recent": diary_core::emoji_usage::choices(&db).await.map_err(local_error)?,
+        "page_size": diary_core::store::PAGE_SIZE,
+    }))
+    .map_err(json_error)
+}
+
+#[wasm_bindgen]
+pub fn diary_local_time(second: i64) -> String {
+    diary_core::views::local_time(second)
+}
+
+#[wasm_bindgen]
+pub fn diary_parse_time(raw: &str) -> Result<i64, JsError> {
+    diary_core::views::parse_local_time(raw)
+        .ok_or_else(|| JsError::new("Choose a valid New York time."))
+}
+
+#[wasm_bindgen]
+pub async fn diary_revise(command_json: &str) -> Result<String, JsError> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Revision {
+        id: String,
+        body: String,
+        emoji: Option<String>,
+        occurred_at: i64,
+        deleted: bool,
+        now_ms: i64,
+        expected_revision: Option<String>,
+    }
+    let command: Revision = serde_json::from_str(command_json).map_err(json_error)?;
+    let db = db().await?;
+    let old = outbox::entry(&db, &command.id)
+        .await
+        .map_err(outbox_error)?
+        .ok_or_else(|| JsError::new("This entry is not on this device yet. Let it sync first."))?;
+    if old.revision != command.expected_revision {
+        return Err(JsError::new(
+            "This entry changed elsewhere. Reopen it before editing.",
+        ));
+    }
+    let revised = outbox::revise(
+        &db,
+        &command.id,
+        command.body,
+        command.emoji,
+        command.occurred_at,
+        command.deleted,
+        command.now_ms,
+    )
+    .await
+    .map_err(outbox_error)?;
+    serde_json::to_string(&revised).map_err(json_error)
+}
+
+#[wasm_bindgen]
+pub async fn diary_now_cues(day: &str) -> Result<String, JsError> {
+    let db = db().await?;
+    let entries = outbox::all_local(&db).await.map_err(outbox_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "has_history": !entries.is_empty(),
+        "cues": diary_core::today::memory_cues(entries, day, |row| &row.entry),
+    }))
+    .map_err(json_error)
+}
+
+/// A thin Wasm handle over the native-testable daily session. No browser
+/// state or business decisions are implemented in this wrapper.
+#[wasm_bindgen]
+pub struct DiaryToday {
+    inner: diary_core::today_session::Session,
+}
+
+#[wasm_bindgen]
+impl DiaryToday {
+    #[wasm_bindgen(constructor)]
+    pub fn new(day: String, initial_json: &str) -> Result<DiaryToday, JsError> {
+        let row = serde_json::from_str(initial_json).map_err(json_error)?;
+        Ok(Self {
+            inner: diary_core::today_session::Session::new(day, row).map_err(local_error)?,
+        })
+    }
+    pub fn dispatch(&mut self, input: &str) -> Result<String, JsError> {
+        let input = serde_json::from_str(input).map_err(json_error)?;
+        let output = self.inner.dispatch(input).map_err(local_error)?;
+        serde_json::to_string(&output).map_err(json_error)
+    }
+}
+
+/// Live requests are brokered by the service worker, without opening the
+/// device store or waiting for Now's offline flush lock.
+#[wasm_bindgen]
+pub async fn diary_today_request(json: &str, day: &str) -> Result<String, JsError> {
+    let command = if json.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_str(json).map_err(json_error)?)
+    };
+    let snapshot = today_request(command, Some(day))
+        .await
+        .map_err(local_error)?;
+    serde_json::to_string(&snapshot).map_err(json_error)
+}
+
+/// The Now picker keeps its small max-merged history offline. Daily text
+/// is not returned by a history-only request or written to the device store.
+#[wasm_bindgen]
+pub async fn diary_emojis_sync() -> Result<(), JsError> {
+    use diary_core::today_store::{Action, Command};
+    let db = db().await?;
+    let usages = diary_core::emoji_usage::recent(&db)
+        .await
+        .map_err(local_error)?;
+    let command = (!usages.is_empty()).then(|| Command::new(Action::Remember { usages }));
+    let snapshot = today_request(command, None).await.map_err(local_error)?;
+    for usage in snapshot.emoji_usage {
+        diary_core::emoji_usage::remember(&db, &usage)
+            .await
+            .map_err(local_error)?;
+    }
+    Ok(())
+}
+
+async fn today_request(
+    command: Option<diary_core::today_store::Command>,
+    day: Option<&str>,
+) -> Result<diary_core::today::Snapshot, String> {
+    let init = RequestInit::new();
+    init.set_method(if command.is_some() { "POST" } else { "GET" });
+    init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_cache(RequestCache::NoStore);
+    if let Some(command) = command {
+        init.set_body(&JsValue::from_str(
+            &serde_json::to_string(&command).map_err(|_| "encode")?,
+        ));
+    }
+    let path = match day {
+        Some(day) if diary_core::today::valid_day(day) => {
+            format!("{}?day={day}", diary_core::today_store::API_PATH)
+        }
+        Some(_) => return Err("invalid day".into()),
+        None => diary_core::today_store::API_PATH.into(),
+    };
+    let request = Request::new_with_str_and_init(&path, &init).map_err(|_| "request")?;
+    request
+        .headers()
+        .set("Content-Type", "application/json")
+        .map_err(|_| "headers")?;
+    stamp_schema_epoch(&request).map_err(|_| "epoch")?;
+    let (status, text) = perform(&request).await.map_err(|_| "offline")?;
+    if status == 401 || status == 404 {
+        return Err("auth".into());
+    }
+    if status == 409 {
+        return Err("conflict".into());
+    }
+    if status != 200 {
+        return Err(if status == 503 && text.contains("schema epoch mismatch") {
+            "update"
+        } else {
+            "offline"
+        }
+        .into());
+    }
+    let snapshot: diary_core::today::Snapshot =
+        serde_json::from_str(&text).map_err(|_| "invalid snapshot")?;
+    if snapshot.schema_epoch != diary_core::contract::CURRENT_SCHEMA_EPOCH {
+        return Err("update".into());
+    }
+    Ok(snapshot)
+}
+
+fn local_error(error: String) -> JsError {
+    JsError::new(&error)
 }
 
 /// Every not-yet-synced row as JSON, oldest first — what the page renders
@@ -471,16 +654,47 @@ mod ssr {
         }
     }
 
+    #[page("/diary/today")]
+    async fn offline_today(cx: &Cx) -> Result {
+        let assets = app_context::<WorkerAssets>(cx);
+        view! {
+            offline_page(title: "Diary · Today", css_hrefs: assets.css.clone(), diary_js: assets.js.clone(),
+                diary_core::today_views::connection_required()
+            )
+        }
+    }
+
     #[page("/diary")]
-    async fn offline_diary(cx: &Cx) -> Result {
+    async fn offline_diary() -> Result {
+        view! { render_now() }
+    }
+
+    #[page("/diary/now")]
+    async fn offline_now() -> Result {
+        view! { render_now() }
+    }
+
+    #[topcoat::view::component]
+    async fn render_now(cx: &Cx) -> Result {
         let store = app_context::<WorkerStore>(cx);
         let assets = app_context::<WorkerAssets>(cx);
         let query = uri(cx).query();
         let needle = requested_query(query);
+        let (tx, rx) = futures_channel::oneshot::channel();
+        let local = store.0.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = tx.send(diary_core::emoji_usage::choices(&local).await);
+        });
+        let recent = rx
+            .await
+            .ok()
+            .and_then(|result| result.ok())
+            .unwrap_or_default();
         let (mode, total, last, page_number, store_ok) = match all_rows(store).await {
             Ok(mut rows) => {
+                rows.retain(|row| !row.deleted());
                 rows.sort_by(|a, b| {
-                    (a.written_at, a.id.as_str()).cmp(&(b.written_at, b.id.as_str()))
+                    (a.occurred_at(), a.id.as_str()).cmp(&(b.occurred_at(), b.id.as_str()))
                 });
                 if let Some(q) = needle.as_deref() {
                     // Synced-only: pending/failed stay out of search so
@@ -549,6 +763,7 @@ mod ssr {
         let empty_notice = view! {}?;
         let room = view! {
             diary_room(
+                recent: recent,
                 page_number: page_number,
                 last_page: last,
                 total: total,
@@ -580,14 +795,14 @@ mod ssr {
             None
         };
         let body = match &found {
-            Some(row) => {
+            Some(row) if !row.deleted() => {
                 let heading = entry_date(&row.id);
                 view! {
                     <h1 class="mt-8 font-display text-xl">(heading)</h1>
                     entry_detail(entry: row.entry.clone())
                 }?
             }
-            None => view! {
+            _ => view! {
                 <p class="mt-8 max-w-prose text-ink2">
                     "This entry is not in the device's local store. It may "
                     "exist on the server — try again online."
