@@ -86,6 +86,37 @@ reuse the local sync token or expose unrestricted SurrealQL.
   stored ratio secondary. No rank is stored — like records, the split is
   derived, and weights reach pages through `Snapshot::exercise_weight_map`,
   never JSON.
+- Muscle-load rows show the last seven Eastern dates, the usual weekly pace
+  over the preceding eight weeks, and an optional owner-set weekly target.
+  Targets use the same effort- and muscle-weighted volume points as load,
+  not sets or percentages. The bar is current load, the tick is usual pace,
+  and a brass diamond above the bar is the target; all share one scale.
+  Configured muscles remain visible even without history. The shared panel
+  reaches `/fitness` and the home phone pane.
+  `/admin/fitness-targets` edits all 28 granular muscles with sliders over
+  the same current-load bars and usual ticks. Native range controls move the
+  target diamonds; exact-value inputs stay available and are the no-JS
+  fallback. Only those exact inputs are named/submitted. “Use usual” clears
+  a goal, and a dashed slider thumb marks an unset goal. Sliders share a
+  scale with headroom above the largest load/goal; larger typed values expand
+  it without rescaling during a drag. Nothing publishes until “Save targets”.
+  Goals allow 0–10,000 weekly points, at most one decimal. Blank clears a target and
+  restores usual-pace guidance; explicit zero suppresses that muscle's deficit.
+  Targets replace usual pace for next-focus ranking and bypass historical
+  regularity requirements, but still exclude muscles touched today/yesterday.
+  Untargeted muscles keep their baseline gates; ties keep canonical order.
+  Target-based familiar picks may include observed options already ahead of
+  usual pace; an unobserved muscle can show its target gap without picks.
+  `fitness_muscle_targets` stores integer `weekly_centi_points` by canonical
+  muscle key. Values are configuration, never seeded or imported. The editor
+  reads current settings directly (never stale defaults), and its exact-admin,
+  same-origin, bounded-form POST atomically replaces settings and increments
+  `fitness_meta:version`, retries transaction conflicts, and rebuilds the
+  snapshot. Failed submissions retain their text; a committed save with a
+  delayed refresh is reported separately. Target reads join the coherent
+  archive snapshot query; public API envelopes do not change. The entry
+  guide already reuses the same recommendation and snapshot version, so its
+  next refresh receives target-based guidance without a worker migration.
 - `/fitness/exercise/{urlencoded-name}` shows one canonical exercise's
   aliases, ratios, tags, and merged history. Alias-valued URLs permanently
   redirect to the canonical page, and old alias-valued `exercise` filters
@@ -210,7 +241,7 @@ reuse the local sync token or expose unrestricted SurrealQL.
   Full Squat prevents Sumo Deadlift from surfacing merely to add spinal-erector
   work. The breadth reward increases as the trailing 21-day workout pace falls
   below roughly 3.5 sessions/week.
-  Archive deficits reuse training focus's regularity and today/yesterday
+  Archive deficits reuse training focus's target/regularity and today/yesterday
   recovery gates, and a need stops boosting “expand” once that muscle enters
   the in-progress workout.
   Suggestions are guidance only; archive search always remains available.
@@ -395,7 +426,8 @@ reuse the local sync token or expose unrestricted SurrealQL.
   truncates only the local fitness archive tables (including
   `fitness_interruptions`, locally imported `running_activities`, and
   `daily_steps`, but
-  deliberately preserving `exercise_aliases`), resets the fitness version,
+  deliberately preserving `exercise_aliases` and `fitness_muscle_targets`),
+  resets the fitness version,
   and imports the CSV; local Spire tables in the shared database remain
   untouched.
   This intentionally deletes locally pasted manual workouts, manual and
@@ -705,6 +737,7 @@ sync endpoint continues to accept only
 
   This replaces local fitness archive data only; it preserves
   `exercise_aliases` so renamed exercises remain compatible with the old CSV,
+  and `fitness_muscle_targets` so the owner's goals survive,
   and it never affects production or local
   Spire fixtures. It also removes manual workouts, manual runs, and imported
   Garmin runs from the local archive; none can be reconstructed from the CSV.
@@ -870,7 +903,8 @@ visibility, publication, ownership, and concurrent replay.
   place. A delete leaves any Podrick announcement row behind, so a
   delete-and-repaste does not re-announce to Discord (`docs/podrick.md`).
   Daily step upserts are the separate source-authoritative exception described
-  in `docs/steps-sync.md`. Interruptions are the other admin write exception:
+  in `docs/steps-sync.md`. Muscle targets are mutable owner configuration,
+  independent of workout history. Interruptions are another admin write exception:
   form POSTs may create, edit, and delete annotate-only date-range notes
   without touching sets.
 

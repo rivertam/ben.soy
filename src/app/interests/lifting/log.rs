@@ -123,7 +123,7 @@ pub(super) async fn fitness_content(cx: &Cx, filters: &Filters) -> Result {
                 <div class="min-w-0">
                     <h1 class="font-display text-4xl font-bold tracking-tight">(meta.title)</h1>
                     <p class="mt-2 max-w-prose text-sm leading-relaxed text-ink2">
-                        "Lifts, runs, steps, and the breaks between them—one training history."
+                        "My training log (lifting, running, walking)"
                     </p>
                 </div>
                 <div class="flex items-center gap-3"><a href="/fitness/exercises" class="text-sm text-oxide underline">"Exercises"</a>
@@ -145,7 +145,7 @@ pub(super) async fn fitness_content(cx: &Cx, filters: &Filters) -> Result {
                 )
                 if let Some(focus) = focus_summary {
                     <div class="hidden mt-8 border-t border-hairline pt-4 min-[90rem]:block">
-                        training_focus::panel(focus: focus, heading_id: "training-focus-desktop")
+                        training_focus::panel(focus: focus, heading_id: "training-focus-desktop", can_edit: can_edit)
                     </div>
                 }
             </aside>
@@ -160,7 +160,7 @@ pub(super) async fn fitness_content(cx: &Cx, filters: &Filters) -> Result {
                         "Muscle load + next focus"
                     </summary>
                     <div class="mt-3 rounded-sm border border-hairline bg-card p-4">
-                        training_focus::panel(focus: focus, heading_id: "training-focus-mobile")
+                        training_focus::panel(focus: focus, heading_id: "training-focus-mobile", can_edit: can_edit)
                     </div>
                 </details>
             }

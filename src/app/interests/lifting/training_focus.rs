@@ -4,7 +4,7 @@
 //! It scales the archive's effort-weighted volume score by each exercise's
 //! stored muscle ratios (`exercise_muscles`, in hundredths), then compares
 //! the last seven Eastern dates with this archive's own pace over the eight
-//! preceding weeks. Credit accumulates in exact integer centi-points
+//! preceding weeks, or an explicit weekly target. Credit accumulates in exact integer centi-points
 //! (points × ratio_hundredths); display rounds once, half away from zero.
 
 use std::collections::{BTreeSet, HashMap};
@@ -24,7 +24,7 @@ use super::{
 use crate::util::urlencode;
 
 const RECENT_DAYS: i64 = 7;
-const BASELINE_WEEKS: u32 = 8;
+pub(super) const BASELINE_WEEKS: u32 = 8;
 const BASELINE_DAYS: i64 = BASELINE_WEEKS as i64 * RECENT_DAYS;
 const MIN_BASELINE_TRAINING_DAYS: usize = 4;
 const MIN_MUSCLE_BASELINE_DAYS: usize = 2;
@@ -47,11 +47,11 @@ pub(super) struct TrainingSet<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TrainingFocus {
     pub(super) through_date: Date,
-    /// Canonical `MUSCLES` order; muscles absent from both windows are omitted.
+    /// Canonical order; configured targets appear even without any history.
     pub(super) muscles: Vec<MuscleLoad>,
     pub(super) recommendation: Option<FocusRecommendation>,
-    /// A recommendation waits for several distinct baseline training dates.
-    /// Recent volume can still render while this is false.
+    /// Usual-based recommendations wait for sufficient history; explicit
+    /// targets do not depend on this flag.
     pub(super) baseline_ready: bool,
     /// A regular muscle is behind pace, but every such candidate was touched
     /// today or yesterday and is intentionally not prescribed again yet.
@@ -68,15 +68,25 @@ pub(super) struct MuscleLoad {
     /// Total centi-points across all eight baseline weeks. Divide by eight
     /// to compare it with one recent week.
     pub(super) baseline_centi_points: u32,
+    pub(super) target_centi_points: Option<u32>,
+}
+
+impl MuscleLoad {
+    fn deficit_scaled(&self) -> u32 {
+        self.target_centi_points
+            .map(|target| target.saturating_mul(BASELINE_WEEKS))
+            .unwrap_or(self.baseline_centi_points)
+            .saturating_sub(self.recent_centi_points.saturating_mul(BASELINE_WEEKS))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FocusRecommendation {
     pub(super) muscle_id: &'static str,
     pub(super) muscle_label: &'static str,
-    /// `baseline_centi_points - recent_centi_points * 8`; kept on the common
-    /// eight-week scale so ranking never rounds.
+    /// The target (or usual) deficit on the common eight-week scale, unrounded.
     pub(super) deficit_scaled: u32,
+    pub(super) target_based: bool,
     pub(super) movements: Vec<MovementSuggestion>,
     pub(super) exercises: Vec<String>,
 }
@@ -116,6 +126,7 @@ enum Period {
 pub(super) fn derive<'a>(
     sets: impl IntoIterator<Item = TrainingSet<'a>>,
     today: Date,
+    targets: &HashMap<&'static str, u32>,
 ) -> TrainingFocus {
     let recent_start = today
         .checked_add((-(RECENT_DAYS - 1)).days())
@@ -209,12 +220,16 @@ pub(super) fn derive<'a>(
     let muscles: Vec<MuscleLoad> = muscle_taxonomy::muscles()
         .filter_map(|(id, label)| {
             let volume = by_muscle.get(id).copied().unwrap_or_default();
-            (volume.recent > 0 || volume.baseline > 0).then_some(MuscleLoad {
-                id,
-                label,
-                recent_centi_points: volume.recent,
-                baseline_centi_points: volume.baseline,
-            })
+            let target_centi_points = targets.get(id).copied();
+            (volume.recent > 0 || volume.baseline > 0 || target_centi_points.is_some()).then_some(
+                MuscleLoad {
+                    id,
+                    label,
+                    recent_centi_points: volume.recent,
+                    baseline_centi_points: volume.baseline,
+                    target_centi_points,
+                },
+            )
         })
         .collect();
     let baseline_ready = baseline_training_dates.len() >= MIN_BASELINE_TRAINING_DAYS
@@ -224,53 +239,39 @@ pub(super) fn derive<'a>(
     let rest_cutoff = today
         .checked_add((-1).days())
         .expect("focus recovery cutoff is representable");
-    let is_regular_deficit = |muscle: &MuscleLoad| {
-        baseline_dates_by_muscle
-            .get(muscle.id)
-            .is_some_and(|dates| dates.len() >= MIN_MUSCLE_BASELINE_DAYS)
-            && PeriodVolume {
-                recent: muscle.recent_centi_points,
-                baseline: muscle.baseline_centi_points,
-            }
-            .deficit_scaled()
-                > 0
+    let is_eligible_deficit = |muscle: &MuscleLoad| {
+        (muscle.target_centi_points.is_some()
+            || (baseline_ready
+                && baseline_dates_by_muscle
+                    .get(muscle.id)
+                    .is_some_and(|dates| dates.len() >= MIN_MUSCLE_BASELINE_DAYS)))
+            && muscle.deficit_scaled() > 0
     };
-    let has_regular_deficit = baseline_ready && muscles.iter().any(is_regular_deficit);
+    let has_deficit = muscles.iter().any(is_eligible_deficit);
 
-    let recommendation = baseline_ready
-        .then(|| {
-            muscles
-                .iter()
-                .enumerate()
-                .filter(|(_, muscle)| is_regular_deficit(muscle))
-                .filter(|(_, muscle)| {
-                    last_recent_date_by_muscle
-                        .get(muscle.id)
-                        .is_none_or(|last| *last < rest_cutoff)
-                })
-                .filter_map(|(index, muscle)| {
-                    let volume = PeriodVolume {
-                        recent: muscle.recent_centi_points,
-                        baseline: muscle.baseline_centi_points,
-                    };
-                    let deficit = volume.deficit_scaled();
-                    (deficit > 0).then_some((index, muscle, deficit))
-                })
-                .max_by(|(left_index, _, left), (right_index, _, right)| {
-                    left.cmp(right)
-                        // Reverse the index comparison so canonical order wins
-                        // an exact deficit tie under `max_by`.
-                        .then_with(|| right_index.cmp(left_index))
-                })
+    let recommendation = muscles
+        .iter()
+        .enumerate()
+        .filter(|(_, muscle)| is_eligible_deficit(muscle))
+        .filter(|(_, muscle)| {
+            last_recent_date_by_muscle
+                .get(muscle.id)
+                .is_none_or(|last| *last < rest_cutoff)
         })
-        .flatten()
+        .map(|(index, muscle)| (index, muscle, muscle.deficit_scaled()))
+        .max_by(|(left_index, _, left), (right_index, _, right)| {
+            left.cmp(right)
+                // Reverse the index comparison so canonical order wins
+                // an exact deficit tie under `max_by`.
+                .then_with(|| right_index.cmp(left_index))
+        })
         .map(|(_, muscle, deficit_scaled)| {
+            let target_based = muscle.target_centi_points.is_some();
             let mut movements: Vec<(&'static str, PeriodVolume)> = movement_by_muscle
                 .iter()
                 .filter_map(|((candidate_muscle, movement), volume)| {
                     (*candidate_muscle == muscle.id
-                        && volume.baseline > 0
-                        && volume.deficit_scaled() > 0)
+                        && (target_based || (volume.baseline > 0 && volume.deficit_scaled() > 0)))
                         .then_some((*movement, *volume))
                 })
                 .collect();
@@ -279,6 +280,13 @@ pub(super) fn derive<'a>(
                     .deficit_scaled()
                     .cmp(&left.deficit_scaled())
                     .then_with(|| right.baseline.cmp(&left.baseline))
+                    .then_with(|| {
+                        if target_based {
+                            right.recent.cmp(&left.recent)
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
                     .then_with(|| movement_order(left_id).cmp(&movement_order(right_id)))
             });
             movements.dedup_by_key(|(id, _)| *id);
@@ -296,8 +304,7 @@ pub(super) fn derive<'a>(
                 .iter()
                 .filter_map(|((candidate_muscle, exercise), volume)| {
                     (*candidate_muscle == muscle.id
-                        && volume.baseline > 0
-                        && volume.deficit_scaled() > 0
+                        && (target_based || (volume.baseline > 0 && volume.deficit_scaled() > 0))
                         && (suggested_movement_ids.is_empty()
                             || movements_by_exercise.get(exercise).is_some_and(
                                 |candidate_movements| {
@@ -314,6 +321,13 @@ pub(super) fn derive<'a>(
                     .deficit_scaled()
                     .cmp(&left.deficit_scaled())
                     .then_with(|| right.baseline.cmp(&left.baseline))
+                    .then_with(|| {
+                        if target_based {
+                            right.recent.cmp(&left.recent)
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
                     .then_with(|| left_name.cmp(right_name))
             });
             exercises.dedup_by(|(left, _), (right, _)| left == right);
@@ -322,6 +336,7 @@ pub(super) fn derive<'a>(
                 muscle_id: muscle.id,
                 muscle_label: muscle.label,
                 deficit_scaled,
+                target_based,
                 movements,
                 exercises: exercises
                     .into_iter()
@@ -330,7 +345,7 @@ pub(super) fn derive<'a>(
                     .collect(),
             }
         });
-    let recovery_limited = has_regular_deficit && recommendation.is_none();
+    let recovery_limited = has_deficit && recommendation.is_none();
 
     TrainingFocus {
         through_date: today,
@@ -360,8 +375,7 @@ fn movement_order(value: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-#[component]
-pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
+fn load_groups(focus: &TrainingFocus) -> Vec<LoadGroup> {
     let scale = focus
         .muscles
         .iter()
@@ -370,13 +384,19 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                 .recent_centi_points
                 .saturating_mul(BASELINE_WEEKS)
                 .max(muscle.baseline_centi_points)
+                .max(
+                    muscle
+                        .target_centi_points
+                        .unwrap_or(0)
+                        .saturating_mul(BASELINE_WEEKS),
+                )
         })
         .max()
         .unwrap_or(1)
         .max(1);
     // Group headers with granular bars beneath, in taxonomy display order;
-    // a group with no touched muscle is omitted entirely.
-    let groups: Vec<LoadGroup> = muscle_taxonomy::MUSCLE_GROUPS
+    // a group with neither load nor targets is omitted entirely.
+    muscle_taxonomy::MUSCLE_GROUPS
         .iter()
         .filter_map(|(_, group_label, members)| {
             let rows: Vec<LoadRow> = members
@@ -388,18 +408,34 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                     let usual_percent = percent(muscle.baseline_centi_points, scale);
                     let recent = format_ratio(muscle.recent_centi_points, 100);
                     let usual = format_ratio(muscle.baseline_centi_points, BASELINE_WEEKS * 100);
+                    let target = muscle
+                        .target_centi_points
+                        .map(|value| format_ratio(value, 100));
+                    let target_percent = percent(
+                        muscle
+                            .target_centi_points
+                            .unwrap_or(0)
+                            .saturating_mul(BASELINE_WEEKS),
+                        scale,
+                    );
+                    let target_description = target
+                        .as_ref()
+                        .map(|value| format!("weekly target {value} points"))
+                        .unwrap_or_else(|| "no weekly target set".into());
                     LoadRow {
                         label: muscle.label,
                         href: muscle_url(muscle.id),
                         recent: recent.clone(),
                         usual: usual.clone(),
+                        target,
                         style: format!(
                             "--muscle-recent-width: {recent_percent}%; \
-                             --muscle-usual-left: {usual_percent}%"
+                             --muscle-usual-left: {usual_percent}%; \
+                             --muscle-target-left: {target_percent}%"
                         ),
                         accessible: format!(
                             "Recent load {recent} volume points in the past seven days; \
-                             usual weekly pace {usual} points"
+                             usual weekly pace {usual} points; {target_description}"
                         ),
                         has_baseline: muscle.baseline_centi_points > 0,
                     }
@@ -410,7 +446,16 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                 rows,
             })
         })
-        .collect();
+        .collect()
+}
+
+#[component]
+pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str, can_edit: bool) -> Result {
+    let groups = load_groups(focus);
+    let has_targets = focus
+        .muscles
+        .iter()
+        .any(|muscle| muscle.target_centi_points.is_some());
     let through = focus.through_date.strftime("%b %-d").to_string();
 
     view! {
@@ -432,7 +477,11 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                 <p class="mt-2 text-[0.8rem] leading-[1.55] text-ink2">
                     "Largest rested gap: about "
                     (format_ratio(recommendation.deficit_scaled, BASELINE_WEEKS * 100))
-                    " volume points below its usual weekly pace."
+                    (if recommendation.target_based {
+                        " volume points below its weekly target."
+                    } else {
+                        " volume points below its usual weekly pace."
+                    })
                 </p>
                 if !recommendation.movements.is_empty() {
                     <p class=(format!("{META_LABEL} mt-3"))>"bias the next lift"</p>
@@ -479,16 +528,19 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                     "The muscles behind pace were touched today or yesterday. Give them room \
                      before chasing the gap."
                 </p>
-            } else if focus.baseline_ready {
+            } else if focus.baseline_ready || has_targets {
                 <h2
                     id=(heading_id)
                     class="mt-1 font-display text-xl font-semibold leading-tight"
                 >
-                    "On your pace"
+                    (if has_targets { "On track" } else { "On your pace" })
                 </h2>
                 <p class="mt-2 text-[0.8rem] leading-[1.55] text-ink2">
-                    "No regularly trained muscle is behind its usual week. Let readiness pick \
-                     the next lift."
+                    (if has_targets {
+                        "Your targets are met, and untargeted muscles with enough history are on pace. Let readiness pick the next lift."
+                    } else {
+                        "No regularly trained muscle is behind its usual week. Let readiness pick the next lift."
+                    })
                 </p>
             } else {
                 <h2
@@ -503,7 +555,7 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
             }
 
             <div class="mt-5 border-t border-hairline pt-4">
-                <header class="flex items-end justify-between gap-3">
+                <header>
                     <div>
                         <p class=(META_LABEL)>"muscle load"</p>
                         <p class="mt-0.5 font-meta text-[0.62rem] text-muted">
@@ -511,8 +563,8 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                             (through.as_str())
                         </p>
                     </div>
-                    <p class="font-meta text-[0.58rem] uppercase tracking-[0.08em] text-muted">
-                        "now / usual"
+                    <p class="mt-2 text-right font-meta text-[0.58rem] uppercase tracking-[0.08em] text-muted">
+                        "now / usual / target"
                     </p>
                 </header>
                 for group in &groups {
@@ -522,7 +574,7 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                         <li>
                             <div class="flex items-baseline justify-between gap-2">
                                 <a
-                                    class="min-w-0 truncate font-meta text-[0.68rem] text-ink2 \
+                                    class="min-w-0 font-meta text-[0.68rem] text-ink2 \
                                          underline decoration-hairline underline-offset-[0.18em] \
                                          hover:text-oxide hover:decoration-oxide"
                                     href=(row.href.as_str())
@@ -535,11 +587,15 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                                         " / "
                                         (row.usual.as_str())
                                     </span>
+                                    <span class="text-brass">
+                                        " / "
+                                        (row.target.as_deref().unwrap_or("–"))
+                                    </span>
                                 </span>
                                 <span class="sr-only">(row.accessible.as_str())</span>
                             </div>
                             <div
-                                class="relative mt-1 h-1 overflow-visible rounded-full bg-hairline"
+                                class="relative mt-2.5 h-1 overflow-visible rounded-full bg-hairline"
                                 style=(row.style.as_str())
                                 aria-hidden="true"
                             >
@@ -553,6 +609,12 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                                              left-[var(--muscle-usual-left)] w-px bg-patina"
                                     ></span>
                                 }
+                                if row.target.is_some() {
+                                    <span
+                                        class="absolute -top-2 left-[var(--muscle-target-left)] \
+                                             size-1.5 -translate-x-1/2 rotate-45 border border-brass"
+                                    ></span>
+                                }
                             </div>
                         </li>
                     }
@@ -563,7 +625,15 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str) -> Result {
                     " = now · "
                     <span class="text-patina">"tick"</span>
                     " = usual week"
+                    " · "
+                    <span class="text-brass">"diamond"</span>
+                    " = weekly target"
                 </p>
+                if can_edit {
+                    <a href="/admin/fitness-targets" class="mt-3 inline-block min-h-8 font-meta text-xs text-oxide underline underline-offset-4">
+                        "Edit targets"
+                    </a>
+                }
             </div>
         </section>
     }
@@ -579,6 +649,7 @@ struct LoadRow {
     href: String,
     recent: String,
     usual: String,
+    target: Option<String>,
     style: String,
     accessible: String,
     has_baseline: bool,
@@ -595,7 +666,7 @@ fn percent(value: u32, scale: u32) -> u32 {
 
 /// Format `numerator / denominator` to at most one decimal, rounding
 /// half-away-from-zero like the rest of the site's reader-facing numbers.
-fn format_ratio(numerator: u32, denominator: u32) -> String {
+pub(super) fn format_ratio(numerator: u32, denominator: u32) -> String {
     let tenths = numerator
         .saturating_mul(10)
         .saturating_add(denominator / 2)
@@ -717,7 +788,109 @@ mod tests {
         derive(
             sets.iter().map(OwnedSet::sample),
             "2026-07-29".parse().unwrap(),
+            &HashMap::new(),
         )
+    }
+
+    fn with_targets(sets: &[OwnedSet], targets: &[(&'static str, u32)]) -> TrainingFocus {
+        derive(
+            sets.iter().map(OwnedSet::sample),
+            "2026-07-29".parse().unwrap(),
+            &targets.iter().copied().collect(),
+        )
+    }
+
+    #[test]
+    fn targets_override_usual_and_clearing_restores_the_original_recommendation() {
+        let sets = [
+            squat("2026-06-01"),
+            squat("2026-06-15"),
+            squat("2026-07-01"),
+            squat("2026-07-15"),
+            bench("2026-06-02", "NORMAL_SET", Some(800)),
+            bench("2026-06-16", "NORMAL_SET", Some(800)),
+            bench("2026-07-02", "NORMAL_SET", Some(800)),
+            bench("2026-07-16", "NORMAL_SET", Some(800)),
+        ];
+        let before = derive_owned(&sets);
+        assert_eq!(before.recommendation.as_ref().unwrap().muscle_id, "quads");
+        let raised = with_targets(&sets, &[("mid-chest", 1500)]);
+        let pick = raised.recommendation.unwrap();
+        assert_eq!(pick.muscle_id, "mid-chest");
+        assert_eq!(pick.deficit_scaled, 12_000);
+        assert!(pick.target_based);
+        let lowered = with_targets(&sets, &[("quads", 0), ("glute-max", 0)]);
+        assert_eq!(lowered.recommendation.unwrap().muscle_id, "mid-chest");
+        assert_eq!(with_targets(&sets, &[]), before);
+    }
+
+    #[test]
+    fn a_met_target_suppresses_an_otherwise_eligible_usual_deficit() {
+        let mut sets = Vec::new();
+        for date in ["2026-06-01", "2026-06-15", "2026-07-01", "2026-07-15"] {
+            sets.extend(std::iter::repeat_n(isolated(date, "Curl", "biceps"), 4));
+        }
+        sets.push(isolated("2026-07-26", "Curl", "biceps"));
+        assert!(derive_owned(&sets).recommendation.is_some());
+        assert!(
+            with_targets(&sets, &[("biceps", 500)])
+                .recommendation
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn targets_need_no_history_but_keep_recovery_and_canonical_ties() {
+        let focus = with_targets(&[], &[("quads", 1000), ("biceps", 1000), ("abs", 0)]);
+        assert!(!focus.baseline_ready);
+        assert_eq!(focus.muscles.len(), 3);
+        assert_eq!(muscle(&focus, "abs").target_centi_points, Some(0));
+        let pick = focus.recommendation.unwrap();
+        assert_eq!(pick.muscle_id, "biceps");
+        assert!(pick.movements.is_empty());
+        assert!(pick.exercises.is_empty());
+        for date in ["2026-07-28", "2026-07-29"] {
+            let sets = [isolated(date, "Curl", "biceps")];
+            let blocked = with_targets(&sets, &[("biceps", 2000)]);
+            assert!(blocked.recommendation.is_none());
+            assert!(blocked.recovery_limited);
+            let fallback = with_targets(&sets, &[("biceps", 2000), ("quads", 1000)]);
+            assert_eq!(fallback.recommendation.unwrap().muscle_id, "quads");
+            assert!(!fallback.recovery_limited);
+        }
+    }
+
+    #[test]
+    fn target_recommendations_keep_familiar_picks_even_ahead_of_usual() {
+        let sets = [bench("2026-07-26", "NORMAL_SET", Some(1000))];
+        let focus = with_targets(&sets, &[("mid-chest", 2000)]);
+        let pick = focus.recommendation.unwrap();
+        assert_eq!(pick.movements[0].id, "horizontal-push");
+        assert_eq!(pick.exercises, ["Bench Press"]);
+        assert_eq!(pick.deficit_scaled, 12_000);
+        assert!(derive_owned(&sets).recommendation.is_none());
+    }
+
+    #[test]
+    fn load_scale_includes_targets_and_retains_zero_and_unset_descriptions() {
+        let focus = with_targets(
+            &[bench("2026-07-26", "NORMAL_SET", Some(1000))],
+            &[("mid-chest", 1000), ("abs", 0)],
+        );
+        let groups = load_groups(&focus);
+        let rows: Vec<_> = groups.iter().flat_map(|group| &group.rows).collect();
+        let chest = rows.iter().find(|row| row.label == "mid chest").unwrap();
+        assert!(chest.style.contains("--muscle-recent-width: 50%"));
+        assert!(chest.style.contains("--muscle-target-left: 100%"));
+        assert!(chest.accessible.contains("weekly target 10 points"));
+        let triceps = rows.iter().find(|row| row.label == "triceps").unwrap();
+        assert!(triceps.target.is_none());
+        assert!(triceps.accessible.contains("no weekly target set"));
+        let abs = rows.iter().find(|row| row.label == "abs").unwrap();
+        assert_eq!(abs.target.as_deref(), Some("0"));
+        assert!(abs.style.contains("--muscle-target-left: 0%"));
+        let zero = load_groups(&with_targets(&[], &[("abs", 0)]));
+        assert!(zero[0].rows[0].style.contains("--muscle-recent-width: 0%"));
     }
 
     fn muscle<'a>(focus: &'a TrainingFocus, id: &str) -> &'a MuscleLoad {

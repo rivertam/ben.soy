@@ -10,7 +10,8 @@ use anyhow::Context;
 use benjisponge::data::{
     Db,
     fitness_models::{
-        Exercise, ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout,
+        Exercise, ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, MuscleTarget,
+        Workout,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,7 @@ struct ArchiveRows {
     interruptions: Vec<Interruption>,
     exercises: Vec<Exercise>,
     references: Vec<String>,
+    targets: Vec<MuscleTarget>,
 }
 
 /// The version and everything its snapshot needs from one read transaction.
@@ -61,6 +63,7 @@ pub async fn load_archive(
     Vec<Interruption>,
     Vec<Exercise>,
     Vec<String>,
+    Vec<MuscleTarget>,
 )> {
     let mut response = db
         .query(
@@ -114,6 +117,10 @@ pub async fn load_archive(
                      SELECT exercise_name, muscle, ratio_hundredths
                      FROM exercise_muscles
                  ),
+                 targets: (
+                     SELECT record::id(id) AS muscle, weekly_centi_points
+                     FROM fitness_muscle_targets
+                 ),
                  interruptions: (
                      SELECT
                          record::id(id) AS id,
@@ -140,6 +147,7 @@ pub async fn load_archive(
         rows.interruptions,
         rows.exercises,
         rows.references,
+        rows.targets,
     ))
 }
 

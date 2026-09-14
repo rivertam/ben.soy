@@ -60,6 +60,16 @@ pub struct ExerciseMuscle {
     pub ratio_hundredths: i64,
 }
 
+/// An owner's weekly muscle-load goal, independent of exercise weights and
+/// training history. Missing rows mean usual-pace guidance; zero is explicit.
+#[derive(Clone, Debug, Deserialize, Serialize, SurrealValue, PartialEq, Eq)]
+pub struct MuscleTarget {
+    pub muscle: String,
+    pub weekly_centi_points: i64,
+}
+
+pub const MAX_MUSCLE_TARGET_CENTI_POINTS: i64 = 1_000_000;
+
 /// One performed set. There is deliberately no stored records table: badges
 /// are derived from the full set history (`archive/records.rs`), so this
 /// stays the only source of truth a future manual-logging write path needs.

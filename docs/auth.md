@@ -43,6 +43,15 @@ independently repeats that exact check before reading the request body.
 
 ## Admin pages (`/admin`, `/admin/permissions`)
 
+`/admin/fitness-targets` is exact-admin tooling listed in `ADMIN_TOOLS` and
+linked from the admin's muscle-load panel. Saved targets are public on Fitness;
+the editor is not a grantable hidden page. Its GET redirects signed-out viewers
+to login and returns the real 404 for other signed-in viewers. The POST repeats
+admin identity and positive same-origin checks, requires form content type,
+bounds the body to 16 KiB, and accepts exactly one field per canonical muscle.
+Every response is `no-store`, including validation errors and redirects. See
+`docs/fitness.md` for target units, clearing, and recommendation behavior.
+
 `/admin/plaid` is also exact-admin tooling, listed only in `ADMIN_TOOLS`.
 Its preview/generate/publish POSTs require same-origin JSON requests bounded
 to 32 KiB. Only publishing writes the current plaid, with a revision check

@@ -79,6 +79,16 @@ impl std::fmt::Display for DataError {
 impl std::error::Error for DataError {}
 
 impl Data {
+    /// Wrap a caller-initialized database (for example an embedded store).
+    /// The caller must apply this application's schema before supplying it.
+    /// Network-backed application startup continues through `from_env`.
+    pub fn from_initialized_db(db: Db) -> Self {
+        Self {
+            config: Err("database connection was supplied directly"),
+            cell: Arc::new(OnceCell::new_with(Some(db))),
+        }
+    }
+
     pub fn from_env() -> Self {
         Self::new(DataConfig::from_env())
     }
@@ -92,6 +102,9 @@ impl Data {
 
     /// A cheap clone of the shared client, connecting on first use.
     pub async fn db(&self) -> Result<Db, DataError> {
+        if let Some(db) = self.cell.get() {
+            return Ok(db.clone());
+        }
         let config = match &self.config {
             Ok(config) => config,
             Err(variable) => return Err(DataError::Unconfigured(variable)),

@@ -11,7 +11,8 @@
 use std::collections::{HashMap, HashSet};
 
 use benjisponge::data::fitness_models::{
-    Exercise, ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, Workout,
+    Exercise, ExerciseAlias, ExerciseMuscle, ExerciseTag, Interruption, LiftSet, MuscleTarget,
+    Workout,
 };
 
 use super::aliases::AliasMap;
@@ -35,6 +36,7 @@ pub struct Snapshot {
     /// Weighted muscle credit per exercise: `(granular muscle id,
     /// ratio_hundredths)` in canonical muscle order, ratios clamped 1..=100.
     weights_by_exercise: HashMap<String, Vec<(&'static str, u32)>>,
+    muscle_targets: HashMap<&'static str, u32>,
     /// Current all-time winners per canonical exercise, in record-kind order.
     /// Page-only: frozen historical badges remain the public wire contract.
     current_bests_by_exercise: HashMap<String, Vec<CurrentBest>>,
@@ -375,6 +377,7 @@ pub fn build(
         aliases,
         tags_by_exercise,
         weights_by_exercise,
+        muscle_targets: HashMap::new(),
         current_bests_by_exercise,
         interruptions: interruption_rows,
         facets,
@@ -540,6 +543,15 @@ fn build_calendar(version: i64, workouts: &[SnapWorkout]) -> api::Calendar {
 }
 
 impl Snapshot {
+    pub fn with_muscle_targets(mut self, rows: Vec<MuscleTarget>) -> anyhow::Result<Self> {
+        self.muscle_targets = super::targets::validated_map(&rows)?;
+        Ok(self)
+    }
+
+    pub fn muscle_targets(&self) -> &HashMap<&'static str, u32> {
+        &self.muscle_targets
+    }
+
     pub fn with_catalog(mut self, exercises: Vec<Exercise>, references: Vec<String>) -> Self {
         self.catalog.extend(
             exercises
@@ -622,6 +634,7 @@ impl Snapshot {
                 })
             }),
             today,
+            self.muscle_targets(),
         )
     }
 

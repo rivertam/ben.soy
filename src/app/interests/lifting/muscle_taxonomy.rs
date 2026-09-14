@@ -237,6 +237,7 @@ mod tests {
         for marker in [
             "DEFINE FIELD OVERWRITE name ON muscles TYPE string",
             "DEFINE FIELD OVERWRITE muscle ON exercise_muscles TYPE string",
+            "DEFINE FIELD OVERWRITE id ON fitness_muscle_targets TYPE string",
         ] {
             let listed: std::collections::BTreeSet<String> =
                 assert_list(schema, marker).into_iter().collect();

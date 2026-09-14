@@ -34,4 +34,5 @@ pub(crate) mod scoring;
 pub(crate) mod snapshot;
 pub(crate) mod steps;
 pub(crate) mod store;
+pub(crate) mod targets;
 use benjisponge::fitness::validate;

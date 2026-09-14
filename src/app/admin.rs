@@ -57,7 +57,7 @@ struct AdminTool {
     teaser: &'static str,
 }
 
-static ADMIN_TOOLS: [AdminTool; 3] = [
+static ADMIN_TOOLS: [AdminTool; 4] = [
     AdminTool {
         stamp: "permissions",
         href: PAGE_PATH,
@@ -77,6 +77,12 @@ static ADMIN_TOOLS: [AdminTool; 3] = [
         href: "/admin/plaid",
         title: "Plaid",
         teaser: "Build a cloth, try another colorway, and choose the plaid for Thursday.",
+    },
+    AdminTool {
+        stamp: "fitness",
+        href: "/admin/fitness-targets",
+        title: "Muscle targets",
+        teaser: "Set the weekly muscle-load goals shown on Fitness and used for next focus.",
     },
 ];
 

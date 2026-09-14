@@ -225,6 +225,24 @@ DEFINE FIELD OVERWRITE source ON exercise_muscles TYPE string
 DEFINE FIELD OVERWRITE updated_at ON exercise_muscles TYPE int
     ASSERT $value >= 0 AND $value <= 253402300799;
 
+-- Owner-set weekly volume-point targets. Blank in the editor removes a row;
+-- zero remains an explicit target. Deterministic muscle keys need no index.
+DEFINE TABLE OVERWRITE fitness_muscle_targets SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD OVERWRITE id ON fitness_muscle_targets TYPE string
+    ASSERT record::id($value) IN ['anterior-delts', 'lateral-delts', 'posterior-delts',
+        'upper-traps', 'mid-traps', 'lower-traps',
+        'lats', 'rhomboids', 'spinal-erectors',
+        'upper-chest', 'mid-chest', 'lower-chest', 'serratus-anterior',
+        'biceps', 'brachialis', 'triceps', 'forearm-flexors', 'forearm-extensors',
+        'abs', 'obliques', 'hip-flexors',
+        'quads', 'hamstrings', 'adductors',
+        'glute-max', 'glute-med',
+        'gastrocnemius', 'soleus'];
+DEFINE FIELD OVERWRITE weekly_centi_points ON fitness_muscle_targets TYPE int
+    ASSERT $value >= 0 AND $value <= 1000000 AND $value % 10 = 0;
+DEFINE FIELD OVERWRITE updated_at ON fitness_muscle_targets TYPE int
+    ASSERT $value >= 0 AND $value <= 253402300799;
+
 -- Annotate-only gym interruptions (illness, travel, …). Inclusive Eastern
 -- calendar dates plus a free-text note; never affect volume points, records,
 -- or training-focus pace. Opaque string ids keep identity across edits.

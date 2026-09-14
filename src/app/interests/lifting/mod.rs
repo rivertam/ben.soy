@@ -21,6 +21,7 @@ mod muscles;
 mod results;
 mod share;
 pub(crate) mod social_card;
+mod targets;
 mod taxonomy;
 mod training_focus;
 

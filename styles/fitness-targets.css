@@ -1,0 +1,84 @@
+.muscle-targets-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem 1.25rem;
+  margin-bottom: 1.75rem;
+  color: var(--color-muted);
+  font: .7rem var(--font-meta);
+}
+.muscle-targets-legend > span { display: inline-flex; align-items: center; gap: .5rem; }
+.muscle-targets-legend [data-target-scale] { margin-left: auto; }
+.muscle-targets-key { display: inline-block; }
+.muscle-targets-key-now { width: 1rem; height: .25rem; border-radius: 1rem; background: var(--color-oxide); }
+.muscle-targets-key-usual { width: 1px; height: .75rem; background: var(--color-patina); }
+.muscle-targets-key-target { width: .5rem; height: .5rem; transform: rotate(45deg); border: 1px solid var(--color-brass); }
+.muscle-targets-columns { margin-top: .75rem; text-align: right; color: var(--color-muted); font: .6rem var(--font-meta); }
+.muscle-target-row { margin-top: .75rem; min-width: 0; }
+.muscle-target-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.muscle-target-heading label { min-width: 0; }
+.muscle-target-numbers { display: flex; flex: none; align-items: center; gap: .35rem; color: var(--color-muted); font: .7rem var(--font-meta); }
+.muscle-target-value {
+  width: 4.5rem;
+  min-height: 2.75rem;
+  padding: .3rem .4rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: .2rem;
+  background: var(--color-page);
+  color: var(--color-brass);
+  text-align: right;
+  font: .8rem var(--font-meta);
+}
+.muscle-target-value::placeholder { color: var(--color-muted); }
+.muscle-target-value[aria-invalid=true] { border-color: var(--color-oxide); }
+.muscle-target-slider { position: relative; height: 2.75rem; margin: .15rem 0 0; }
+/* Range thumb centres travel inside half a thumb's width at either edge.
+   Give the load track the identical inset so usual and target always align. */
+.muscle-target-track { position: absolute; top: calc(50% - 2px); left: 7px; right: 7px; height: 4px; border-radius: 1rem; background: var(--color-hairline); pointer-events: none; }
+.muscle-target-now { position: absolute; inset: 0 auto 0 0; width: var(--target-recent-width); border-radius: inherit; background: color-mix(in srgb, var(--color-oxide) 75%, transparent); }
+.muscle-target-usual { position: absolute; top: -3px; bottom: -3px; left: var(--target-usual-left); width: 1px; background: var(--color-patina); }
+.muscle-target-range {
+  appearance: none;
+  -webkit-appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+.muscle-target-range::-webkit-slider-runnable-track { height: 4px; background: transparent; }
+.muscle-target-range::-moz-range-track { height: 4px; background: transparent; }
+.muscle-target-range::-moz-range-progress { background: transparent; }
+.muscle-target-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  transform: translateY(-10px) rotate(45deg);
+  border: 2px solid var(--color-brass);
+  border-radius: 2px;
+  background: var(--color-page);
+}
+.muscle-target-range::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-10px) rotate(45deg);
+  border: 2px solid var(--color-brass);
+  border-radius: 2px;
+  background: var(--color-page);
+}
+.muscle-target-row[data-target-set=false] .muscle-target-range::-webkit-slider-thumb { border-style: dashed; border-color: var(--color-muted); }
+.muscle-target-row[data-target-set=false] .muscle-target-range::-moz-range-thumb { border-style: dashed; border-color: var(--color-muted); }
+.muscle-target-value:focus-visible, .muscle-target-range:focus-visible, .muscle-target-actions button:focus-visible { outline: 2px solid var(--color-oxide); outline-offset: 3px; }
+.muscle-target-actions { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-top: -.25rem; color: var(--color-muted); font: .65rem var(--font-meta); }
+.muscle-target-actions button { min-height: 2rem; color: var(--color-oxide); cursor: pointer; text-decoration: underline; text-underline-offset: .2em; }
+.muscle-target-actions button:disabled { color: var(--color-muted); cursor: default; text-decoration: none; }
+.muscle-targets :disabled { cursor: default; }
+.muscle-targets [hidden] { display: none; }

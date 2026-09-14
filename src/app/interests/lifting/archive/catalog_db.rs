@@ -123,8 +123,18 @@ mod tests {
     };
 
     async fn snapshot(db: &Db) -> snapshot::Snapshot {
-        let (version, workouts, sets, aliases, tags, weights, interruptions, exercises, references) =
-            load_archive(db).await.unwrap();
+        let (
+            version,
+            workouts,
+            sets,
+            aliases,
+            tags,
+            weights,
+            interruptions,
+            exercises,
+            references,
+            targets,
+        ) = load_archive(db).await.unwrap();
         snapshot::build(
             version,
             workouts,
@@ -136,6 +146,8 @@ mod tests {
         )
         .unwrap()
         .with_catalog(exercises, references)
+        .with_muscle_targets(targets)
+        .unwrap()
     }
     fn definition(name: &str) -> Definition {
         Definition {
