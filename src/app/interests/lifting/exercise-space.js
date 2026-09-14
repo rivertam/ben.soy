@@ -155,7 +155,7 @@ function initExerciseSpace(root) {
     const value = (name) => style.getPropertyValue(`--color-${name}`).trim();
     const probe = document.createElement('canvas').getContext('2d');
     const rgb = (color) => { probe.clearRect(0, 0, 1, 1); probe.fillStyle = color; probe.fillRect(0, 0, 1, 1); return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3); };
-    colors = { ink: value('ink'), muted: value('muted'), grid: value('hairline'), accent: value('oxide'), page: value('page'), positive: rgb(value('patina')), negative: rgb(value('steel')), neutral: rgb(value('muted')) };
+    colors = { ink: value('ink'), muted: value('muted'), accent: value('oxide'), page: value('page'), positive: rgb(value('patina')), negative: rgb(value('steel')), neutral: rgb(value('muted')) };
   }
 
   function fitColor(score) {
@@ -304,14 +304,6 @@ function initExerciseSpace(root) {
   function draw() {
     ctx.clearRect(0, 0, width, height);
     ctx.lineWidth = 1;
-    ctx.strokeStyle = colors.grid;
-    ctx.globalAlpha = .6;
-    // A quiet floor grid makes rotation and perspective legible.
-    const line = (a, b) => { const left = project(a.map((value) => value * radius)), right = project(b.map((value) => value * radius)); ctx.beginPath(); ctx.moveTo(left.x, left.y); ctx.lineTo(right.x, right.y); ctx.stroke(); };
-    for (let step = -1.2; step < 1.3; step += .4) {
-      line([step, -1.0, -1.2], [step, -1.0, 1.2]);
-      line([-1.2, -1.0, step], [1.2, -1.0, step]);
-    }
     const item = selected == null ? null : data.exercises[selected];
     const nearby = new Set(item ? item.neighbors.map((neighbor) => data.exercises[neighbor.index].point) : data.fit_order.slice(0, 6).map((index) => data.exercises[index].point));
     drawn = data.points.map((point, index) => {
@@ -321,10 +313,8 @@ function initExerciseSpace(root) {
     if (item?.point != null) {
       const from = drawn[item.point];
       ctx.strokeStyle = colors.accent;
-      ctx.globalAlpha = .35;
-      ctx.setLineDash([3, 5]);
+      ctx.globalAlpha = .18;
       for (const index of nearby) { const to = drawn[index]; ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke(); }
-      ctx.setLineDash([]);
     }
     drawn.sort((a, b) => b.depth - a.depth);
     for (const point of drawn) {
@@ -333,7 +323,7 @@ function initExerciseSpace(root) {
       ctx.globalAlpha = item && !active ? .35 : .82;
       ctx.fillStyle = fitColor(data.exercises[point.member].score);
       ctx.beginPath(); ctx.arc(point.x, point.y, point.r, 0, Math.PI * 2); ctx.fill();
-      if (active) {
+      if (point.selected || point.index === hovered) {
         ctx.globalAlpha = 1;
         ctx.lineWidth = point.selected ? 2 : 1;
         ctx.strokeStyle = point.selected ? colors.accent : colors.ink;
