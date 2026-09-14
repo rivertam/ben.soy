@@ -289,8 +289,13 @@ reuse the local sync token or expose unrestricted SurrealQL.
   chooses warm/work set type.
   Bodyweight and negative-assistance histories are never percentage-scaled.
   Four relative controls adjust the current load by -10/-5/+5/+10 lb, while
-  direct decimal entry and the five structural set types remain available:
-  normal, warm-up, partial reps, negative reps, and drop. `SetType` in
+  direct decimal entry remains available. The left set badge opens the effort
+  choices; the smaller modifier selector after reps offers none, drop, partial,
+  and negative. Warm up sits with failure and numeric RIR in the effort picker
+  and clears both numeric effort and failure, including when chosen through a
+  load preset or restored from a draft. Choosing RIR or failure leaves warm-up
+  mode; working-set modifiers retain their chosen effort. Storage still uses
+  the five structural types: normal, warm-up, partial reps, negative reps, and drop. `SetType` in
   `fitness-entry-core` owns their wire values, labels, and UI kinds; strings
   exist only at storage/JSON boundaries. Failure is not a set type. The effort
   cell is presented as reps in reserve rather than RPE: the active set exposes

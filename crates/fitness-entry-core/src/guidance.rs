@@ -304,7 +304,7 @@ fn set_view(set: &DraftSet) -> SetView {
     let effort_hundredths = effort_to_hundredths(&set.effort);
     let effort_valid = (effort_blank || effort_hundredths.is_some())
         && !(set.failure && effort_hundredths.is_some());
-    let (rir_display, rir_spoken) = match (set.failure, effort_blank, effort_hundredths) {
+    let (mut rir_display, mut rir_spoken) = match (set.failure, effort_blank, effort_hundredths) {
         (true, true, _) => ("FAIL".to_string(), "Reached failure".to_string()),
         (true, false, _) => ("?".to_string(), "Invalid failure effort".to_string()),
         (false, true, _) => ("—".to_string(), "Not rated".to_string()),
@@ -314,6 +314,10 @@ fn set_view(set: &DraftSet) -> SetView {
         }
         (false, false, None) => ("?".to_string(), "Invalid reps in reserve".to_string()),
     };
+    if set.set_type == SetType::Warmup {
+        rir_display = "WARM".to_string();
+        rir_spoken = "Warm up".to_string();
+    }
     SetView {
         id: set.id.clone(),
         weight_valid,

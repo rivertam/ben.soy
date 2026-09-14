@@ -338,12 +338,16 @@ async function start(root) {
     if (action === "set-rir") {
       await mutate(
         {
-          type: "set_rir",
           exercise_id: control.dataset.exerciseId,
           set_id: control.dataset.setId,
-          effort_hundredths:
-            control.dataset.effortHundredths === "" ? null : Number(control.dataset.effortHundredths),
-          failure: control.dataset.failure === "true",
+          ...(control.dataset.warmup === "true"
+            ? { type: "set_type", set_type: "WARMUP_SET" }
+            : {
+                type: "set_rir",
+                effort_hundredths:
+                  control.dataset.effortHundredths === "" ? null : Number(control.dataset.effortHundredths),
+                failure: control.dataset.failure === "true",
+              }),
         },
         { exercises: true },
       );
@@ -751,11 +755,12 @@ async function start(root) {
     row.setAttribute("aria-label", `${setLabel}, ${view.set_type_spoken}`);
     const ordinal = row.querySelector("[data-entry-set-ordinal]");
     if (ordinal) ordinal.dataset.kind = view.set_kind;
-    row.querySelector("[data-entry-set-type]").textContent = view.set_type_label;
+    row.querySelector("[data-entry-set-type]").textContent =
+      ["NORMAL_SET", "WARMUP_SET"].includes(set.set_type) ? "+" : view.set_type_label;
     const select = row.querySelector("[data-entry-field='setType']");
     if (select) {
-      select.value = set.set_type;
-      select.setAttribute("aria-label", `${setLabel} type`);
+      select.value = set.set_type === "WARMUP_SET" ? "NORMAL_SET" : set.set_type;
+      select.setAttribute("aria-label", `${setLabel} modifier`);
     }
     const done = row.querySelector("[data-action='toggle-set']");
     done?.setAttribute("aria-pressed", String(set.done));
@@ -763,28 +768,35 @@ async function start(root) {
     const rir = row.querySelector("[data-entry-field='effort']");
     const dock = row.querySelector("[data-entry-load-dock]");
     if (rir) {
-      rir.querySelector("[data-entry-rir-value]").textContent = view.rir_display;
-      rir.setAttribute("aria-label", `${setLabel} reps in reserve, ${view.rir_spoken}`);
+      rir.querySelector("[data-entry-rir-value]").textContent =
+        view.effort_hundredths !== null && set.set_type !== "WARMUP_SET" && !view.failure
+          ? `${view.rir_display} RIR` : view.rir_display;
+      rir.setAttribute("aria-label", `${setLabel} effort, ${view.rir_spoken}`);
       rir.setAttribute("aria-expanded", String(Boolean(dock && !dock.hidden)));
       if (dock?.id) rir.setAttribute("aria-controls", dock.id);
       rir.toggleAttribute("aria-invalid", !view.effort_valid);
     }
     row.querySelector("[data-entry-rir-picker]")?.setAttribute(
       "aria-label",
-      `Reps in reserve for ${setLabel.toLowerCase()}`,
+      `Effort for ${setLabel.toLowerCase()}`,
     );
     for (const option of row.querySelectorAll("[data-entry-rir-option]")) {
       const raw = option.dataset.effortHundredths;
       const effort = raw === "" ? null : Number(raw);
       const failure = option.dataset.failure === "true";
-      const selected = failure
-        ? view.failure
-        : !view.failure && (set.effort === "" ? effort === null : view.effort_hundredths === effort);
+      const warmup = option.dataset.warmup === "true";
+      const selected = set.set_type === "WARMUP_SET"
+        ? warmup
+        : !warmup && (failure
+          ? view.failure
+          : !view.failure && (set.effort === "" ? effort === null : view.effort_hundredths === effort));
       option.name = `entry-rir-${set.id}`;
       option.checked = selected;
       option.setAttribute(
         "aria-label",
-        failure
+        warmup
+          ? `Warm up, ${setLabel.toLowerCase()}`
+          : failure
           ? `Failure, ${setLabel.toLowerCase()}`
           : effort === null
           ? `Do not record reps in reserve for ${setLabel.toLowerCase()}`

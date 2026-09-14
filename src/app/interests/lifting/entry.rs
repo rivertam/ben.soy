@@ -65,9 +65,8 @@ const RIR_OPTIONS: [(&str, &str, bool); 11] = [
     ("650", "3.5", false),
     ("600", "4", false),
 ];
-const SET_TYPE_OPTIONS: [(SetType, &str); 5] = [
-    (SetType::Normal, "work"),
-    (SetType::Warmup, "warm"),
+const SET_TYPE_OPTIONS: [(SetType, &str); 4] = [
+    (SetType::Normal, "none"),
     (SetType::Drop, "drop"),
     (SetType::PartialReps, "partial"),
     (SetType::NegativeReps, "negative"),
@@ -561,10 +560,10 @@ async fn exercise_template() -> Result {
                 </section>
                 <div class="entry-sets">
                     <div class="entry-set-head" aria-hidden="true">
-                        <span>"set"</span>
+                        <span>"effort"</span>
                         <span>"lb"</span>
                         <span>"reps"</span>
-                        <span>"RIR"</span>
+                        <span>"modify"</span>
                         <span>"done"</span>
                         <span></span>
                     </div>
@@ -586,15 +585,19 @@ async fn set_template() -> Result {
     view! {
         <template data-entry-set-template="">
             <div class="entry-set" data-entry-set="" role="group">
-                <label class="entry-set__ordinal" data-entry-set-ordinal="">
+                <button
+                    type="button"
+                    class="entry-set__ordinal"
+                    data-entry-set-ordinal=""
+                    data-action="show-rir"
+                    data-set-action=""
+                    data-entry-field="effort"
+                    aria-label="Set effort; optional"
+                    aria-expanded="false"
+                >
                     <span class="entry-set__number" data-entry-set-number="">"1"</span>
-                    <span class="entry-set__type" data-entry-set-type="">"work"</span>
-                    <select data-entry-field="setType" aria-label="Set type">
-                        for (set_type, label) in SET_TYPE_OPTIONS {
-                            <option value=(set_type.as_str())>(label)</option>
-                        }
-                    </select>
-                </label>
+                    <span class="entry-set__type" data-entry-rir-value="">"—"</span>
+                </button>
                 <label class="entry-set__field entry-set__field--weight">
                     <span class="sr-only" data-entry-weight-label="">"Weight in pounds; optional"</span>
                     <input
@@ -615,17 +618,14 @@ async fn set_template() -> Result {
                         data-entry-field="reps"
                     >
                 </label>
-                <button
-                    type="button"
-                    class="entry-set__rir"
-                    data-action="show-rir"
-                    data-set-action=""
-                    data-entry-field="effort"
-                    aria-label="Reps in reserve; optional"
-                    aria-expanded="false"
-                >
-                    <span data-entry-rir-value="">"—"</span>
-                </button>
+                <label class="entry-set__modifier">
+                    <span data-entry-set-type="">"+"</span>
+                    <select data-entry-field="setType" aria-label="Set modifier">
+                        for (set_type, label) in SET_TYPE_OPTIONS {
+                            <option value=(set_type.as_str())>(label)</option>
+                        }
+                    </select>
+                </label>
                 <button
                     type="button"
                     class="entry-set__done"
@@ -649,6 +649,46 @@ async fn set_template() -> Result {
                     tabindex="-1"
                     hidden=""
                 >
+                    <div
+                        class="entry-rir-picker"
+                        data-entry-rir-picker=""
+                        role="radiogroup"
+                        aria-label="Set effort"
+                    >
+                        <span class="entry-rir-picker__label" aria-hidden="true">"RIR"</span>
+                        <div class="entry-rir-options">
+                            <label class="entry-rir-option entry-rir-option--warmup">
+                                <input
+                                    type="radio"
+                                    name="entry-rir"
+                                    class="sr-only entry-rir-option__control"
+                                    data-action="set-rir"
+                                    data-entry-rir-option=""
+                                    data-warmup="true"
+                                    data-effort-hundredths=""
+                                    data-set-action=""
+                                    aria-label="Warm up"
+                                />
+                                <span aria-hidden="true">"warm up"</span>
+                            </label>
+                            for (effort_hundredths, label, failure) in RIR_OPTIONS {
+                                <label class="entry-rir-option">
+                                    <input
+                                        type="radio"
+                                        name="entry-rir"
+                                        class="sr-only entry-rir-option__control"
+                                        data-action="set-rir"
+                                        data-entry-rir-option=""
+                                        data-effort-hundredths=(effort_hundredths)
+                                        data-failure=(failure.to_string())
+                                        data-set-action=""
+                                        aria-label=(label)
+                                    />
+                                    <span aria-hidden="true">(label)</span>
+                                </label>
+                            }
+                        </div>
+                    </div>
                     <div class="entry-load-presets" data-entry-load-presets="">
                         for _ in 0..3 {
                             <button
@@ -686,32 +726,6 @@ async fn set_template() -> Result {
                                 data-set-action=""
                             >(label)</button>
                         }
-                    </div>
-                    <div
-                        class="entry-rir-picker"
-                        data-entry-rir-picker=""
-                        role="radiogroup"
-                        aria-label="Reps in reserve"
-                    >
-                        <span class="entry-rir-picker__label" aria-hidden="true">"RIR"</span>
-                        <div class="entry-rir-options">
-                            for (effort_hundredths, label, failure) in RIR_OPTIONS {
-                                <label class="entry-rir-option">
-                                    <input
-                                        type="radio"
-                                        name="entry-rir"
-                                        class="sr-only entry-rir-option__control"
-                                        data-action="set-rir"
-                                        data-entry-rir-option=""
-                                        data-effort-hundredths=(effort_hundredths)
-                                        data-failure=(failure.to_string())
-                                        data-set-action=""
-                                        aria-label=(label)
-                                    />
-                                    <span aria-hidden="true">(label)</span>
-                                </label>
-                            }
-                        </div>
                     </div>
                     <span
                         class="sr-only"
@@ -1765,6 +1779,7 @@ mod tests {
             .iter()
             .map(|(set_type, _)| *set_type)
             .collect();
+        rendered.push(SetType::Warmup);
         rendered.sort_unstable();
         let mut domain = SetType::ALL.to_vec();
         domain.sort_unstable();

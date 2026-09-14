@@ -403,7 +403,7 @@ fn sanitize_draft(value: Value) -> Option<Draft> {
                 .and_then(Value::as_str)
                 .unwrap_or("NORMAL_SET");
             let legacy_failure = raw_set_type == "FAILURE_SET";
-            let failure = raw_set
+            let mut failure = raw_set
                 .get("failure")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
@@ -414,6 +414,10 @@ fn sanitize_draft(value: Value) -> Option<Draft> {
                 effort.clear();
             }
             let set_type = raw_set_type.parse().unwrap_or_default();
+            if set_type == SetType::Warmup {
+                effort.clear();
+                failure = false;
+            }
             let valid = valid_draft_set(&weight, &reps, &effort, failure).is_ok();
             sets.push(DraftSet {
                 id: set_id,
@@ -631,6 +635,9 @@ fn apply_action(
                     set.effort = value;
                     if !js_trim(&set.effort).is_empty() {
                         set.failure = false;
+                        if set.set_type == SetType::Warmup {
+                            set.set_type = SetType::Normal;
+                        }
                     }
                 }
             }
@@ -646,7 +653,12 @@ fn apply_action(
             set_id,
             set_type,
         } => {
-            find_set_mut(draft, &exercise_id, &set_id)?.set_type = set_type;
+            let set = find_set_mut(draft, &exercise_id, &set_id)?;
+            set.set_type = set_type;
+            if set_type == SetType::Warmup {
+                set.effort.clear();
+                set.failure = false;
+            }
             Ok(ActionEffect::Render)
         }
         Action::ToggleSet {
@@ -682,6 +694,10 @@ fn apply_action(
             set.weight = weight_milli.map(weight_text).unwrap_or_default();
             if let Some(set_type) = set_type {
                 set.set_type = set_type;
+                if set_type == SetType::Warmup {
+                    set.effort.clear();
+                    set.failure = false;
+                }
             }
             Ok(ActionEffect::Render)
         }
@@ -739,6 +755,9 @@ fn apply_action(
                 return Err(ActionError::message("That RIR choice is not supported."));
             }
             let set = find_set_mut(draft, &exercise_id, &set_id)?;
+            if set.set_type == SetType::Warmup {
+                set.set_type = SetType::Normal;
+            }
             set.effort = effort_hundredths.map(hundredths_text).unwrap_or_default();
             set.failure = failure;
             Ok(ActionEffect::Render)
@@ -1299,6 +1318,7 @@ mod tests {
         });
         assert_eq!(changed.derived.set_views[0].set_type_label, "DROP");
         assert_eq!(changed.derived.set_views[0].set_kind, "drop");
+        assert_eq!(changed.derived.set_views[0].rir_display, "0.5");
 
         let failure = transition(TransitionInput {
             draft: changed.draft,
@@ -1314,6 +1334,74 @@ mod tests {
         assert!(failure.draft.exercises[0].sets[0].failure);
         assert!(failure.draft.exercises[0].sets[0].effort.is_empty());
         assert_eq!(failure.derived.set_views[0].rir_display, "FAIL");
+    }
+
+    #[test]
+    fn warmup_excludes_effort_across_choices_and_presets() {
+        for action in [
+            Action::SetType {
+                exercise_id: "exercise-0001".into(),
+                set_id: "set-00000001".into(),
+                set_type: SetType::Warmup,
+            },
+            Action::UseLoad {
+                exercise_id: "exercise-0001".into(),
+                set_id: "set-00000001".into(),
+                weight_milli: Some(50_000),
+                set_type: Some(SetType::Warmup),
+            },
+        ] {
+            for failure in [false, true] {
+                let mut value = draft();
+                value.exercises[0].sets[0].failure = failure;
+                let warm = transition(TransitionInput {
+                    draft: value,
+                    guide: guide(),
+                    action: action.clone(),
+                    context: GuidanceContext::default(),
+                });
+                let set = &warm.draft.exercises[0].sets[0];
+                assert_eq!(set.set_type, SetType::Warmup);
+                assert!(set.effort.is_empty());
+                assert!(!set.failure);
+                assert_eq!(warm.derived.set_views[0].rir_display, "WARM");
+                for (effort_hundredths, failure) in
+                    [(Some(950), false), (None, true), (None, false)]
+                {
+                    let working = transition(TransitionInput {
+                        draft: warm.draft.clone(),
+                        guide: guide(),
+                        action: Action::SetRir {
+                            exercise_id: "exercise-0001".into(),
+                            set_id: "set-00000001".into(),
+                            effort_hundredths,
+                            failure,
+                        },
+                        context: GuidanceContext::default(),
+                    });
+                    assert_eq!(working.draft.exercises[0].sets[0].set_type, SetType::Normal);
+                    assert_eq!(working.draft.exercises[0].sets[0].failure, failure);
+                    assert_eq!(
+                        working.derived.set_views[0].effort_hundredths,
+                        effort_hundredths
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restored_warmup_discards_conflicting_effort() {
+        let mut value = draft();
+        let set = &mut value.exercises[0].sets[0];
+        set.set_type = SetType::Warmup;
+        set.failure = true;
+        let restored = sanitize_draft(serde_json::to_value(value).unwrap()).unwrap();
+        let set = &restored.exercises[0].sets[0];
+        assert_eq!(set.set_type, SetType::Warmup);
+        assert!(set.effort.is_empty());
+        assert!(!set.failure);
+        assert!(set.done);
     }
 
     #[test]
