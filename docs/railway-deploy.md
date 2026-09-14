@@ -198,3 +198,51 @@ the Cloudflare zone. It needs a logged-in Railway CLI (or `RAILWAY_TOKEN`) and
 
 For Tunnel, DNS, and cache details, see
 [cloudflare-deploy.md](cloudflare-deploy.md).
+
+## Database readiness and recovery
+
+The web process owns a serial database recovery loop for its lifetime. It uses
+`Data`'s actual shared session, never a `Surreal::clone()` session. Every 30
+seconds after the first successful data-backed initialization, it runs a
+five-second, read-only query for the protected baseline migration row. This
+checks authentication, namespace/database selection, and a real table read;
+a socket connection or database ping alone does not.
+
+Three consecutive failed checks trigger one fresh connection attempt, bounded
+by 30 seconds for connect, authentication, selection, and the same query. Only
+a verified connection replaces the shared handle. Requests already holding
+an old handle can finish; their operations are not replayed. Recovery does not
+run schema definitions, migrations, or direct-sync configuration. Diary epoch
+checks still happen on every diary adapter access.
+
+If the fresh connection also fails, the process stays alive and waits an extra
+60 seconds before resuming checks. This includes database/network outages,
+invalid credentials, and a missing readiness row. Such failures never count
+toward a process restart. Three successful session replacements without three
+consecutive healthy checks between them request a restart: the server stops
+accepting requests, drains in-flight work for up to ten seconds, then exits
+with a failing status. Railway's existing `ON_FAILURE` policy allows five
+restarts. Three healthy checks clear the recovery budget. Ordinary SIGTERM and
+Ctrl+C still drain and exit successfully. Recovery events are structured logs;
+there is no detached background task or endpoint that requests a restart.
+
+Two uncached, plain-text probes are available:
+
+- `GET /healthz`: 200 while the HTTP server serves requests. Railway uses this
+  to gate the deployment handoff.
+- `GET /readyz`: 200 only when the initialized shared session passes the query;
+  otherwise 503. The response contains no database details. It never connects,
+  repairs, writes, or bootstraps the database.
+
+Before a normal data-backed request initializes `Data`, `/readyz` returns 503
+and the recovery loop does nothing. This preserves the drained diary migration
+handoff described above: do **not** configure Railway to gate deployments on
+`/readyz`, or force initialization from a deployment health probe while the old
+process is still serving. Use `/readyz` for ongoing monitoring after the
+traffic handoff and first data-backed request. Railway health checks only run
+during deployment; the in-process recovery loop supplies the ongoing checks.
+See [Railway health checks](https://docs.railway.com/deployments/healthchecks)
+and [restart policy](https://docs.railway.com/deployments/restart-policy).
+
+Unconfigured and caller-supplied clients do not run automatic recovery. The
+web process owns this behavior; the sync CLIs and Podrick are unchanged.

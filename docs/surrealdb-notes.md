@@ -24,9 +24,9 @@ SURREALDB_USERNAME
 SURREALDB_PASSWORD
 ```
 
-`SURREALDB_ENDPOINT` may be `http://` or `ws://`. Prefer `http://` in
-production for large fitness snapshot reads; the site binary
-enables both `protocol-http` and `protocol-ws`.
+`SURREALDB_ENDPOINT` may be `http://` or `ws://`. Prefer `ws://` in
+production: HTTP RPC sessions have expired after about an hour in production
+(see `docs/railway-deploy.md`). The site enables both protocols.
 
 `Data::db()` initializes lazily, uses eight-second budgets for connection,
 authentication, namespace selection, direct-sync configuration, and health,
@@ -34,6 +34,14 @@ and 60-second budgets for each schema/bootstrap stage. It applies
 `src/schema.surql`, the site migrations, and the diary migrations. Errors name
 the stage that failed. A failed initialization is not cached, so a later
 request can retry.
+
+The initialized client is shared through `Arc<Surreal<Any>>`; cloning
+`Surreal` itself creates a new session whose setup can race its queries.
+The web process checks the initialized shared session and can atomically
+replace it with a freshly authenticated, verified connection. Replacement
+never reruns bootstrap, migrates, or replays an in-flight operation. Readiness
+checks do not initialize the store; see the database recovery section of
+`docs/railway-deploy.md` for thresholds, shutdown, and probe behavior.
 
 ## Schema bootstrap
 

@@ -4,6 +4,7 @@ mod diary_sync;
 mod favicon;
 mod feed;
 mod fitness_entry_sync;
+mod health;
 mod home;
 mod interests;
 mod llms;
@@ -27,8 +28,7 @@ use topcoat::{
     router::{OriginPolicy, Router, RouterBuilderDiscoverExt},
 };
 
-pub fn router() -> Router {
-    let data = Data::from_env();
+pub fn router(data: Data) -> Router {
     let builder = Router::builder()
         .assets(AssetBundle::load().unwrap())
         .discover()

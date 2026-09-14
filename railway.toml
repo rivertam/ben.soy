@@ -5,6 +5,9 @@ builder = "DOCKERFILE"
 dockerfilePath = "deploy/Dockerfile"
 
 [deploy]
+# Readiness is separate: bootstrap must wait until the old process is drained.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 60
 # CMD is already in the Dockerfile; Railway injects PORT at runtime.
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
