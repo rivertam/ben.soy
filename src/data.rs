@@ -58,7 +58,7 @@ pub struct DataConfig {
 #[derive(Clone)]
 pub struct Data {
     config: Result<Arc<DataConfig>, &'static str>,
-    cell: Arc<OnceCell<Db>>,
+    cell: Arc<OnceCell<Arc<Db>>>,
 }
 
 #[derive(Debug)]
@@ -85,7 +85,7 @@ impl Data {
     pub fn from_initialized_db(db: Db) -> Self {
         Self {
             config: Err("database connection was supplied directly"),
-            cell: Arc::new(OnceCell::new_with(Some(db))),
+            cell: Arc::new(OnceCell::new_with(Some(Arc::new(db)))),
         }
     }
 
@@ -100,24 +100,28 @@ impl Data {
         }
     }
 
-    /// A cheap clone of the shared client, connecting on first use.
-    pub async fn db(&self) -> Result<Db, DataError> {
+    /// Share the initialized session, connecting on first use. Cloning Surreal
+    /// itself creates a new session whose setup can race its first query.
+    pub async fn db(&self) -> Result<Arc<Db>, DataError> {
         if let Some(db) = self.cell.get() {
-            return Ok(db.clone());
+            return Ok(Arc::clone(db));
         }
         let config = match &self.config {
             Ok(config) => config,
             Err(variable) => return Err(DataError::Unconfigured(variable)),
         };
-        let db = self.cell.get_or_try_init(|| connect(config)).await?;
-        Ok(db.clone())
+        let db = self
+            .cell
+            .get_or_try_init(|| async { connect(config).await.map(Arc::new) })
+            .await?;
+        Ok(Arc::clone(db))
     }
 
     /// The diary's stricter Interface: migrations run at initialization, then
     /// every use rechecks the shared epoch ledger. A cached predecessor thus
     /// refuses work after activation; deployments drain its in-flight work
     /// before advancing the epoch (docs/diary-sync.md).
-    pub async fn diary_db(&self) -> Result<Db, DataError> {
+    pub async fn diary_db(&self) -> Result<Arc<Db>, DataError> {
         let db = self.db().await?;
         diary_migrations::require_current(&db)
             .await
@@ -252,4 +256,17 @@ async fn define_direct_sync_access(db: &Db) -> Result<(), DataError> {
 
 fn connect_error(error: surrealdb::Error) -> DataError {
     DataError::Connect(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn data_clones_share_the_same_database_session() {
+        let data = Data::from_initialized_db(Db::init());
+        let other = data.clone();
+        let (first, second) = tokio::join!(data.db(), other.db());
+        assert!(Arc::ptr_eq(&first.unwrap(), &second.unwrap()));
+    }
 }

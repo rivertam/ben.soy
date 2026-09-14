@@ -73,7 +73,7 @@ async fn api_today_snapshot(cx: &Cx) -> Result<Response> {
         return Ok(api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid day"));
     }
     let result = async {
-        today_store::live_snapshot(&open_db(app_context::<Data>(cx)).await?, day.as_deref()).await
+        today_store::live_snapshot(&*open_db(app_context::<Data>(cx)).await?, day.as_deref()).await
     }
     .await;
     Ok(match result {

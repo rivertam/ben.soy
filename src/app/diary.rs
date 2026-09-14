@@ -559,7 +559,7 @@ async fn api_snapshot(cx: &Cx) -> Result<Response> {
 }
 
 async fn snapshot_entries(data: &Data) -> std::result::Result<Vec<DiaryEntry>, String> {
-    store::all_entries(&open_db(data).await?).await
+    store::all_entries(&*open_db(data).await?).await
 }
 
 /// The private half of the direct-sync keypair (PKCS#8 PEM). Both halves
@@ -701,7 +701,7 @@ fn api_error(status: StatusCode, message: &'static str) -> Response {
 /// store runs); these adapters fetch the shared handle from `Data` and keep
 /// every call site's old shape, including the all-errors-are-Strings rule
 /// the outage branches match on.
-async fn open_db(data: &Data) -> std::result::Result<diary_core::Db, String> {
+async fn open_db(data: &Data) -> std::result::Result<std::sync::Arc<diary_core::Db>, String> {
     data.diary_db().await.map_err(|error| error.to_string())
 }
 
@@ -709,7 +709,7 @@ async fn entry_page(
     data: &Data,
     page_number: usize,
 ) -> std::result::Result<(Vec<DiaryEntry>, usize), String> {
-    let mut entries = store::all_entries(&open_db(data).await?).await?;
+    let mut entries = store::all_entries(&*open_db(data).await?).await?;
     entries.retain(|entry| !entry.deleted());
     entries.sort_by_key(|entry| std::cmp::Reverse((entry.occurred_at(), entry.id.clone())));
     let total = entries.len();
@@ -730,7 +730,7 @@ async fn search_page(
     needle: &str,
     page_number: usize,
 ) -> std::result::Result<(Vec<SearchHit>, usize), String> {
-    let entries = store::all_entries(&open_db(data).await?).await?;
+    let entries = store::all_entries(&*open_db(data).await?).await?;
     let ranked = search::rank(needle, entries.into_iter().filter(|entry| !entry.deleted()));
     let total = ranked.len();
     let hits = search::page_hits(&ranked, page_number)
@@ -741,7 +741,7 @@ async fn search_page(
 }
 
 async fn entry_by_id(data: &Data, id: &str) -> std::result::Result<Option<DiaryEntry>, String> {
-    store::entry_by_id(&open_db(data).await?, id).await
+    store::entry_by_id(&*open_db(data).await?, id).await
 }
 
 async fn remove_entry(data: &Data, id: &str) -> std::result::Result<(), String> {
