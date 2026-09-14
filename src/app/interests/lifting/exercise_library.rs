@@ -74,6 +74,7 @@ async fn library(cx: &Cx) -> Result<Response> {
                 <a href="/fitness" class="exercise-link">"← Fitness"</a>
                 <header class="exercise-library__header">
                     <h1>"Exercises"</h1>
+                    <a class="exercise-link" href="/fitness/space">"Explore exercise space"</a>
                     if owner { <a class="entry-button" href="/fitness/exercises/new">"New exercise"</a> }
                 </header>
                 <form method="get" action=(LIBRARY) class="exercise-library__search">

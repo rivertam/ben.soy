@@ -101,12 +101,22 @@ reuse the local sync token or expose unrestricted SurrealQL.
   scale with headroom above the largest load/goal; larger typed values expand
   it without rescaling during a drag. Nothing publishes until “Save targets”.
   Goals allow 0–10,000 weekly points, at most one decimal. Blank clears a target and
-  restores usual-pace guidance; explicit zero suppresses that muscle's deficit.
-  Targets replace usual pace for next-focus ranking and bypass historical
-  regularity requirements, but still exclude muscles touched today/yesterday.
-  Untargeted muscles keep their baseline gates; ties keep canonical order.
-  Target-based familiar picks may include observed options already ahead of
-  usual pace; an unobserved muscle can show its target gap without picks.
+  restores usual-pace guidance; explicit zero gives no positive deficit and
+  counts existing load as a surplus. Targets replace usual pace and bypass
+  historical regularity requirements. Untargeted muscles keep their baseline
+  gates. Muscles touched today/yesterday earn no positive recommendation
+  credit, while above-target load still counts against an exercise.
+  The compass ranks observed exercises by the dot product of the complete
+  signed `(target - now)` muscle vector and each exercise's stored ratios.
+  Neither exercise vectors nor individual gaps are normalized: compounds gain
+  credit across several gaps, and above-target muscles subtract credit.
+  Target and recent load use centi-points multiplied by eight to match the
+  unrounded baseline total. Exercise history, then name, break equal-score
+  ties. The headline names the best positive match and describes its strongest
+  positive muscle contribution; movement links follow the ranked exercises.
+  Without a positive familiar match, the largest rested gap remains visible
+  (canonical muscle order breaks ties). An unobserved muscle can show its
+  target gap without picks.
   `fitness_muscle_targets` stores integer `weekly_centi_points` by canonical
   muscle key. Values are configuration, never seeded or imported. The editor
   reads current settings directly (never stale defaults), and its exact-admin,
@@ -115,8 +125,7 @@ reuse the local sync token or expose unrestricted SurrealQL.
   snapshot. Failed submissions retain their text; a committed save with a
   delayed refresh is reported separately. Target reads join the coherent
   archive snapshot query; public API envelopes do not change. The entry
-  guide already reuses the same recommendation and snapshot version, so its
-  next refresh receives target-based guidance without a worker migration.
+  guide receives the complete signed vector and the same snapshot version.
 - `/fitness/exercise/{urlencoded-name}` shows one canonical exercise's
   aliases, ratios, tags, and merged history. Alias-valued URLs permanently
   redirect to the canonical page, and old alias-valued `exercise` filters
@@ -227,23 +236,26 @@ reuse the local sync token or expose unrestricted SurrealQL.
   restoration cannot move it above the viewport. Before the first exercise is
   added, Push/Pull/Squat/Hinge/Arms/Shoulders directions come first; choosing
   one
-  exposes a familiar exercise and a stale or under-paced option from that
-  movement family, followed by inline search as the fallback. Once an exercise
-  is added those starter directions collapse into two next-exercise lanes,
-  again followed by search. “Deepen” rewards muscles and movement patterns
-  already worked plus missing isolation complements (for example direct
-  triceps after pressing), while “expand” rewards stale or under-paced muscles
-  and new body regions. Every selected exercise and every added set row enters
-  the active-session load immediately, so the lanes are recomputed as the
-  draft changes rather than waiting for completion. Repeating a high-fatigue
-  compound in the same movement/body region is strongly penalized, and a
-  second high-axial-load compound is penalized more strongly; for example,
-  Full Squat prevents Sumo Deadlift from surfacing merely to add spinal-erector
-  work. The breadth reward increases as the trailing 21-day workout pace falls
-  below roughly 3.5 sessions/week.
-  Archive deficits reuse training focus's target/regularity and today/yesterday
-  recovery gates, and a need stops boosting “expand” once that muscle enters
-  the in-progress workout.
+  exposes the best two dot-product matches from that movement family,
+  followed by inline search as the fallback. Once an exercise is added those
+  starter directions collapse into two next-exercise lanes, again followed
+  by search. “Deepen” ranks muscles and movement patterns already worked plus
+  missing isolation complements (for example direct triceps after pressing);
+  “expand” takes the best remaining match across the catalog. Both use the
+  shared signed dot product first within each fatigue tier; complements,
+  novelty, staleness, and familiarity only break equal fits. Every selected
+  exercise and every added set row enters the active-session load immediately,
+  so the lanes recompute as the draft changes without waiting for completion.
+  Repeating a high-fatigue compound in the same movement/body region ranks
+  below less redundant options, and a second high-axial-load compound ranks
+  lower still; for example, Full Squat prevents Sumo Deadlift from surfacing
+  merely to add spinal-erector work. Broad deficits naturally favor compound
+  coverage without a separate workout-frequency multiplier.
+  Archive deltas reuse training focus's target/regularity and today/yesterday
+  recovery gates. The worker subtracts effort- and ratio-weighted planned
+  session load on the same eight-week scale: partial work gradually reduces
+  a gap, meeting it removes the bonus, and exceeding it incurs a penalty.
+  Blank unrated working rows count two volume points; warm-ups count zero.
   Suggestions are guidance only; archive search always remains available.
   The entry exercise picker matches every search term independently, regardless
   of word order or intervening words: `barbell curl` and `curl bicep` can find
@@ -780,6 +792,72 @@ joined set history; exercises need no workout to be listed or selectable.
 Retained rows from a deleted workout remain in this library. Archive facets,
 counts, records, calendars, and feeds still join through sets.
 
+`/fitness/space` is the public, no-store exercise map, linked from the
+training compass, entry suggestions/search, and the library. It uses the
+live entry guide's catalog and signed muscle deltas. Search-as-you-type and
+the no-JS GET search share entry's Rust `search_exercises` ranking; the
+no-store `/fitness/space/search?q=…` endpoint returns at most 12 mapped
+matches. Names, aliases, equipment, movements, and muscle terms all match.
+Selecting a result or point updates `?exercise=…` and lists its closest
+matches across all 28 muscles. Entry links open a new tab to preserve the
+current draft.
+
+Map positions use UMAP in a dedicated worker, with a pinned, locally served
+`umap-js` bundle. Positions use Euclidean distance between square roots of
+muscle weights scaled to each exercise's strongest muscle. Unlike normalizing
+the total involvement, this allows profile lengths to vary and avoids
+diluting a support muscle when a compound includes additional muscles.
+The square-root transform gives secondary involvement more influence.
+Movement tags label groups but do not affect
+distances. Rust computes exact neighborhoods; the worker uses a fixed seed,
+three components, 400 epochs,
+and `minDist=0.3`. It then runs 100 metric-MDS SMACOF iterations from the
+UMAP layout, fitting distances between every pair to reduce exaggerated
+inter-cluster gaps and preserve affinities across movements. Rust supplies
+the complete distance matrix as a packed upper triangle, quantized to
+four decimal places. No movement or exercise has a hand-placed location.
+Identical muscle proportions plus movement tags share a
+point. Movement names label clusters. The page reports average overlap of
+the nearest ten neighbors before/after embedding, not explained variance.
+PCA is retained only as a finite small-catalog or failed-worker fallback.
+The comparison list uses full-dimensional cosine similarity of original
+weights, never the projection. Colors and training-fit scores use the original, unnormalized
+weights with the shared signed dot product, so above-target load still
+subtracts credit and compound involvement is preserved. Fit uses saved
+workouts, without draft sets or session-fatigue adjustments. Cardio and
+exercises without positive canonical muscle weights are omitted. The
+Canvas renderer projects the worker's 3D points to the screen; Rust
+owns neighborhoods, comparisons, search, and scoring. Comparisons and search remain
+usable without JavaScript.
+
+The comparison column starts with the best training fits, or the closest
+muscle matches when an exercise is selected, followed by the compact load
+list. “Clear & See Suggestions,” beside “Reset View,” clears the selected
+exercise and search to restore the training fits. Wide desktops get more
+space for the map and load list. The clear control is hidden when there is
+no selection or search text; set history is hidden until an exercise is
+selected and disappears immediately on clearing. Selecting an exercise loads its set history below the
+map. `/fitness/space/history?exercise=…&history_page=…` renders the same
+no-store history section as the initial page, four workouts per page, with
+the archive's shared set formatting and effort badges. Stale requests are
+aborted/ignored during selection changes. Paging also works through native
+links without JavaScript; history is never bundled for the entire catalog.
+
+The compact muscle-load list uses all 28 muscles from the same snapshot as
+the guide. Selecting an exercise previews two normal sets at RPE 9, using
+the shared volume score (eight points total before muscle weighting).
+Each bar shows trained load, the preview addition, and remaining capacity,
+with its end fixed at the explicit weekly target or usual weekly pace when
+unset; a tick retains the usual-pace reference. The right-hand value is just
+the preview addition as a percentage of the target, sorted largest addition
+first with canonical-order ties and unaffected muscles last; without a
+selection it shows current load in canonical order. An overflow arrow exposes totals beyond 100% without
+rescaling the target. Zero targets and missing baselines have no percentage
+scale and show added points instead. Titles and accessible descriptions
+include exact displayed current, preview, target, and usual point totals.
+This preview reads raw load rows, independent of the recovery/regularity
+gates applied to recommendation deltas.
+
 Owner-only `/fitness/exercises/new` and the entry search's “Create” action use
 one server-rendered wizard: name, movement/equipment, then muscle weights.
 Name-only creation skips classification; suggestions copy one existing
@@ -806,8 +884,10 @@ saves online, fetches `/fitness/entry/guide`, calls the worker's `refresh_guide`
 then uses the normal add action. Repeat this for multiple exercises in one
 workout. Refresh changes only the durable guide and broadcasts to other tabs;
 it never bootstraps/rebases the draft, touches set values, or changes queued
-workouts. A stale guide cannot replace a newer one. Protocol 2 adds this
-operation and defaults alias/equipment fields when reading old guides;
+workouts. A stale guide cannot replace a newer one. Protocol 3 carries signed
+full-muscle guidance in the existing `muscle_needs` field; older nonnegative
+stored guides remain readable. It retains guide refresh and the defaulted
+alias/equipment fields introduced in protocol 2.
 IndexedDB, draft, and outbox formats stay at version 1. Incompatible pages
 use the existing reload guard. Failed saves retain the form, and a committed
 save followed by attachment failure offers “Retry adding”. Offline exercise

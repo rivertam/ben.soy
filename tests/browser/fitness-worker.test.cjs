@@ -163,6 +163,32 @@ const exerciseGuide = (name) => ({
   last_date: '', set_count: 0, workout_count: 0, muscles: [], movements: [], coarse_muscles: [], marks: [], loads: [], picker_meta: 'No workouts logged yet', picker_mark: '',
 });
 
+test('signed muscle deltas survive worker refresh and reload without changing the workout', async () => {
+  const w = worker();
+  const before = structuredClone(w.state.draft);
+  const queued = finalization('queue-kept-0001', 1).queued;
+  w.outbox.set(queued.queue_id, queued);
+  const updatedGuide = {
+    ...guide(), version: 2, muscle_needs: { quads: 8000, 'glute-max': -4000 },
+    exercises: [
+      { ...exerciseGuide('Squat'), muscles: [['quads', 100]], movements: ['squat-type'] },
+      { ...exerciseGuide('Leg Press'), muscles: [['quads', 100], ['glute-max', 50]], movements: ['squat-type'] },
+      { ...exerciseGuide('Leg Extension'), muscles: [['quads', 100]], movements: ['knee-extension'] },
+    ],
+  };
+  const refreshed = await w.rpc('refresh_guide', { guide: updatedGuide }).reply;
+  assert.equal(refreshed.ok, true);
+  assert.equal(w.state.guide.muscle_needs['glute-max'], -4000);
+  assert.equal(refreshed.value.derived.deepen.name, 'Leg Extension');
+  assert.equal(refreshed.value.derived.deepen.score, 480000);
+  assert.equal(refreshed.value.derived.expand.score, 280000);
+  const restored = await w.rpc('bootstrap', { guide: guide(), now_utc: '2026-09-03 15:00:00' }).reply;
+  assert.equal(restored.ok, true);
+  assert.deepEqual(restored.value.derived.deepen, refreshed.value.derived.deepen);
+  assert.deepEqual(w.state.draft, before);
+  assert.deepEqual(w.outbox.get(queued.queue_id), queued);
+});
+
 test('repeated catalog refresh and attachment preserve one workout and every earlier set', async () => {
   const w = worker();
   const queued = finalization('queue-kept-0001', 1).queued;

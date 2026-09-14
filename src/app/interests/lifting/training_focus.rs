@@ -9,6 +9,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+pub(super) use fitness_entry_core::muscle_load::BASELINE_WEEKS;
+use fitness_entry_core::muscle_load::{MuscleDeltas, delta_scaled, dot_product};
 use jiff::{ToSpan, civil::Date};
 use topcoat::{
     Result,
@@ -24,7 +26,6 @@ use super::{
 use crate::util::urlencode;
 
 const RECENT_DAYS: i64 = 7;
-pub(super) const BASELINE_WEEKS: u32 = 8;
 const BASELINE_DAYS: i64 = BASELINE_WEEKS as i64 * RECENT_DAYS;
 const MIN_BASELINE_TRAINING_DAYS: usize = 4;
 const MIN_MUSCLE_BASELINE_DAYS: usize = 2;
@@ -49,6 +50,8 @@ pub(super) struct TrainingFocus {
     pub(super) through_date: Date,
     /// Canonical order; configured targets appear even without any history.
     pub(super) muscles: Vec<MuscleLoad>,
+    /// The complete signed vector, after regularity and recovery gates.
+    pub(super) muscle_deltas: MuscleDeltas,
     pub(super) recommendation: Option<FocusRecommendation>,
     /// Usual-based recommendations wait for sufficient history; explicit
     /// targets do not depend on this flag.
@@ -73,10 +76,15 @@ pub(super) struct MuscleLoad {
 
 impl MuscleLoad {
     fn deficit_scaled(&self) -> u32 {
-        self.target_centi_points
-            .map(|target| target.saturating_mul(BASELINE_WEEKS))
-            .unwrap_or(self.baseline_centi_points)
-            .saturating_sub(self.recent_centi_points.saturating_mul(BASELINE_WEEKS))
+        self.delta_scaled().clamp(0, i64::from(u32::MAX)) as u32
+    }
+
+    fn delta_scaled(&self) -> i64 {
+        delta_scaled(
+            self.target_centi_points,
+            self.baseline_centi_points,
+            self.recent_centi_points,
+        )
     }
 }
 
@@ -110,11 +118,6 @@ impl PeriodVolume {
             Period::Baseline => self.baseline = self.baseline.saturating_add(centi_points),
         }
     }
-
-    fn deficit_scaled(self) -> u32 {
-        self.baseline
-            .saturating_sub(self.recent.saturating_mul(BASELINE_WEEKS))
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -139,9 +142,8 @@ pub(super) fn derive<'a>(
         .expect("eight-week focus baseline is representable");
 
     let mut by_muscle: HashMap<&'static str, PeriodVolume> = HashMap::new();
-    let mut movement_by_muscle: HashMap<(&'static str, &'static str), PeriodVolume> =
-        HashMap::new();
-    let mut exercise_by_muscle: HashMap<(&'static str, String), PeriodVolume> = HashMap::new();
+    let mut exercise_weights = HashMap::new();
+    let mut exercise_volume: HashMap<&str, PeriodVolume> = HashMap::new();
     let mut movements_by_exercise: HashMap<String, BTreeSet<&'static str>> = HashMap::new();
     let mut baseline_training_dates = BTreeSet::new();
     let mut baseline_dates_by_muscle: HashMap<&'static str, BTreeSet<Date>> = HashMap::new();
@@ -170,6 +172,11 @@ pub(super) fn derive<'a>(
         if weights.is_empty() {
             continue;
         }
+        exercise_weights.insert(set.exercise_name, weights);
+        exercise_volume
+            .entry(set.exercise_name)
+            .or_default()
+            .add(period, points);
         let movements: BTreeSet<&'static str> = set
             .tags
             .unwrap_or_default()
@@ -204,16 +211,6 @@ pub(super) fn derive<'a>(
                     .and_modify(|last| *last = (*last).max(date))
                     .or_insert(date);
             }
-            for movement in &movements {
-                movement_by_muscle
-                    .entry((*muscle, *movement))
-                    .or_default()
-                    .add(period, centi_points);
-            }
-            exercise_by_muscle
-                .entry((*muscle, set.exercise_name.to_string()))
-                .or_default()
-                .add(period, centi_points);
         }
     }
 
@@ -239,110 +236,98 @@ pub(super) fn derive<'a>(
     let rest_cutoff = today
         .checked_add((-1).days())
         .expect("focus recovery cutoff is representable");
-    let is_eligible_deficit = |muscle: &MuscleLoad| {
-        (muscle.target_centi_points.is_some()
+    let has_target = |muscle: &MuscleLoad| {
+        muscle.target_centi_points.is_some()
             || (baseline_ready
                 && baseline_dates_by_muscle
                     .get(muscle.id)
-                    .is_some_and(|dates| dates.len() >= MIN_MUSCLE_BASELINE_DAYS)))
-            && muscle.deficit_scaled() > 0
+                    .is_some_and(|dates| dates.len() >= MIN_MUSCLE_BASELINE_DAYS))
     };
-    let has_deficit = muscles.iter().any(is_eligible_deficit);
+    let has_deficit = muscles
+        .iter()
+        .any(|muscle| has_target(muscle) && muscle.delta_scaled() > 0);
+    let muscle_deltas: MuscleDeltas = muscles
+        .iter()
+        .filter(|muscle| has_target(muscle))
+        .map(|muscle| {
+            let delta = muscle.delta_scaled();
+            // Recovery removes the incentive to train a fresh deficit, but
+            // must not erase the penalty for an already over-target muscle.
+            let recovering = last_recent_date_by_muscle
+                .get(muscle.id)
+                .is_some_and(|last| *last >= rest_cutoff);
+            (
+                muscle.id.to_string(),
+                if recovering { delta.min(0) } else { delta },
+            )
+        })
+        .collect();
 
+    let mut exercises: Vec<(&str, i64)> = exercise_weights
+        .iter()
+        .map(|(name, weights)| (*name, dot_product(&muscle_deltas, weights)))
+        .filter(|(_, score)| *score > 0)
+        .collect();
+    exercises.sort_unstable_by(|(left_name, left), (right_name, right)| {
+        let left_volume = exercise_volume[left_name];
+        let right_volume = exercise_volume[right_name];
+        right
+            .cmp(left)
+            .then_with(|| right_volume.baseline.cmp(&left_volume.baseline))
+            .then_with(|| right_volume.recent.cmp(&left_volume.recent))
+            .then_with(|| left_name.cmp(right_name))
+    });
+
+    // Describe the strongest gap addressed by the best exercise. Without a
+    // familiar matching exercise, an explicit target still gets a gap readout.
+    let best_weights = exercises.first().map(|(name, _)| exercise_weights[name]);
     let recommendation = muscles
         .iter()
         .enumerate()
-        .filter(|(_, muscle)| is_eligible_deficit(muscle))
-        .filter(|(_, muscle)| {
-            last_recent_date_by_muscle
-                .get(muscle.id)
-                .is_none_or(|last| *last < rest_cutoff)
+        .filter_map(|(index, muscle)| {
+            let delta = muscle_deltas.get(muscle.id).copied().unwrap_or(0);
+            let ratio = best_weights.map_or(100, |weights| {
+                weights
+                    .iter()
+                    .find(|(id, _)| *id == muscle.id)
+                    .map_or(0, |(_, ratio)| *ratio)
+            });
+            (delta > 0 && ratio > 0).then_some((index, muscle, delta * i64::from(ratio)))
         })
-        .map(|(index, muscle)| (index, muscle, muscle.deficit_scaled()))
         .max_by(|(left_index, _, left), (right_index, _, right)| {
-            left.cmp(right)
-                // Reverse the index comparison so canonical order wins
-                // an exact deficit tie under `max_by`.
-                .then_with(|| right_index.cmp(left_index))
+            left.cmp(right).then_with(|| right_index.cmp(left_index))
         })
-        .map(|(_, muscle, deficit_scaled)| {
-            let target_based = muscle.target_centi_points.is_some();
-            let mut movements: Vec<(&'static str, PeriodVolume)> = movement_by_muscle
+        .map(|(_, muscle, _)| {
+            let exercises: Vec<String> = exercises
                 .iter()
-                .filter_map(|((candidate_muscle, movement), volume)| {
-                    (*candidate_muscle == muscle.id
-                        && (target_based || (volume.baseline > 0 && volume.deficit_scaled() > 0)))
-                        .then_some((*movement, *volume))
-                })
-                .collect();
-            movements.sort_unstable_by(|(left_id, left), (right_id, right)| {
-                right
-                    .deficit_scaled()
-                    .cmp(&left.deficit_scaled())
-                    .then_with(|| right.baseline.cmp(&left.baseline))
-                    .then_with(|| {
-                        if target_based {
-                            right.recent.cmp(&left.recent)
-                        } else {
-                            std::cmp::Ordering::Equal
-                        }
-                    })
-                    .then_with(|| movement_order(left_id).cmp(&movement_order(right_id)))
-            });
-            movements.dedup_by_key(|(id, _)| *id);
-            let movements = movements
-                .into_iter()
                 .take(2)
-                .filter_map(|(id, _)| {
-                    canonical_movement_label(id).map(|label| MovementSuggestion { id, label })
-                })
-                .collect::<Vec<_>>();
-            let suggested_movement_ids: BTreeSet<&str> =
-                movements.iter().map(|movement| movement.id).collect();
-
-            let mut exercises: Vec<(String, PeriodVolume)> = exercise_by_muscle
-                .iter()
-                .filter_map(|((candidate_muscle, exercise), volume)| {
-                    (*candidate_muscle == muscle.id
-                        && (target_based || (volume.baseline > 0 && volume.deficit_scaled() > 0))
-                        && (suggested_movement_ids.is_empty()
-                            || movements_by_exercise.get(exercise).is_some_and(
-                                |candidate_movements| {
-                                    candidate_movements
-                                        .iter()
-                                        .any(|movement| suggested_movement_ids.contains(movement))
-                                },
-                            )))
-                    .then_some((exercise.clone(), *volume))
-                })
+                .map(|(name, _)| (*name).to_string())
                 .collect();
-            exercises.sort_unstable_by(|(left_name, left), (right_name, right)| {
-                right
-                    .deficit_scaled()
-                    .cmp(&left.deficit_scaled())
-                    .then_with(|| right.baseline.cmp(&left.baseline))
-                    .then_with(|| {
-                        if target_based {
-                            right.recent.cmp(&left.recent)
-                        } else {
-                            std::cmp::Ordering::Equal
-                        }
-                    })
-                    .then_with(|| left_name.cmp(right_name))
-            });
-            exercises.dedup_by(|(left, _), (right, _)| left == right);
-
+            // Movement links describe the ranked exercises; they never
+            // pre-filter candidates before the full-vector comparison.
+            let mut movements = Vec::new();
+            for exercise in &exercises {
+                let mut ids: Vec<_> = movements_by_exercise[exercise].iter().copied().collect();
+                ids.sort_unstable_by_key(|id| movement_order(id));
+                for id in ids {
+                    if movements
+                        .iter()
+                        .any(|movement: &MovementSuggestion| movement.id == id)
+                    {
+                        continue;
+                    }
+                    if let Some(label) = canonical_movement_label(id) {
+                        movements.push(MovementSuggestion { id, label });
+                    }
+                }
+            }
             FocusRecommendation {
                 muscle_id: muscle.id,
                 muscle_label: muscle.label,
-                deficit_scaled,
-                target_based,
+                deficit_scaled: muscle.deficit_scaled(),
+                target_based: muscle.target_centi_points.is_some(),
                 movements,
-                exercises: exercises
-                    .into_iter()
-                    .take(2)
-                    .map(|(name, _)| name)
-                    .collect(),
+                exercises,
             }
         });
     let recovery_limited = has_deficit && recommendation.is_none();
@@ -350,6 +335,7 @@ pub(super) fn derive<'a>(
     TrainingFocus {
         through_date: today,
         muscles,
+        muscle_deltas,
         recommendation,
         baseline_ready,
         recovery_limited,
@@ -467,15 +453,25 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str, can_edit: boo
                     class="mt-1 font-display text-xl font-semibold leading-tight"
                 >
                     "Next: "
-                    <a
-                        class="text-oxide underline decoration-oxide/35 underline-offset-[0.18em]"
-                        href=(muscle_url(recommendation.muscle_id))
-                    >
-                        (recommendation.muscle_label)
-                    </a>
+                    if let Some(exercise) = recommendation.exercises.first() {
+                        <a
+                            class="text-oxide underline decoration-oxide/35 underline-offset-[0.18em]"
+                            href=(exercise_url(exercise))
+                        >
+                            (exercise.as_str())
+                        </a>
+                    } else {
+                        <a
+                            class="text-oxide underline decoration-oxide/35 underline-offset-[0.18em]"
+                            href=(muscle_url(recommendation.muscle_id))
+                        >
+                            (recommendation.muscle_label)
+                        </a>
+                    }
                 </h2>
                 <p class="mt-2 text-[0.8rem] leading-[1.55] text-ink2">
-                    "Largest rested gap: about "
+                    (recommendation.muscle_label)
+                    ": about "
                     (format_ratio(recommendation.deficit_scaled, BASELINE_WEEKS * 100))
                     (if recommendation.target_based {
                         " volume points below its weekly target."
@@ -500,10 +496,10 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str, can_edit: boo
                         }
                     </div>
                 }
-                if !recommendation.exercises.is_empty() {
-                    <p class=(format!("{META_LABEL} mt-3"))>"familiar picks"</p>
+                if recommendation.exercises.len() > 1 {
+                    <p class=(format!("{META_LABEL} mt-3"))>"also fits"</p>
                     <ul class="mt-1 space-y-1 font-meta text-[0.7rem] leading-[1.45]">
-                        for exercise in &recommendation.exercises {
+                        for exercise in recommendation.exercises.iter().skip(1) {
                             <li>
                                 <a
                                     class="text-ink2 underline decoration-hairline \
@@ -553,6 +549,11 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str, can_edit: boo
                     "This waits for four prior training days before it calls a next focus."
                 </p>
             }
+
+            <a
+                class="space-entry-link"
+                href=(super::exercise_space::page_url(focus.recommendation.as_ref().and_then(|recommendation| recommendation.exercises.first().map(String::as_str))))
+            >"Explore exercise space"</a>
 
             <div class="mt-5 border-t border-hairline pt-4">
                 <header>
@@ -825,6 +826,47 @@ mod tests {
     }
 
     #[test]
+    fn compound_coverage_can_beat_the_single_largest_gap() {
+        let sets = [
+            bench("2026-06-01", "NORMAL_SET", Some(1000)),
+            isolated("2026-06-01", "Chest Fly", "mid-chest"),
+            isolated("2026-06-01", "Curl", "biceps"),
+        ];
+        let focus = with_targets(
+            &sets,
+            &[("mid-chest", 1000), ("triceps", 1000), ("biceps", 1300)],
+        );
+        assert_eq!(focus.muscle_deltas.len(), 3);
+        let pick = focus.recommendation.unwrap();
+        assert_eq!(pick.exercises, ["Bench Press", "Curl"]);
+        assert_eq!(pick.muscle_id, "mid-chest");
+        assert!(focus.muscle_deltas["biceps"] > focus.muscle_deltas["mid-chest"]);
+    }
+
+    #[test]
+    fn above_target_secondary_load_favors_a_more_selective_exercise() {
+        let sets = [
+            bench("2026-06-01", "NORMAL_SET", Some(1000)),
+            isolated("2026-06-01", "Chest Fly", "mid-chest"),
+            isolated("2026-07-29", "Triceps Extension", "triceps"),
+        ];
+        let focus = with_targets(&sets, &[("mid-chest", 1000), ("triceps", 0)]);
+        assert_eq!(
+            focus.muscle_deltas["triceps"], -4000,
+            "recovery must retain surplus penalties"
+        );
+        assert_eq!(
+            focus.recommendation.unwrap().exercises,
+            ["Chest Fly", "Bench Press"]
+        );
+        let recovering = with_targets(&sets, &[("mid-chest", 1000), ("triceps", 2000)]);
+        assert_eq!(
+            recovering.muscle_deltas["triceps"], 0,
+            "a fresh deficit earns no bonus"
+        );
+    }
+
+    #[test]
     fn a_met_target_suppresses_an_otherwise_eligible_usual_deficit() {
         let mut sets = Vec::new();
         for date in ["2026-06-01", "2026-06-15", "2026-07-01", "2026-07-15"] {
@@ -1014,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn familiar_exercises_match_the_suggested_movement_types() {
+    fn movement_links_follow_the_best_exercises_without_filtering_them_first() {
         let sets = [
             shoulder("2026-06-01", "Press A", "vertical-push"),
             shoulder("2026-06-08", "Press A", "vertical-push"),
@@ -1027,9 +1069,8 @@ mod tests {
             shoulder("2026-06-15", "Face Pull", "rear-delt"),
             shoulder("2026-06-22", "Face Pull", "rear-delt"),
             shoulder("2026-07-01", "Face Pull", "rear-delt"),
-            // This exercise has a larger individual gap than either press,
-            // but its movement ranks third and therefore should not be shown
-            // under the two suggested movement types.
+            // Equal muscle fits use exercise history to break ties, without
+            // excluding a candidate because its movement used to rank third.
             shoulder("2026-06-01", "Lateral Raise", "shoulder-abduction"),
             shoulder("2026-06-08", "Lateral Raise", "shoulder-abduction"),
             shoulder("2026-06-15", "Lateral Raise", "shoulder-abduction"),
@@ -1044,9 +1085,9 @@ mod tests {
                 .iter()
                 .map(|movement| movement.id)
                 .collect::<Vec<_>>(),
-            vec!["vertical-push", "rear-delt"]
+            vec!["rear-delt", "shoulder-abduction"]
         );
-        assert_eq!(recommendation.exercises, vec!["Face Pull", "Press A"]);
+        assert_eq!(recommendation.exercises, vec!["Face Pull", "Lateral Raise"]);
     }
 
     #[test]

@@ -626,7 +626,7 @@ mod tests {
             .handle(request(
                 "POST",
                 PATH,
-                form_body(&[("biceps", "12.5"), ("abs", "0")]),
+                form_body(&[("biceps", "12.5"), ("quads", "8"), ("abs", "0")]),
             ))
             .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -637,8 +637,10 @@ mod tests {
         assert_eq!(response.headers()[header::CACHE_CONTROL], NO_STORE);
         let guide_after = super::super::entry::entry_guide(&fitness).await.unwrap();
         assert_eq!(guide_after.version, guide_before.version + 1);
-        assert_eq!(guide_after.muscle_needs.len(), 1);
+        assert_eq!(guide_after.muscle_needs.len(), 3);
         assert_eq!(guide_after.muscle_needs["biceps"], 10_000);
+        assert_eq!(guide_after.muscle_needs["quads"], 6400);
+        assert_eq!(guide_after.muscle_needs["abs"], 0);
 
         let response = app
             .handle(

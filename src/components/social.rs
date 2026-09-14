@@ -286,6 +286,9 @@ fn description_for_path(path: &str) -> String {
         "/fitness/exercises" => {
             "Ben Berman’s exercise library: movements, equipment, muscle involvement, and workout history."
         }
+        "/fitness/space" => {
+            "Explore Ben Berman’s exercises in 3D, compare muscle profiles, and find nearby training options."
+        }
         "/thoughts" => "Thoughts of varying seriousness and length from Ben Berman.",
         "/resume" => {
             "Ben Berman’s résumé: software engineering, technical leadership, and the projects behind the timeline."
@@ -330,7 +333,12 @@ fn is_indexable_path(path: &str) -> bool {
     }
     if matches!(
         path,
-        "/" | "/thoughts" | "/resume" | "/llms" | "/fitness/log" | "/fitness/exercises"
+        "/" | "/thoughts"
+            | "/resume"
+            | "/llms"
+            | "/fitness/log"
+            | "/fitness/exercises"
+            | "/fitness/space"
     ) {
         return true;
     }

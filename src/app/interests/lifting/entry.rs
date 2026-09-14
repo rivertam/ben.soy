@@ -5,7 +5,7 @@
 //! Lyfta imports; no partial sets or draft rows enter SurrealDB.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -292,6 +292,7 @@ async fn suggestion_lane(lane: &str, label: &str, choice: &str, reason: &str) ->
             <h3 class="entry-fork__choice" data-entry-suggestion-choice="">(choice)</h3>
             <p class="entry-fork__reason" data-entry-suggestion-reason="">(reason)</p>
             <p class="entry-exercise__meta" data-entry-suggestion-mark=""></p>
+            <a class="space-entry-link" data-entry-suggestion-space="" href="/fitness/space" target="_blank" rel="noopener" hidden="">"Nearby exercises"</a>
             <button
                 type="button"
                 class="entry-fork__add"
@@ -381,6 +382,7 @@ async fn quick_entry() -> Result {
                     </button>
                 </template>
             </div>
+            <a class="space-entry-link" href="/fitness/space" target="_blank" rel="noopener">"Explore exercise space"</a>
         </section>
     }
 }
@@ -723,6 +725,13 @@ async fn set_template() -> Result {
 }
 
 pub(super) async fn entry_guide(store: &FitnessStore) -> std::result::Result<GuideConfig, String> {
+    entry_guide_with_focus(store).await.map(|(guide, _)| guide)
+}
+
+/// The map needs the ungated load rows alongside guidance from the same snapshot.
+pub(super) async fn entry_guide_with_focus(
+    store: &FitnessStore,
+) -> std::result::Result<(GuideConfig, super::training_focus::TrainingFocus), String> {
     let snapshot = store.snapshot().await.map_err(|error| error.to_string())?;
     let today = eastern::eastern_date(jiff::Timestamp::now());
     let page = snapshot.sets_page(&Filters {
@@ -778,20 +787,9 @@ pub(super) async fn entry_guide(store: &FitnessStore) -> std::result::Result<Gui
     }
 
     let focus = snapshot.training_focus(today);
-    // Reuse training-focus's regularity and recovery gates rather than
-    // treating every raw deficit as a prescription. The browser suppresses
-    // this need again once the muscle enters the in-progress workout.
-    let muscle_needs: BTreeMap<String, u32> = focus
-        .recommendation
-        .as_ref()
-        .map(|recommendation| {
-            (
-                recommendation.muscle_id.to_string(),
-                recommendation.deficit_scaled,
-            )
-        })
-        .into_iter()
-        .collect();
+    // Both surfaces use the same complete signed vector and gates. The
+    // worker subtracts the in-progress draft before scoring each candidate.
+    let muscle_needs = focus.muscle_deltas.clone();
 
     let mut names = snapshot.exercise_names();
     names.sort_unstable_by_key(|name| name.to_ascii_lowercase());
@@ -876,15 +874,18 @@ pub(super) async fn entry_guide(store: &FitnessStore) -> std::result::Result<Gui
         });
     }
 
-    Ok(GuideConfig {
-        version: snapshot.version,
-        today: today.to_string(),
-        // Twenty-one dates are exactly three weeks. Add one before division
-        // to round the tenths representation to the nearest third.
-        weekly_pace_tenths: (recent_workouts.saturating_mul(10) + 1) / 3,
-        muscle_needs,
-        exercises,
-    })
+    Ok((
+        GuideConfig {
+            version: snapshot.version,
+            today: today.to_string(),
+            // Twenty-one dates are exactly three weeks. Add one before division
+            // to round the tenths representation to the nearest third.
+            weekly_pace_tenths: (recent_workouts.saturating_mul(10) + 1) / 3,
+            muscle_needs,
+            exercises,
+        },
+        focus,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

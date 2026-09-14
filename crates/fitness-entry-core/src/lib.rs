@@ -6,6 +6,7 @@
 
 mod draft;
 mod guidance;
+pub mod muscle_load;
 mod queue;
 mod text;
 
@@ -29,7 +30,7 @@ pub use text::{
     SetType, hundredths_text, js_trim, pounds_to_milli, utf16_len, valid_set_type, weight_text,
 };
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const PUBLISH_PATH: &str = "/fitness/entry/publish";
 
 pub const MAX_EXERCISES: usize = 75;

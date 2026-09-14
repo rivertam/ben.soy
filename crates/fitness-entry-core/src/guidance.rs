@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::MAX_WEIGHT_MILLI;
 use crate::draft::{ActionError, Draft, DraftSet};
+use crate::muscle_load::{MuscleDeltas, dot_product, remaining_deltas};
 use crate::text::{
     SetType, effort_to_hundredths, hundredths_text, js_trim, pounds_to_milli, reps_value,
 };
@@ -18,7 +19,8 @@ pub struct GuideConfig {
     pub version: i64,
     pub today: String,
     pub weekly_pace_tenths: usize,
-    pub muscle_needs: BTreeMap<String, u32>,
+    /// Complete signed target-minus-current vector on the shared baseline scale.
+    pub muscle_needs: MuscleDeltas,
     pub exercises: Vec<ExerciseGuide>,
 }
 
@@ -359,7 +361,6 @@ struct SessionContext {
     secondary: BTreeSet<String>,
     movements: BTreeSet<String>,
     coarse: BTreeSet<String>,
-    exercise_count: usize,
     high_fatigue_count: usize,
     high_axial_count: usize,
     high_fatigue_movements: BTreeSet<String>,
@@ -381,7 +382,6 @@ fn session_context(
             .iter()
             .filter_map(|set| views.get(set.id.as_str()).copied())
             .collect();
-        context.exercise_count += 1;
         context.movements.extend(item.movements.iter().cloned());
         context.coarse.extend(item.coarse_muscles.iter().cloned());
         if item.high_fatigue {
@@ -477,105 +477,52 @@ fn starter_suggestions(draft: &Draft, guide: &GuideConfig, direction: &str) -> V
                 .any(|movement| movements.contains(&movement.as_str()))
         })
         .collect();
-    let max_need = guide
-        .muscle_needs
-        .values()
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .max(1) as f64;
-    let needed = best_by(&candidates, |item| {
-        starter_score(item, guide, max_need, false)
-    });
-    let familiar_candidates: Vec<&ExerciseGuide> = candidates
-        .iter()
-        .copied()
-        .filter(|item| Some(item.name.as_str()) != needed.map(|item| item.name.as_str()))
+    let mut ranked: Vec<_> = candidates
+        .into_iter()
+        .filter(|item| !item.muscles.is_empty())
+        .map(|item| (item, dot_product(&guide.muscle_needs, &item.muscles)))
         .collect();
-    let familiar = best_by(&familiar_candidates, |item| {
-        starter_score(item, guide, max_need, true)
+    ranked.sort_by(|(left, left_score), (right, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| right.workout_count.cmp(&left.workout_count))
+            .then_with(|| left.name.cmp(&right.name))
     });
-    let needed_label = needed
-        .filter(|item| starter_need(item, guide, max_need) > 0.0)
-        .map_or("Less recent", |_| "Behind pace");
-    let mut suggestions = Vec::new();
-    if let Some(item) = familiar.or(needed) {
-        let (label, lane, score) = if familiar.is_some() {
-            (
-                "Familiar",
-                "deepen",
-                starter_score(item, guide, max_need, true),
+    ranked
+        .into_iter()
+        .take(2)
+        .enumerate()
+        .map(|(index, (item, score))| {
+            let label = if index == 0 {
+                "Best fit"
+            } else {
+                "Alternative"
+            };
+            let reason = if score > 0 {
+                "Matches your training gaps."
+            } else {
+                "Fits this movement."
+            };
+            present_suggestion(
+                item,
+                if index == 0 { "expand" } else { "deepen" },
+                label,
+                reason.to_string(),
+                score as f64,
+                guide,
             )
-        } else {
-            (
-                needed_label,
-                "expand",
-                starter_score(item, guide, max_need, false),
-            )
-        };
-        suggestions.push(present_suggestion(
-            item,
-            lane,
-            label,
-            label.to_string(),
-            score,
-            guide,
-        ));
-    }
-    if familiar.is_some()
-        && let Some(item) = needed
-    {
-        suggestions.push(present_suggestion(
-            item,
-            "expand",
-            needed_label,
-            needed_label.to_string(),
-            starter_score(item, guide, max_need, false),
-            guide,
-        ));
-    }
-    suggestions
-}
-
-fn best_by<'a>(
-    items: &'a [&'a ExerciseGuide],
-    score: impl Fn(&ExerciseGuide) -> f64,
-) -> Option<&'a ExerciseGuide> {
-    items.iter().copied().max_by(|left, right| {
-        score(left)
-            .total_cmp(&score(right))
-            .then_with(|| left.workout_count.cmp(&right.workout_count))
-            .then_with(|| right.name.cmp(&left.name))
-    })
-}
-
-fn starter_score(item: &ExerciseGuide, guide: &GuideConfig, max_need: f64, familiar: bool) -> f64 {
-    let familiarity = ((item.workout_count + 1) as f64).log2();
-    let days = days_since(&guide.today, &item.last_date).unwrap_or(30);
-    let staleness = days.clamp(0, 30) as f64 / 30.0;
-    let need = starter_need(item, guide, max_need);
-    if familiar {
-        familiarity * 30.0 + ((item.set_count + 1) as f64).log2() + need * 4.0
-    } else {
-        need * 90.0 + staleness * 25.0 + familiarity * 2.0
-    }
-}
-
-fn starter_need(item: &ExerciseGuide, guide: &GuideConfig, max_need: f64) -> f64 {
-    item.muscles
-        .iter()
-        .map(|(muscle, ratio)| {
-            f64::from(*guide.muscle_needs.get(muscle).unwrap_or(&0)) / max_need
-                * (f64::from(*ratio) / 100.0)
         })
-        .sum()
+        .collect()
 }
 
 #[derive(Clone)]
 struct Scored<'a> {
     item: &'a ExerciseGuide,
+    fit_score: i64,
+    fatigue_penalty: f64,
     deep_score: f64,
     expand_score: f64,
+    deep_eligible: bool,
     complement: f64,
     strongest_needed_muscle: String,
     novel: usize,
@@ -591,24 +538,21 @@ fn next_suggestions(
         .iter()
         .map(|exercise| exercise.name.as_str())
         .collect();
-    let max_need = guide
-        .muscle_needs
-        .values()
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .max(1) as f64;
-    let weekly_pace = guide.weekly_pace_tenths as f64 / 10.0;
-    let breadth = (1.0 + (3.5 - weekly_pace).max(0.0) / 2.0).min(2.25);
+    let deltas = remaining_deltas(&guide.muscle_needs, &context.muscle_load);
     let mut scored: Vec<Scored<'_>> = guide
         .exercises
         .iter()
         .filter(|item| !selected.contains(item.name.as_str()))
         .filter(|item| !item.muscles.is_empty() && !item.movements.iter().any(|m| m == "cardio"))
-        .map(|item| score_candidate(item, guide, context, max_need, breadth))
+        .map(|item| score_candidate(item, guide, context, &deltas))
         .collect();
+    // Deepen chooses among this session's overlaps and complements. Expand
+    // takes the best remaining fit, so the overall winner appears in a lane.
     scored.sort_by(compare_scored(|item| item.deep_score));
-    let deep = scored.first().cloned();
+    let deep = scored
+        .iter()
+        .find(|candidate| candidate.deep_eligible)
+        .cloned();
     scored.sort_by(compare_scored(|item| item.expand_score));
     let expand = scored.into_iter().find(|candidate| {
         deep.as_ref()
@@ -621,11 +565,16 @@ fn next_suggestions(
 }
 
 fn compare_scored(
-    score: impl Fn(&Scored<'_>) -> f64 + Copy,
+    tie_break: impl Fn(&Scored<'_>) -> f64 + Copy,
 ) -> impl Fn(&Scored<'_>, &Scored<'_>) -> Ordering {
     move |left, right| {
-        score(right)
-            .total_cmp(&score(left))
+        // Repeated heavy compounds and axial loading remain fatigue checks.
+        // Within the same fatigue tier the dot product decides; familiarity,
+        // novelty and session complements only resolve equal fits.
+        left.fatigue_penalty
+            .total_cmp(&right.fatigue_penalty)
+            .then_with(|| right.fit_score.cmp(&left.fit_score))
+            .then_with(|| tie_break(right).total_cmp(&tie_break(left)))
             .then_with(|| right.item.workout_count.cmp(&left.item.workout_count))
             .then_with(|| left.item.name.cmp(&right.item.name))
     }
@@ -635,25 +584,22 @@ fn score_candidate<'a>(
     item: &'a ExerciseGuide,
     guide: &GuideConfig,
     context: &SessionContext,
-    max_need: f64,
-    breadth: f64,
+    deltas: &MuscleDeltas,
 ) -> Scored<'a> {
     let mut overlap = 0.0;
     let mut bridge = 0;
-    let mut need = 0.0;
     let mut strongest_needed_muscle = String::new();
-    let mut strongest_need = 0.0;
+    let mut strongest_need = 0_i64;
     for (muscle, ratio) in &item.muscles {
         let session = f64::from(*context.muscle_load.get(muscle).unwrap_or(&0));
         overlap += session * (f64::from(*ratio) / 100.0);
-        let muscle_need = if session > 0.0 {
-            0.0
-        } else {
-            f64::from(*guide.muscle_needs.get(muscle).unwrap_or(&0)) / max_need
-        };
-        need += muscle_need * (f64::from(*ratio) / 100.0);
-        if muscle_need * f64::from(*ratio) > strongest_need {
-            strongest_need = muscle_need * f64::from(*ratio);
+        let contribution = deltas
+            .get(muscle)
+            .copied()
+            .unwrap_or(0)
+            .saturating_mul(i64::from(*ratio));
+        if contribution > strongest_need {
+            strongest_need = contribution;
             strongest_needed_muscle = muscle.clone();
         }
         if *ratio >= 75 && context.secondary.contains(muscle) && !context.primary.contains(muscle) {
@@ -696,29 +642,19 @@ fn score_candidate<'a>(
         .min(30) as f64
         / 30.0;
     let familiarity = ((item.workout_count + 1) as f64).log2();
-    let deep_score = if context.exercise_count == 0 {
-        familiarity * 16.0 + need * 28.0 + staleness * 8.0
-    } else {
-        overlap * 0.16
-            + f64::from(bridge) * 72.0
-            + movement_overlap as f64 * 28.0
-            + complement * 80.0
-            + need * 18.0
-            + familiarity
-            - fatigue_penalty
-            - axial_penalty
-    };
-    let expand_score = need * 96.0 * breadth
-        + novel as f64 * 34.0 * breadth
-        + staleness * 15.0
-        + familiarity * 1.5
-        - overlap * 0.08
-        - fatigue_penalty
-        - axial_penalty;
+    let deep_score = overlap * 0.16
+        + f64::from(bridge) * 72.0
+        + movement_overlap as f64 * 28.0
+        + complement * 80.0
+        + familiarity;
+    let expand_score = novel as f64 * 34.0 + staleness * 15.0 + familiarity * 1.5 - overlap * 0.08;
     Scored {
         item,
+        fit_score: dot_product(deltas, &item.muscles),
+        fatigue_penalty: fatigue_penalty + axial_penalty,
         deep_score,
         expand_score,
+        deep_eligible: overlap > 0.0 || bridge > 0 || movement_overlap > 0 || complement > 0.0,
         complement,
         strongest_needed_muscle,
         novel,
@@ -811,12 +747,14 @@ fn scored_suggestion(
     } else {
         "Changes the pattern.".to_string()
     };
-    let score = if lane == "deepen" {
-        scored.deep_score
-    } else {
-        scored.expand_score
-    };
-    present_suggestion(scored.item, lane, lane, reason, score, guide)
+    present_suggestion(
+        scored.item,
+        lane,
+        lane,
+        reason,
+        scored.fit_score as f64,
+        guide,
+    )
 }
 
 fn present_suggestion(
@@ -1071,7 +1009,7 @@ mod tests {
             version: 3,
             today: "2026-09-03".into(),
             weekly_pace_tenths: 20,
-            muscle_needs: BTreeMap::from([("triceps".into(), 90), ("hamstrings".into(), 60)]),
+            muscle_needs: BTreeMap::from([("triceps".into(), 8000), ("hamstrings".into(), 4800)]),
             exercises: vec![
                 item(
                     "Bench Press",
@@ -1180,8 +1118,8 @@ mod tests {
                 query: String::new(),
             },
         );
-        assert_eq!(starters.starters[0].name, "Bench Press");
-        assert_eq!(starters.starters[0].label, "Familiar");
+        assert_eq!(starters.starters[0].name, "Incline Press");
+        assert_eq!(starters.starters[0].label, "Best fit");
 
         let search = derive(
             &empty,
@@ -1199,6 +1137,87 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Bench Press", "Incline Press"]
         );
+    }
+
+    #[test]
+    fn starters_and_next_picks_share_compound_and_surplus_ranking() {
+        let mut guide = guide();
+        guide.muscle_needs = MuscleDeltas::from([("chest".into(), 8000), ("triceps".into(), 8000)]);
+        guide
+            .exercises
+            .retain(|item| ["Bench Press", "Leg Curl"].contains(&item.name.as_str()));
+        guide.exercises.push(item(
+            "Chest Fly",
+            100,
+            "2026-07-01",
+            &[("chest", 100)],
+            &["horizontal-push"],
+            &["chest"],
+        ));
+        let mut empty = draft_with("Leg Curl");
+        empty.exercises.clear();
+        let direction = GuidanceContext {
+            direction: "push".into(),
+            query: String::new(),
+        };
+        for (triceps, expected) in [(8000, "Bench Press"), (-8000, "Chest Fly")] {
+            guide.muscle_needs.insert("triceps".into(), triceps);
+            for _ in 0..2 {
+                let starters = derive(&empty, &guide, &direction);
+                let next = derive(&draft_with("Leg Curl"), &guide, &GuidanceContext::default());
+                assert_eq!(starters.starters[0].name, expected);
+                assert_eq!(next.expand.as_ref().unwrap().name, expected);
+                assert_eq!(starters.starters[0].score, next.expand.unwrap().score);
+                guide.exercises.reverse();
+            }
+        }
+    }
+
+    #[test]
+    fn planned_sets_shift_the_best_fit_gradually_and_warmups_do_not() {
+        let mut guide = guide();
+        guide.muscle_needs = MuscleDeltas::from([("chest".into(), 6000), ("triceps".into(), 4000)]);
+        guide
+            .exercises
+            .retain(|item| ["Bench Press", "Triceps Extension"].contains(&item.name.as_str()));
+        guide.exercises.push(item(
+            "Chest Fly",
+            5,
+            "2026-08-01",
+            &[("chest", 100)],
+            &["horizontal-push"],
+            &["chest"],
+        ));
+        let mut draft = draft_with("Bench Press");
+        draft.exercises[0].sets[0].done = false;
+        draft.exercises[0].sets[0].reps.clear();
+        let first = derive(&draft, &guide, &GuidanceContext::default());
+        assert_eq!(first.deepen.as_ref().unwrap().name, "Chest Fly");
+        assert_eq!(first.deepen.as_ref().unwrap().score, 280_000.0);
+        assert_eq!(
+            first.expand.as_ref().unwrap().score,
+            240_000.0,
+            "partial triceps credit leaves a real gap"
+        );
+
+        let mut second = draft.exercises[0].sets[0].clone();
+        second.id = "set-00000002".into();
+        second.set_type = SetType::Warmup;
+        draft.exercises[0].sets.push(second);
+        let warm = derive(&draft, &guide, &GuidanceContext::default());
+        assert_eq!(warm.deepen, first.deepen);
+        assert_eq!(warm.expand, first.expand);
+
+        draft.exercises[0].sets[1].set_type = SetType::Normal;
+        let second = derive(&draft, &guide, &GuidanceContext::default());
+        assert_eq!(second.deepen.as_ref().unwrap().name, "Triceps Extension");
+        assert_eq!(second.deepen.as_ref().unwrap().score, 80_000.0);
+        assert_eq!(second.expand.as_ref().unwrap().score, -40_000.0);
+
+        draft.exercises[0].sets.pop();
+        let restored = derive(&draft, &guide, &GuidanceContext::default());
+        assert_eq!(restored.deepen, first.deepen);
+        assert_eq!(restored.expand, first.expand);
     }
 
     #[test]
@@ -1269,8 +1288,8 @@ mod tests {
         draft.exercises[0].sets.push(second);
         let two_rows = derive(&draft, &guide(), &GuidanceContext::default());
         assert!(
-            two_rows.deepen.as_ref().unwrap().score > one_row.deepen.as_ref().unwrap().score,
-            "another planned set should increase the session-overlap score"
+            two_rows.deepen.as_ref().unwrap().score < one_row.deepen.as_ref().unwrap().score,
+            "another planned set reduces the remaining gap before completion"
         );
     }
 

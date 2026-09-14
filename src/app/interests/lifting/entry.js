@@ -875,6 +875,11 @@ async function start(root) {
     );
     if (!node) return;
     const action = node.querySelector("[data-action='use-suggestion']");
+    const spaceLink = node.querySelector("[data-entry-suggestion-space]");
+    if (spaceLink) {
+      spaceLink.hidden = !suggestion;
+      spaceLink.href = suggestion ? `/fitness/space?exercise=${encodeURIComponent(suggestion.name)}` : '/fitness/space';
+    }
     if (!suggestion) {
       action.disabled = true;
       action.removeAttribute("data-suggestion-name");
