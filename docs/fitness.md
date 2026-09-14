@@ -126,12 +126,19 @@ reuse the local sync token or expose unrestricted SurrealQL.
   delayed refresh is reported separately. Target reads join the coherent
   archive snapshot query; public API envelopes do not change. The entry
   guide receives the complete signed vector and the same snapshot version.
-- `/fitness/exercise/{urlencoded-name}` shows one canonical exercise's
-  aliases, ratios, tags, and merged history. Alias-valued URLs permanently
-  redirect to the canonical page, and old alias-valued `exercise` filters
-  continue to match. The signed-in `ADMIN_EMAIL` sees the same page with
-  editable canonical name, one-alias-per-line input, and 0–100 muscle inputs.
-  `POST /fitness/exercise/{name}` repeats the admin check,
+- `/fitness/exercise/{urlencoded-name}` and its `/lifting` predecessor now
+  permanently redirect to `/fitness/exercises?exercise=…&details=1`.
+  Exercise details are a public dialog in the catalog, with a compact front/back
+  body diagram, current muscle weights, movement patterns, equipment, and aliases.
+  The signed-in `ADMIN_EMAIL` can edit this same dialog. Only selected values
+  appear initially; “Add” disclosures reveal searchable choices, and selected
+  muscles and tags can be removed. The diagram responds to unsaved weight changes.
+  Saving the definition refreshes the selected exercise, map, and load preview.
+  Name and alias editing is collapsed, with the existing review step inside
+  the dialog. Whole-catalog history and definitions are never bundled into pages.
+  `/fitness/exercises/details?exercise=…` supplies the same no-store server
+  markup used by deep links; anonymous markup contains no write controls.
+  The legacy `POST /fitness/exercise/{name}` repeats the admin check,
   requires same-origin evidence, bounds and strictly decodes the form
   (exactly one field per canonical muscle), rejects all-zero saves (they
   would re-open the exercise to reseeding), replaces the exercise's rows
@@ -145,7 +152,7 @@ reuse the local sync token or expose unrestricted SurrealQL.
   confirmed rename/merge atomically rewrites normalized set names, taxonomy
   keys, the canonical exercise record, and deterministic muscle-weight rows
   while leaving `raw_exercise_name` untouched. The former canonical name and
-  every merged exercise's aliases are retained. The exercise whose page began
+  every merged exercise's aliases are retained. The exercise whose dialog began
   the edit supplies taxonomy and muscle weights when present; records derive
   again from the combined history.
 - `/fitness` derives its lifting-only muscle-load and next-focus panel from those same
@@ -785,19 +792,29 @@ sync endpoint continues to accept only
 
 ## Exercise library and creation
 
-`/fitness/exercises` is the public catalog, linked from Fitness. Its name,
+`/fitness/exercises` is the public, no-store catalog and exercise explorer,
+linked from Fitness, the training compass, and entry. The default view is
+the 3D map with training fits, muscle-load previews, and selected set history.
+The header switches between the map and `/fitness/exercises?view=list`, the
+complete alphabetical library; list searches retain `view=list`. Both views
+offer the owner's existing “New exercise” action. The library's name,
 alias, equipment, movement, and muscle search shares the entry picker's Rust
 ranking. Catalog membership comes from canonicalized `exercises` rows plus
 joined set history; exercises need no workout to be listed or selectable.
 Retained rows from a deleted workout remain in this library. Archive facets,
 counts, records, calendars, and feeds still join through sets.
 
-`/fitness/space` is the public, no-store exercise map, linked from the
-training compass, entry suggestions/search, and the library. It uses the
+Old `/fitness/space` URLs permanently redirect to `/fitness/exercises`,
+preserving the query string, including selected exercises and history pages.
+Its old search and history endpoints redirect to their new catalog paths too.
+The map uses the
 live entry guide's catalog and signed muscle deltas. Search-as-you-type and
 the no-JS GET search share entry's Rust `search_exercises` ranking; the
-no-store `/fitness/space/search?q=…` endpoint returns at most 12 mapped
+no-store `/fitness/exercises/search?q=…` endpoint returns at most 12 catalog
 matches. Names, aliases, equipment, movements, and muscle terms all match.
+Search includes cardio and exercises without muscle profiles. These remain
+selectable with history and the details dialog, but have no map point or fit
+score until a usable profile exists; the list also includes the whole catalog.
 Selecting a result or point updates `?exercise=…` and lists its closest
 matches across all 28 muscles. Entry links open a new tab to preserve the
 current draft.
@@ -828,7 +845,10 @@ workouts, without draft sets or session-fatigue adjustments. Cardio and
 exercises without positive canonical muscle weights are omitted. The
 Canvas renderer projects the worker's 3D points to the screen; Rust
 owns neighborhoods, comparisons, search, and scoring. Comparisons and search remain
-usable without JavaScript.
+usable without JavaScript. List items open the details dialog; the map's
+selected-exercise column has an “Exercise details” link. Deep links use
+`details=1`; without JavaScript the same open dialog and native forms work,
+with unselected inputs inside expandable sections.
 
 The comparison column starts with the best training fits, or the closest
 muscle matches when an exercise is selected, followed by the compact load
@@ -837,7 +857,7 @@ exercise and search to restore the training fits. Wide desktops get more
 space for the map and load list. The clear control is hidden when there is
 no selection or search text; set history is hidden until an exercise is
 selected and disappears immediately on clearing. Selecting an exercise loads its set history below the
-map. `/fitness/space/history?exercise=…&history_page=…` renders the same
+map. `/fitness/exercises/history?exercise=…&history_page=…` renders the same
 no-store history section as the initial page, four workouts per page, with
 the archive's shared set formatting and effort badges. Stale requests are
 aborted/ignored during selection changes. Paging also works through native
@@ -877,7 +897,9 @@ or absent weights authoritative: CSV cannot retag them and reconciliation
 cannot seed them. Accepted weights use `source='admin'`. Identity changes
 retain ownership with their selected definition, including intentional empty
 values. Import-managed exercises retain their previous taxonomy/seeding rules.
-Exercise pages work before the first set and offer the same setup form later.
+Exercise details work before the first set, including an empty additive editor
+for name-only exercises. Clearing all weights through definition editing is
+valid: `admin_managed` keeps the empty definition authoritative.
 
 In entry the wizard opens over the current Workout Draft. “Create and add”
 saves online, fetches `/fitness/entry/guide`, calls the worker's `refresh_guide`,
@@ -906,7 +928,7 @@ visibility, publication, ownership, and concurrent replay.
   is not itself a canonical exercise and does not point to another alias.
   Direct database edits must preserve that invariant and bump
   `fitness_meta:version` once so every process rebuilds its snapshot.
-- The exercise-page identity form is the normal management surface. It
+- The exercise-details dialog's identity form is the normal management surface. It
   normalizes whitespace exactly like the importers, accepts at most 32 names,
   keeps the previous canonical name automatically on rename, and requires a
   second, server-rendered confirmation before any change. Naming another

@@ -37,6 +37,7 @@ const PREVIEW: &str = "/fitness/exercises/preview";
 
 #[query_params(error = redirect("?"))]
 struct LibraryQuery {
+    view: Option<String>,
     q: Option<String>,
     name: Option<String>,
 }
@@ -44,6 +45,9 @@ struct LibraryQuery {
 #[route(GET "/fitness/exercises")]
 async fn library(cx: &Cx) -> Result<Response> {
     let query = query_params::<LibraryQuery>(cx)?;
+    if query.view.as_deref() != Some("list") {
+        return view! { super::exercise_space::explorer() }?.into_response(cx);
+    }
     let q = query.q.as_deref().unwrap_or("").trim();
     if q.len() > 200 {
         return Ok(error(StatusCode::BAD_REQUEST, "Search is too long."));
@@ -71,13 +75,9 @@ async fn library(cx: &Cx) -> Result<Response> {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         shell(page: "Exercises", active: "", runtime: false, fitness_pwa: true,
             <section class="exercise-library">
-                <a href="/fitness" class="exercise-link">"← Fitness"</a>
-                <header class="exercise-library__header">
-                    <h1>"Exercises"</h1>
-                    <a class="exercise-link" href="/fitness/space">"Explore exercise space"</a>
-                    if owner { <a class="entry-button" href="/fitness/exercises/new">"New exercise"</a> }
-                </header>
+                catalog_header(list: true)
                 <form method="get" action=(LIBRARY) class="exercise-library__search">
+                    <input type="hidden" name="view" value="list">
                     <label for="exercise-library-search">"Find an exercise"</label>
                     <div><input id="exercise-library-search" name="q" type="search" value=(q) placeholder="Name, movement, equipment, or muscle" maxlength="200"><button class="entry-button" type="submit">"Search"</button></div>
                 </form>
@@ -87,14 +87,33 @@ async fn library(cx: &Cx) -> Result<Response> {
                 <p class="exercise-library__count">(format!("{} exercises", found.len()))</p>
                 <ul class="exercise-library__list">
                     for item in found {
-                        <li><a href=(exercise::page_url(&item.name))><strong>(item.name.as_str())</strong><span>(item.picker_meta.as_str())</span>
+                        <li><a href=(format!("{}&view=list", exercise::details_url(&item.name))) data-exercise-details-link=""><strong>(item.name.as_str())</strong><span>(item.picker_meta.as_str())</span>
                             if !item.aliases.is_empty() { <span>(format!("Also known as {}", item.aliases.join(", ")))</span> }
                         </a></li>
                     }
                 </ul>
             </section>
+            exercise::details::host()
         )
     }?.into_response(cx)
+}
+
+#[component]
+pub(super) async fn catalog_header(cx: &Cx, list: bool) -> Result {
+    let owner = viewer(cx).is_some_and(|current| is_admin(&current.email));
+    view! {
+        <a href="/fitness" class="exercise-link">"← Fitness"</a>
+        <header class="exercise-catalog-header">
+            <div><h1>"Exercises"</h1><p>"Find your next exercise, and see what it adds."</p></div>
+            <div class="exercise-catalog-header__actions">
+                <nav class="exercise-view-switch" aria-label="Exercise view">
+                    <a href=(LIBRARY) aria-current=(if list { None } else { Some("page") })>"3D map"</a>
+                    <a href="/fitness/exercises?view=list" aria-current=(if list { Some("page") } else { None })>"List"</a>
+                </nav>
+                if owner { <a class="entry-button" href="/fitness/exercises/new">"New exercise"</a> }
+            </div>
+        </header>
+    }
 }
 
 #[route(GET "/fitness/exercises/new")]
@@ -127,7 +146,7 @@ pub(super) async fn wizard(
     choices: &[String],
 ) -> Result {
     let action = if editing {
-        format!("{}/definition", exercise::page_url(&definition.name))
+        format!("{}/definition", exercise::write_url(&definition.name))
     } else {
         LIBRARY.into()
     };
@@ -453,7 +472,7 @@ async fn save(cx: &Cx, body: Body, editing: Option<&str>) -> Result<Response> {
     if let Err(error) = app_context::<FitnessStore>(cx).rebuild().await {
         eprintln!("saved exercise snapshot refresh failed: {error}");
     }
-    let location = exercise::page_url(&saved.name);
+    let location = exercise::details_url(&saved.name);
     if headers(cx)
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())

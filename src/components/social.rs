@@ -284,10 +284,7 @@ fn description_for_path(path: &str) -> String {
     let fixed = match path {
         "/" => DEFAULT_DESCRIPTION,
         "/fitness/exercises" => {
-            "Ben Berman’s exercise library: movements, equipment, muscle involvement, and workout history."
-        }
-        "/fitness/space" => {
-            "Explore Ben Berman’s exercises in 3D, compare muscle profiles, and find nearby training options."
+            "Explore Ben Berman’s exercise library in 3D or as a list, compare muscle load, find your next exercise, and see workout history."
         }
         "/thoughts" => "Thoughts of varying seriousness and length from Ben Berman.",
         "/resume" => {
@@ -333,12 +330,7 @@ fn is_indexable_path(path: &str) -> bool {
     }
     if matches!(
         path,
-        "/" | "/thoughts"
-            | "/resume"
-            | "/llms"
-            | "/fitness/log"
-            | "/fitness/exercises"
-            | "/fitness/space"
+        "/" | "/thoughts" | "/resume" | "/llms" | "/fitness/log" | "/fitness/exercises"
     ) {
         return true;
     }
@@ -353,7 +345,6 @@ fn is_indexable_path(path: &str) -> bool {
     one_path_segment(path, "/felix/")
         || one_path_segment(path, "/swing/")
         || one_path_segment(path, "/fitness/lift/")
-        || one_path_segment(path, "/fitness/exercise/")
         || two_path_segments(path, "/fitness/run/")
 }
 
@@ -467,7 +458,6 @@ mod tests {
             "/felix/2025-waterfront",
             "/swing/with-eileen",
             "/fitness/lift/2026-07-21T10-39-04-04-00",
-            "/fitness/exercise/Full%20Squat",
             "/fitness/run/2026-07-20T19-45-00-04-00/deadbeef",
         ] {
             assert!(is_indexable_path(path), "{path}");

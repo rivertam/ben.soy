@@ -3,11 +3,7 @@ main:has(.exercise-space) { max-width: 84rem; }
 body:has(.exercise-space) > footer { max-width: 84rem; }
 .exercise-space [hidden], .space-entry-link[hidden] { display: none; }
 .exercise-space :is(a, button, input):focus-visible { outline: 2px solid var(--color-oxide); outline-offset: 3px; }
-.space-back { display: flex; justify-content: space-between; gap: 1rem; font-size: .75rem; color: var(--color-ink2); }
-.space-back a, .space-exercise-link, .space-method a { text-decoration: underline; text-underline-offset: .22em; }
-.space-header { margin-block: 1.8rem 1.5rem; }
-.space-header h1 { font-size: clamp(1.6rem, 3vw, 2.2rem); font-weight: 600; letter-spacing: -.04em; line-height: 1.25; }
-.space-header p { margin-top: .65rem; color: var(--color-ink2); font-size: .88rem; }
+.space-exercise-link, .space-method a, .space-empty a { text-decoration: underline; text-underline-offset: .22em; }
 .space-controls { margin-bottom: 1.25rem; }
 .space-controls label { display: block; margin-bottom: .45rem; color: var(--color-ink2); font-size: .75rem; }
 .space-controls__row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: stretch; }
@@ -103,7 +99,7 @@ body:has(.exercise-space) > footer { max-width: 84rem; }
   .space-stage { height: 26rem; }
 }
 @media (max-width: 34rem) {
-  .space-header { margin-top: 1.3rem; }
+  .exercise-space .exercise-catalog-header { margin-top: 1.3rem; }
   .space-stage { height: 21rem; }
   .space-controls__actions { flex: 1 1 100%; }
   .space-controls__actions > a { flex: 1; min-width: 0; }

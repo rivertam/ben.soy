@@ -71,7 +71,7 @@ async function submit(form, submitter) {
         return;
       }
       saved = await response.json();
-      if (typeof saved.name !== 'string' || !saved.location?.startsWith('/fitness/exercise/')) throw new Error('The save response was incomplete. Retry to check the saved exercise.');
+      if (typeof saved.name !== 'string' || !saved.location?.startsWith('/fitness/exercises?')) throw new Error('The save response was incomplete. Retry to check the saved exercise.');
       form._savedExercise = saved;
     }
     status.textContent = saved.created ? 'Exercise saved.' : 'Using the existing exercise.';

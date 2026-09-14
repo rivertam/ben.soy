@@ -1,16 +1,5 @@
-//! `/fitness/exercise/{name}` — one exercise's muscle weights, canonical
-//! name, aliases, and history.
-//!
-//! The URL segment is the percent-encoded exact exercise name, the same
-//! convention as the `?exercise=` filter. Anyone can read the page; the
-//! signed-in `ADMIN_EMAIL` additionally sees the weight and identity inputs.
-//! Both POSTs repeat the admin check with positive same-origin evidence and
-//! bound the body before parsing — the form is not an authorization boundary
-//! (`docs/auth.md`). Identity mutations render a server-side review before a
-//! digest-bound confirmation can merge history. A successful ratio save uses
-//! `source='admin'`; both writes bump the fitness version and rebuild the
-//! snapshot. Redirects are hand-built `Ok(303)`s so every branch carries
-//! `no-store`.
+//! Exercise identity and legacy weight writes; details live in the catalog dialog.
+pub(super) mod details;
 
 use benjisponge::data::Data;
 use sha2::{Digest, Sha256};
@@ -21,12 +10,12 @@ use topcoat::{
         Body, HeaderMap, HeaderValue, StatusCode,
         error::not_found,
         error::redirect_permanent,
-        header, page, path_param, query_params,
-        request::headers,
+        header, path_param,
+        request::{headers, uri},
         response::{IntoResponse, Response},
         route, to_bytes,
     },
-    view::{class, component, view},
+    view::{component, view},
 };
 
 use crate::{
@@ -37,11 +26,8 @@ use crate::{
 };
 
 use super::{
-    META_LABEL,
     archive::{db, store::FitnessStore},
-    filters::LOG_PATH,
-    format::plural,
-    muscle_taxonomy, muscles, with_raw_query,
+    muscle_taxonomy,
 };
 
 const BODY_LIMIT_BYTES: usize = 8 * 1024;
@@ -50,326 +36,40 @@ const NO_STORE: &str = "no-store";
 /// Canonical page URL for one exercise; the name is always re-encoded, so
 /// it is safe in `href`s and `Location` headers alike.
 pub(super) fn page_url(name: &str) -> String {
+    super::exercise_space::page_url(Some(name))
+}
+
+pub(super) fn details_url(name: &str) -> String {
+    format!("{}&details=1", page_url(name))
+}
+
+// Write endpoints keep their established contracts while GET pages move to the catalog.
+pub(super) fn write_url(name: &str) -> String {
     format!("/fitness/exercise/{}", urlencode(name))
 }
 
 path_param!(exercise_name);
 
-#[query_params(error = redirect("?"))]
-struct ExerciseQuery {
-    notice: Option<String>,
-}
-
-#[page("/fitness/exercise/{exercise_name}")]
+#[route(GET "/fitness/exercise/{exercise_name}")]
 async fn exercise_page(cx: &Cx) -> Result {
-    let requested_name = path_param::<ExerciseName>(cx);
-    if !plausible_exercise_name(requested_name) {
-        return Err(not_found().into());
-    }
-    let snapshot = match app_context::<FitnessStore>(cx).snapshot().await {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            eprintln!("fitness snapshot fetch failed for exercise page: {error}");
-            return view! {
-                ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
-                shell(
-                    page: "Exercise",
-                    active: "",
-                    runtime: false,
-                    fitness_pwa: true,
-                    <header class="rail-row mt-16">
-                        <p class="rail-stamp rail-stamp-label">"exercise"</p>
-                        <h1 class="font-display text-4xl font-bold tracking-tight break-words">
-                            (requested_name)
-                        </h1>
-                    </header>
-                    <p class="mt-8 max-w-prose text-ink2">
-                        "The archive is unreachable right now, so this exercise cannot \
-                         be shown. It usually recovers within a few seconds."
-                    </p>
-                )
-            };
-        }
-    };
-    let Some(name) = snapshot.canonical_exercise_name(requested_name) else {
-        return Err(not_found().into());
-    };
-    if name != requested_name {
-        let target = with_raw_query(cx, &page_url(&name));
-        return Err(redirect_permanent(&target).into());
-    }
-    let profile = snapshot.exercise_profile(&name);
-    let weights: Vec<(&'static str, u32)> = snapshot
-        .exercise_weight_map()
-        .get(&name)
-        .cloned()
-        .unwrap_or_default();
-    let tags: Vec<(String, String)> = snapshot
-        .exercise_tag_map()
-        .get(&name)
-        .cloned()
-        .unwrap_or_default();
-    let aliases = snapshot.exercise_aliases(&name);
-    let involvement =
-        muscles::involvement_for_exercises([name.as_str()], snapshot.exercise_weight_map());
-
-    let can_edit = viewer(cx).is_some_and(|current| is_admin(&current.email));
-    let notice = if can_edit {
-        query_params::<ExerciseQuery>(cx)?
-            .notice
-            .as_deref()
-            .map(|code| match code {
-                "saved" => "Saved — every page now uses the new ratios.",
-                "identity-saved" => "Saved — old names now resolve to this exercise.",
-                "identity-stale" => "The archive changed; review the identity edit again.",
-                "invalid" => "That didn't validate; nothing changed.",
-                "unavailable" => "The exercise store didn't answer; nothing changed.",
-                _ => "Nothing changed.",
-            })
-    } else {
-        None
-    };
-    // Provenance rides only on the admin variant: it needs a second read and
-    // a public page has no use for it.
-    let provenance = if can_edit {
-        match db_sources(cx, &name).await {
-            Ok(sources) => provenance_line(&sources),
-            Err(error) => {
-                eprintln!("exercise weight provenance read failed: {error}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let history = profile
-        .as_ref()
-        .map(|profile| {
-            format!(
-                "{} {} across {} {}, {} through {}",
-                profile.set_count,
-                plural(profile.set_count, "set", "sets"),
-                profile.workout_count,
-                plural(profile.workout_count, "workout", "workouts"),
-                profile.first_date,
-                profile.last_date,
-            )
-        })
-        .unwrap_or_else(|| "No workouts logged yet".into());
-    let log_href = format!("{LOG_PATH}?exercise={}#set-log", urlencode(&name));
-    let title = format!("{name} · Fitness");
-    let definition =
-        super::archive::exercise_definition::Definition::from_snapshot(&snapshot, &name);
-
-    view! {
-        ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
-        shell(
-            page: crate::components::PageMeta::new(title.as_str()).description(history.as_str()),
-            active: "",
-            runtime: false,
-            fitness_pwa: true,
-            <header class="rail-row mt-16">
-                <p class="rail-stamp rail-stamp-label">"exercise"</p>
-                <div class="min-w-0">
-                    <h1 class="font-display text-4xl font-bold tracking-tight break-words">
-                        (name.as_str())
-                    </h1>
-                    <p class="mt-2 font-meta text-[0.72rem] text-muted">
-                        (history.as_str())
-                        " · "
-                        <a
-                            class="text-oxide underline decoration-oxide/35 \
-                                 underline-offset-[0.18em]"
-                            href=(log_href.as_str())
-                        >"view in log"</a>
-                    </p>
-                    if !aliases.is_empty() {
-                        <p class="mt-1 font-meta text-[0.68rem] leading-relaxed text-muted">
-                            "also known as "
-                            (aliases.join(", "))
-                        </p>
-                    }
-                    if !tags.is_empty() {
-                        <div class="mt-3 flex flex-wrap gap-[0.45rem]">
-                            for (kind, value) in &tags {
-                                <a
-                                    class="inline-flex items-center rounded-full border \
-                                         border-hairline px-[0.7rem] py-1 font-meta \
-                                         text-[0.7rem] leading-none text-ink2 \
-                                         hover:border-oxide hover:text-oxide"
-                                    href=(format!(
-                                        "{LOG_PATH}?{}={}#set-log",
-                                        urlencode(kind),
-                                        urlencode(value)
-                                    ))
-                                >
-                                    (value.as_str())
-                                </a>
-                            }
-                        </div>
-                    }
-                </div>
-            </header>
-            if let Some(message) = notice {
-                <p class="mt-6 max-w-prose border-l-2 border-oxide pl-3 font-meta text-sm text-ink2">
-                    (message)
-                </p>
-            }
-            <div class="mt-10 flex flex-wrap items-start gap-x-12 gap-y-8">
-                <div class="min-w-0 max-w-[26rem] flex-1">
-                    <p class=(META_LABEL)>"muscles worked"</p>
-                    if involvement.is_empty() {
-                        <p class="mt-2 max-w-prose text-sm text-muted">
-                            "This exercise has no muscle weights yet."
-                        </p>
-                    } else {
-                        <div class="mt-3 flex items-start gap-x-6">
-                            muscles::muscle_figure(
-                                paths: muscles::FRONT_PATHS,
-                                caption: "front",
-                                involvement: &involvement,
-                                compact: false
-                            )
-                            muscles::muscle_figure(
-                                paths: muscles::BACK_PATHS,
-                                caption: "back",
-                                involvement: &involvement,
-                                compact: false
-                            )
-                        </div>
-                    }
-                </div>
-                <div class="min-w-[18rem] max-w-[30rem] flex-1">
-                    if can_edit {
-                        <p class=(META_LABEL)>"volume ratios · edit"</p>
-                        if let Some(line) = &provenance {
-                            <p class="mt-1 font-meta text-[0.68rem] text-muted">(line.as_str())</p>
-                        }
-                        weight_form(name: name.as_str(), weights: &weights)
-                    } else {
-                        <p class=(META_LABEL)>"volume ratios"</p>
-                        weight_bars(weights: &weights)
-                    }
-                </div>
-            </div>
-            <p class="mt-8"><a class="text-oxide underline" href="/fitness/exercises">"All exercises"</a></p>
-            if can_edit {
-                <details class="mt-8"><summary class="cursor-pointer text-oxide">"Movement, equipment, and muscle setup"</summary>
-                    super::exercise_library::wizard(definition: &definition, step: 2, editing: true, reference: "", choices: &[])
-                </details>
-                <script type="module" src=(super::exercise_library::WIZARD_JS)></script>
-                <section class="mt-12 border-t border-hairline pt-8">
-                    <p class=(META_LABEL)>"name & aliases · edit"</p>
-                    identity_form(name: name.as_str(), aliases: &aliases)
-                </section>
-            }
-        )
-    }
+    legacy_exercise_redirect(cx)
 }
 
 #[route(GET "/lifting/exercise/{exercise_name}")]
 async fn legacy_exercise_page(cx: &Cx) -> Result {
+    legacy_exercise_redirect(cx)
+}
+
+fn legacy_exercise_redirect(cx: &Cx) -> Result {
     let name = path_param::<ExerciseName>(cx);
     if !plausible_exercise_name(name) {
         return Err(not_found().into());
     }
-    let target = with_raw_query(cx, &page_url(name));
-    Err(redirect_permanent(&target).into())
-}
-
-/// The read-only ratio list: group headers, one bar per weighted muscle.
-#[component]
-async fn weight_bars(weights: &[(&'static str, u32)]) -> Result {
-    let groups = grouped(weights, false);
-    view! {
-        if weights.is_empty() {
-            <p class="mt-2 max-w-prose text-sm text-muted">
-                "No stored weights — sets of this exercise earn no muscle credit."
-            </p>
-        }
-        for group in &groups {
-            <p class=(class!(META_LABEL, "mt-4"))>(group.label)</p>
-            <ul class="mt-1.5 space-y-1.5">
-                for row in &group.rows {
-                    <li class="flex items-center gap-3">
-                        <span class="w-[8.5rem] flex-none font-meta text-[0.7rem] text-ink2">
-                            (row.label)
-                        </span>
-                        <span
-                            class="relative h-1 min-w-0 flex-1 rounded-full bg-hairline"
-                            aria-hidden="true"
-                        >
-                            <span
-                                class="absolute inset-y-0 left-0 rounded-full bg-oxide/75"
-                                style=(format!("width: {}%", row.ratio))
-                            ></span>
-                        </span>
-                        <span class="w-8 flex-none text-right font-meta text-[0.68rem] text-ink">
-                            (format!("{}", row.ratio))
-                        </span>
-                    </li>
-                }
-            </ul>
-        }
-    }
-}
-
-/// The admin form: every granular muscle gets a 0–100 input, grouped like
-/// the read-only list; 0 or blank means "no connection".
-#[component]
-async fn weight_form(name: &str, weights: &[(&'static str, u32)]) -> Result {
-    let groups = grouped(weights, true);
-    let action = page_url(name);
-    view! {
-        <form method="post" action=(action.as_str()) class="mt-1">
-            for group in &groups {
-                <p class=(class!(META_LABEL, "mt-4"))>(group.label)</p>
-                <ul class="mt-1.5 space-y-1.5">
-                    for row in &group.rows {
-                        <li class="flex items-center gap-3">
-                            <label
-                                class="w-[10.5rem] flex-none font-meta text-[0.7rem] text-ink2"
-                                for=(format!("ratio-{}", row.id))
-                            >
-                                (row.label)
-                            </label>
-                            <input
-                                class="w-[4.5rem] flex-none rounded-[0.2rem] border \
-                                     border-hairline bg-page px-2 py-1 text-right font-meta \
-                                     text-[0.78rem] text-ink outline-none \
-                                     focus-visible:outline-solid focus-visible:outline-2 \
-                                     focus-visible:outline-oxide focus-visible:outline-offset-2"
-                                id=(format!("ratio-{}", row.id))
-                                name=(format!("ratio_{}", row.id))
-                                type="number"
-                                inputmode="numeric"
-                                min="0"
-                                max="100"
-                                step="1"
-                                value=(if row.ratio > 0 {
-                                    row.ratio.to_string()
-                                } else {
-                                    String::new()
-                                })
-                            >
-                        </li>
-                    }
-                </ul>
-            }
-            <p class="mt-3 max-w-prose font-meta text-[0.65rem] leading-[1.5] text-muted">
-                "100 = full volume credit, 50 = half, blank or 0 = none. At least one \
-                 muscle must stay above zero."
-            </p>
-            <button
-                type="submit"
-                class="mt-3 cursor-pointer rounded-sm border border-oxide px-3 py-2 \
-                     font-meta text-xs text-oxide hover:bg-oxide hover:text-card \
-                     focus-visible:outline-solid focus-visible:outline-2 \
-                     focus-visible:outline-oxide focus-visible:outline-offset-2"
-            >"save ratios"</button>
-        </form>
-    }
+    let target = uri(cx).query().map_or_else(
+        || details_url(name),
+        |query| format!("{}&{query}", details_url(name)),
+    );
+    Err(redirect_permanent(target).into())
 }
 
 /// Canonical-name and alias editor. Renames keep the former canonical name
@@ -377,10 +77,10 @@ async fn weight_form(name: &str, weights: &[(&'static str, u32)]) -> Result {
 /// later save.
 #[component]
 async fn identity_form(name: &str, aliases: &[String]) -> Result {
-    let action = format!("{}/identity", page_url(name));
+    let action = format!("{}/identity", write_url(name));
     let alias_lines = aliases.join("\n");
     view! {
-        <form method="post" action=(action.as_str()) class="mt-4 max-w-[36rem] space-y-4">
+        <form method="post" action=(action.as_str()) class="exercise-identity-form" data-exercise-identity-form="">
             <label class="block space-y-1.5" for="canonical-exercise-name">
                 <span class="block font-meta text-[0.7rem] text-ink2">"canonical name"</span>
                 <input
@@ -425,7 +125,8 @@ async fn identity_form(name: &str, aliases: &[String]) -> Result {
                      text-xs text-oxide hover:bg-oxide hover:text-card \
                      focus-visible:outline-solid focus-visible:outline-2 \
                      focus-visible:outline-oxide focus-visible:outline-offset-2"
-            >"save name & aliases"</button>
+            >"Review name & aliases"</button>
+            <p role="status" data-editor-status=""></p>
         </form>
     }
 }
@@ -456,95 +157,66 @@ async fn identity_review(
     } else {
         "confirm merge"
     };
-    let action = format!("{}/identity", page_url(&plan.current_name));
-    let cancel = page_url(&plan.current_name);
+    let action = format!("{}/identity", write_url(&plan.current_name));
+    let cancel = details_url(&plan.current_name);
     let alias_lines = plan.aliases.join("\n");
     let __cx = cx;
-    let page = view! {
-        ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
-        shell(
-            page: "Review exercise merge",
-            active: "",
-            runtime: false,
-            fitness_pwa: true,
-            <header class="rail-row mt-16">
-                <p class="rail-stamp rail-stamp-label">"warning"</p>
-                <div class="min-w-0">
-                    <h1 class="font-display text-4xl font-bold tracking-tight">
-                        (heading)
-                    </h1>
-                    <p class="mt-3 max-w-prose text-sm leading-relaxed text-ink2">
-                        "Nothing has changed yet. Confirm only after reviewing the canonical \
-                         name, aliases, and existing lift histories below."
-                    </p>
-                </div>
-            </header>
-            <section class="mt-10 max-w-[42rem] border-l-2 border-oxide pl-5">
-                if renamed {
-                    <p class=(META_LABEL)>"rename"</p>
-                    <p class="mt-2 break-words font-meta text-sm text-ink">
-                        (plan.current_name.as_str())
-                        " → "
-                        (plan.canonical_name.as_str())
-                    </p>
-                } else {
-                    <p class=(META_LABEL)>"canonical name"</p>
-                    <p class="mt-2 break-words font-meta text-sm text-ink">
-                        (plan.canonical_name.as_str())
-                    </p>
-                }
-                if !merged.is_empty() {
-                    <p class=(class!(META_LABEL, "mt-6"))>"existing histories to merge"</p>
-                    <ul class="mt-2 list-disc space-y-1 pl-5 font-meta text-sm text-ink">
-                        for name in &merged {
-                            <li class="break-words">(*name)</li>
-                        }
-                    </ul>
-                }
-                if !plan.added_aliases.is_empty() {
-                    <p class=(class!(META_LABEL, "mt-6"))>"aliases to add or carry forward"</p>
-                    <ul class="mt-2 list-disc space-y-1 pl-5 font-meta text-sm text-ink">
-                        for alias in &plan.added_aliases {
-                            <li class="break-words">(alias.as_str())</li>
-                        }
-                    </ul>
-                }
-                if !plan.removed_aliases.is_empty() {
-                    <p class=(class!(META_LABEL, "mt-6"))>"aliases to remove"</p>
-                    <ul class="mt-2 list-disc space-y-1 pl-5 font-meta text-sm text-ink">
-                        for alias in &plan.removed_aliases {
-                            <li class="break-words">(alias.as_str())</li>
-                        }
-                    </ul>
-                }
-                <p class="mt-6 max-w-prose font-meta text-xs leading-relaxed text-ink2">
-                    "Confirming moves normalized set history under "
-                    <strong>(plan.canonical_name.as_str())</strong>
-                    ", recomputes records from the combined history, and preserves every raw \
-                     imported exercise name. The exercise you started from keeps its taxonomy \
-                     and muscle weights when present."
-                </p>
-            </section>
-            <form method="post" action=(action.as_str()) class="mt-8 flex flex-wrap items-center gap-4">
+    let content = view! {
+        <section data-exercise-details-content="" data-exercise-name=(plan.current_name.as_str()) class="exercise-identity-review">
+            <h2 tabindex="-1" data-details-heading="">(heading)</h2>
+            <p>"Nothing has changed yet. Review the names and histories below."</p>
+            <h3>(if renamed { "Rename" } else { "Canonical name" })</h3>
+            <p>
+                if renamed { (plan.current_name.as_str()) " → " }
+                <strong>(plan.canonical_name.as_str())</strong>
+            </p>
+            if !merged.is_empty() {
+                <h3>"Existing histories to merge"</h3>
+                <ul>for name in &merged { <li>(*name)</li> }</ul>
+            }
+            if !plan.added_aliases.is_empty() {
+                <h3>"Aliases to add or carry forward"</h3>
+                <ul>for alias in &plan.added_aliases { <li>(alias.as_str())</li> }</ul>
+            }
+            if !plan.removed_aliases.is_empty() {
+                <h3>"Aliases to remove"</h3>
+                <ul>for alias in &plan.removed_aliases { <li>(alias.as_str())</li> }</ul>
+            }
+            <p>"Confirming moves normalized set history under "<strong>(plan.canonical_name.as_str())</strong>
+                ", recomputes records from the combined history, and preserves every raw imported exercise name. The exercise you started from keeps its taxonomy and muscle weights when present."
+            </p>
+            <form method="post" action=(action.as_str()) data-exercise-identity-form="">
                 <input type="hidden" name="canonical_name" value=(plan.canonical_name.as_str())>
                 <input type="hidden" name="aliases" value=(alias_lines.as_str())>
                 <input type="hidden" name="confirmation" value=(confirmation)>
-                <a
-                    class="quiet-link font-meta text-sm"
-                    href=(cancel.as_str())
-                    autofocus=""
-                >"cancel"</a>
-                <button
-                    type="submit"
-                    class="cursor-pointer rounded-sm border border-oxide bg-oxide px-4 py-2.5 \
-                         font-meta text-sm text-card hover:bg-oxide-hot \
-                         focus-visible:outline-solid focus-visible:outline-2 \
-                         focus-visible:outline-oxide focus-visible:outline-offset-2"
-                >(confirm_label)</button>
+                <div class="exercise-details__save">
+                    <a href=(cancel.as_str()) data-exercise-details-link="">"Back to details"</a>
+                    <button class="entry-button entry-button--primary" type="submit">(confirm_label)</button>
+                </div>
+                <p role="status" data-editor-status=""></p>
             </form>
-        )
+        </section>
     }?;
-    page.into_response(cx)
+    if headers(cx)
+        .get("x-exercise-dialog")
+        .is_some_and(|value| value == "1")
+    {
+        return view! { ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE))) (content) }?
+            .into_response(cx);
+    }
+    view! {
+        ((header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE)))
+        shell(page: "Exercises", active: "", runtime: false, fitness_pwa: true,
+            <section class="exercise-library">
+                super::exercise_library::catalog_header(list: false)
+                <dialog class="exercise-details" data-exercise-details-dialog="" aria-label="Exercise details" open="">
+                    <a class="exercise-details__close" href=(cancel.as_str()) data-exercise-details-close="" aria-label="Close exercise details">"×"</a>
+                    <div data-exercise-details-body="">(content)</div>
+                </dialog>
+            </section>
+            <script type="module" src=(details::DETAILS_JS)></script>
+        )
+    }?.into_response(cx)
 }
 
 fn identity_confirmation_digest(plan: &db::ExerciseIdentityPlan) -> String {
@@ -854,41 +526,6 @@ fn plausible_exercise_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 200 && !name.chars().any(char::is_control)
 }
 
-struct WeightGroup {
-    label: &'static str,
-    rows: Vec<WeightRow>,
-}
-
-struct WeightRow {
-    id: &'static str,
-    label: &'static str,
-    ratio: u32,
-}
-
-/// Group rows in taxonomy display order. The read-only view keeps only
-/// weighted muscles; the form lists every muscle so the admin can add one.
-fn grouped(weights: &[(&'static str, u32)], include_zero: bool) -> Vec<WeightGroup> {
-    muscle_taxonomy::MUSCLE_GROUPS
-        .iter()
-        .filter_map(|(_, group_label, members)| {
-            let rows: Vec<WeightRow> = members
-                .iter()
-                .filter_map(|(id, label)| {
-                    let ratio = weights
-                        .iter()
-                        .find_map(|(muscle, ratio)| (muscle == id).then_some(*ratio))
-                        .unwrap_or(0);
-                    (include_zero || ratio > 0).then_some(WeightRow { id, label, ratio })
-                })
-                .collect();
-            (!rows.is_empty()).then_some(WeightGroup {
-                label: group_label,
-                rows,
-            })
-        })
-        .collect()
-}
-
 /// One human line for the admin: where the current rows came from.
 fn provenance_line(sources: &[String]) -> Option<String> {
     if sources.is_empty() {
@@ -933,11 +570,11 @@ fn epoch_seconds() -> i64 {
         .unwrap_or(0)
 }
 
-/// Bounce back to the exercise page with a static notice code — never
+/// Bounce back to the catalog dialog with a static notice code — never
 /// echoed input, and the name is re-encoded so the `Location` header is
 /// always valid ASCII.
 fn back(name: &str, notice: &'static str) -> Response {
-    see_other(&format!("{}?notice={notice}", page_url(name)))
+    see_other(&format!("{}&notice={notice}", details_url(name)))
 }
 
 fn see_other(location: &str) -> Response {
@@ -1050,7 +687,7 @@ mod tests {
     fn page_urls_reencode_names() {
         assert_eq!(
             page_url("Bench Press (Barbell)"),
-            "/fitness/exercise/Bench%20Press%20%28Barbell%29"
+            "/fitness/exercises?exercise=Bench%20Press%20%28Barbell%29"
         );
         assert!(plausible_exercise_name("Sled 45° Leg Press"));
         assert!(!plausible_exercise_name(""));
@@ -1075,8 +712,7 @@ mod tests {
         );
     }
 
-    /// The exercise pages are dynamic per-name routes like `/fitness/lift/{path}`
-    /// permalinks: out of `site_routes()`, like every other public lifting detail.
+    /// Selected exercises use query strings, not separate registry entries.
     #[test]
     fn exercise_pages_stay_out_of_the_route_registry() {
         let sample = page_url("Bench Press");

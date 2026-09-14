@@ -292,7 +292,7 @@ async fn suggestion_lane(lane: &str, label: &str, choice: &str, reason: &str) ->
             <h3 class="entry-fork__choice" data-entry-suggestion-choice="">(choice)</h3>
             <p class="entry-fork__reason" data-entry-suggestion-reason="">(reason)</p>
             <p class="entry-exercise__meta" data-entry-suggestion-mark=""></p>
-            <a class="space-entry-link" data-entry-suggestion-space="" href="/fitness/space" target="_blank" rel="noopener" hidden="">"Nearby exercises"</a>
+            <a class="space-entry-link" data-entry-suggestion-space="" href="/fitness/exercises" target="_blank" rel="noopener" hidden="">"Nearby exercises"</a>
             <button
                 type="button"
                 class="entry-fork__add"
@@ -382,7 +382,7 @@ async fn quick_entry() -> Result {
                     </button>
                 </template>
             </div>
-            <a class="space-entry-link" href="/fitness/space" target="_blank" rel="noopener">"Explore exercise space"</a>
+            <a class="space-entry-link" href="/fitness/exercises" target="_blank" rel="noopener">"Explore exercises"</a>
         </section>
     }
 }

@@ -18,6 +18,7 @@ use topcoat::{
     router::{
         HeaderValue, StatusCode,
         content::Json,
+        error::redirect_permanent,
         header, query_params,
         response::{IntoResponse, Response},
         route,
@@ -31,7 +32,7 @@ use super::{
 use crate::{components::shell, util::urlencode};
 
 const SPACE_JS: Asset = asset!("./exercise-space.js");
-pub(super) const PATH: &str = "/fitness/space";
+pub(super) const PATH: &str = "/fitness/exercises";
 const NEIGHBORS: usize = 6;
 const SCORE_SCALE: f64 = (BASELINE_WEEKS * 100 * 100) as f64;
 
@@ -76,7 +77,6 @@ fn search_catalog(guide: &GuideConfig, query: &str) -> SearchResults {
     }
     let found: Vec<_> = fitness_entry_core::search_exercises(&guide.exercises, query)
         .into_iter()
-        .filter(|item| has_profile(item))
         .collect();
     SearchResults {
         total: found.len(),
@@ -92,7 +92,7 @@ fn search_catalog(guide: &GuideConfig, query: &str) -> SearchResults {
     }
 }
 
-#[route(GET "/fitness/space/search")]
+#[route(GET "/fitness/exercises/search")]
 async fn search_endpoint(cx: &Cx) -> Result<Response> {
     let query = query_params::<SpaceQuery>(cx)?;
     let query = query.q.as_deref().unwrap_or("").trim();
@@ -129,7 +129,7 @@ struct SpaceExercise {
     name: String,
     url: String,
     map_url: String,
-    point: usize,
+    point: Option<usize>,
     load_delta_centi: Vec<u32>,
     score: f64,
     neighbors: Vec<Neighbor>,
@@ -171,9 +171,6 @@ fn build(guide: &GuideConfig, focus: &TrainingFocus, requested: Option<&str>) ->
     let mut selected = None;
     let mut workouts = Vec::new();
     for item in &guide.exercises {
-        if !has_profile(item) {
-            continue;
-        }
         let ratios: Vec<u32> = vocabulary
             .iter()
             .map(|(muscle, _)| {
@@ -187,16 +184,20 @@ fn build(guide: &GuideConfig, focus: &TrainingFocus, requested: Option<&str>) ->
         let key: Vec<u32> = ratios.iter().map(|ratio| ratio / divisor).collect();
         let movement = embedding::patterns(item);
         let index = exercises.len();
-        let point = *profiles.entry((key, movement.clone())).or_insert_with(|| {
-            normalized.push(projection::normalize(&ratios));
-            patterns.push(movement);
-            points.push(SpacePoint {
-                position: [0.0; 3],
-                members: Vec::new(),
-            });
-            points.len() - 1
+        let point = has_profile(item).then(|| {
+            *profiles.entry((key, movement.clone())).or_insert_with(|| {
+                normalized.push(projection::normalize(&ratios));
+                patterns.push(movement);
+                points.push(SpacePoint {
+                    position: [0.0; 3],
+                    members: Vec::new(),
+                });
+                points.len() - 1
+            })
         });
-        points[point].members.push(index);
+        if let Some(point) = point {
+            points[point].members.push(index);
+        }
         if requested.is_some_and(|name| {
             item.name.eq_ignore_ascii_case(name)
                 || item
@@ -209,7 +210,7 @@ fn build(guide: &GuideConfig, focus: &TrainingFocus, requested: Option<&str>) ->
         workouts.push(item.workout_count);
         exercises.push(SpaceExercise {
             name: item.name.clone(),
-            url: exercise::page_url(&item.name),
+            url: exercise::details_url(&item.name),
             map_url: page_url(Some(&item.name)),
             point,
             load_delta_centi: ratios
@@ -227,15 +228,18 @@ fn build(guide: &GuideConfig, focus: &TrainingFocus, requested: Option<&str>) ->
         point.position = position;
     }
     for index in 0..exercises.len() {
+        let Some(point) = exercises[index].point else {
+            continue;
+        };
         let mut neighbors: Vec<_> = exercises
             .iter()
             .enumerate()
-            .filter(|(other, _)| *other != index)
+            .filter(|(other, item)| *other != index && item.point.is_some())
             .map(|(other, item)| Neighbor {
                 index: other,
                 similarity: projection::similarity(
-                    &normalized[exercises[index].point],
-                    &normalized[item.point],
+                    &normalized[point],
+                    &normalized[item.point.unwrap()],
                 ),
             })
             .collect();
@@ -248,7 +252,9 @@ fn build(guide: &GuideConfig, focus: &TrainingFocus, requested: Option<&str>) ->
         neighbors.truncate(NEIGHBORS);
         exercises[index].neighbors = neighbors;
     }
-    let mut fit_order: Vec<_> = (0..exercises.len()).collect();
+    let mut fit_order: Vec<_> = (0..exercises.len())
+        .filter(|index| exercises[*index].point.is_some())
+        .collect();
     fit_order.sort_by(|left, right| {
         exercises[*right]
             .score
@@ -277,7 +283,7 @@ fn build(guide: &GuideConfig, focus: &TrainingFocus, requested: Option<&str>) ->
             .cmp(&left.points.len())
             .then_with(|| left.label.cmp(right.label))
     });
-    let omitted = guide.exercises.len() - exercises.len();
+    let omitted = exercises.iter().filter(|item| item.point.is_none()).count();
     Space {
         exercises,
         points,
@@ -324,7 +330,17 @@ fn similarity_text(similarity: f64) -> String {
 }
 
 #[route(GET "/fitness/space")]
-async fn page(cx: &Cx) -> Result<Response> {
+async fn legacy_space(cx: &Cx) -> Result {
+    Err(redirect_permanent(super::with_raw_query(cx, PATH)).into())
+}
+
+#[route(GET "/fitness/space/search")]
+async fn legacy_search(cx: &Cx) -> Result {
+    Err(redirect_permanent(super::with_raw_query(cx, "/fitness/exercises/search")).into())
+}
+
+#[component]
+pub(super) async fn explorer(cx: &Cx) -> Result {
     let query = query_params::<SpaceQuery>(cx)?;
     let requested = query.exercise.as_deref().filter(|name| !name.is_empty());
     let q = query.q.as_deref().unwrap_or("").trim();
@@ -333,12 +349,11 @@ async fn page(cx: &Cx) -> Result<Response> {
         || q.len() > 200
         || !(1..=10_000).contains(&history_page)
     {
-        return (
-            StatusCode::BAD_REQUEST,
-            [(header::CACHE_CONTROL, "no-store")],
-            "Invalid exercise, search, or history page.",
-        )
-            .into_response(cx);
+        return view! {
+            (StatusCode::BAD_REQUEST)
+            ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
+            "Invalid exercise, search, or history page."
+        };
     }
     let loaded = entry::entry_guide_with_focus(app_context::<FitnessStore>(cx)).await;
     let space = loaded
@@ -349,25 +364,22 @@ async fn page(cx: &Cx) -> Result<Response> {
     view! {
         ((header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
         (if unavailable { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK })
-        shell(page: "Exercise space", active: "", runtime: false, fitness_pwa: true,
+        shell(page: "Exercises", active: "", runtime: false, fitness_pwa: true,
             <section class="exercise-space">
-                <nav class="space-back" aria-label="Fitness"><a href="/fitness">"← Fitness"</a><a href="/fitness/exercises">"Exercise library"</a></nav>
-                <header class="space-header">
-                    <h1>"Exercise space"</h1>
-                    <p>"Find your next exercise, and see what it adds."</p>
-                </header>
+                super::exercise_library::catalog_header(list: false)
                 if let Some(space) = &space {
                     if space.exercises.is_empty() {
-                        <p class="space-empty">"No muscle profiles to map yet. Add muscle weights in the exercise library to start exploring."</p>
+                        <p class="space-empty">"No muscle profiles to map yet. "<a href="/fitness/exercises?view=list">"Browse the exercise list"</a>" to add muscle weights and start exploring."</p>
                     } else {
                         space_view(space: space, today: loaded.as_ref().unwrap().0.today.as_str(), q: q, search: search_catalog(&loaded.as_ref().unwrap().0, q), history_page: history_page)
-                        if requested.is_some() && space.selected.is_none() { <p class="space-note">"That exercise has no muscle profile in this map. Choose another exercise above."</p> }
+                        if requested.is_some() && space.selected.is_none() { <p class="space-note">"That exercise was not found. Search for another exercise above."</p> }
                     }
                 } else { <p class="space-empty">"The exercise map could not load. Try again in a moment."</p> }
             </section>
+            exercise::details::host()
             <script type="module" src=(SPACE_JS)></script>
         )
-    }?.into_response(cx)
+    }
 }
 
 #[component]
@@ -411,7 +423,7 @@ async fn space_view(
                         <a href=(PATH) data-space-overview="" hidden=(selected.is_none() && q.is_empty())>"Clear & See Suggestions"</a>
                     </div>
                 </div>
-                <p class="space-search-feedback" data-space-search-feedback="" aria-live="polite" hidden=(q.is_empty())>(if search.total == 0 { "No matching exercises in the map.".to_string() } else { format!("{} matching exercises.", search.total) })</p>
+                <p class="space-search-feedback" data-space-search-feedback="" aria-live="polite" hidden=(q.is_empty())>(if search.total == 0 { "No matching exercises.".to_string() } else { format!("{} matching exercises.", search.total) })</p>
                 <div id="space-search-results" class="entry-quick__results space-search-results" data-space-search-results="" hidden=(search.matches.is_empty())>
                     for item in &search.matches {
                         <a class="entry-picker-option" href=(item.url.as_str()) data-space-search-choice=(item.name.as_str())><span class="entry-picker-option__name">(item.name.as_str())</span><span class="entry-picker-option__reason">(item.meta.as_str())</span><span class="entry-picker-option__action">"Explore"</span></a>
@@ -422,7 +434,7 @@ async fn space_view(
                 <div class="space-chart">
                     <div class="space-stage" data-space-stage="">
                         <canvas data-space-canvas="" aria-label="Rotatable 3D map of exercise muscle profiles. Use exercise search and nearby exercise links for keyboard navigation.">"Exercise search and the lists below provide the same comparisons without the map."</canvas>
-                        <div class="space-stage__meta"><span>(format!("{} exercises · {} profiles", space.exercises.len(), space.points.len()))</span><span data-space-layout-label="">"3D projection"</span></div>
+                        <div class="space-stage__meta"><span>(format!("{} exercises · {} profiles", space.exercises.len() - space.omitted, space.points.len()))</span><span data-space-layout-label="">"3D projection"</span></div>
                         <p class="space-map-status" data-space-map-status="">"Enable JavaScript to rotate the map. Exercise comparisons work below."</p>
                         <div class="space-tooltip" role="status" data-space-tooltip="" hidden=""></div>
                         <div class="space-orbit" data-space-orbit="" hidden="" role="group" aria-label="Rotate and zoom the map">
@@ -442,13 +454,13 @@ async fn space_view(
                     <div class="space-selection" aria-live="polite">
                         <p class="space-detail__eyebrow" data-space-selection-label="">(if selected.is_some() { "Selected exercise" } else { "Your training compass" })</p>
                         <h2 data-space-title="">(selected.map_or("Best training fits", |item| item.name.as_str()))</h2>
-                        <p class="space-score" data-space-score="" data-sign=(if selected.is_some_and(|item| item.score < 0.0) { "negative" } else { "positive" }) hidden=(selected.is_none())>"Training fit "<strong data-space-score-value="">(selected.map_or_else(String::new, |item| score_text(item.score)))</strong></p>
-                        <a class="space-exercise-link" data-space-exercise-link="" href=(selected.map_or("/fitness/exercises", |item| item.url.as_str())) hidden=(selected.is_none())>"View exercise and history"</a>
+                        <p class="space-score" data-space-score="" data-sign=(if selected.is_some_and(|item| item.score < 0.0) { "negative" } else { "positive" }) hidden=(selected.is_none_or(|item| item.point.is_none()))>"Training fit "<strong data-space-score-value="">(selected.map_or_else(String::new, |item| score_text(item.score)))</strong></p>
+                        <a class="space-exercise-link" data-space-exercise-link="" data-exercise-details-link="" href=(selected.map_or("/fitness/exercises", |item| item.url.as_str())) hidden=(selected.is_none())>"Exercise details"</a>
                         <p class="space-note" data-space-shared="" hidden=""></p>
                     </div>
                     <div class="space-neighbors">
                         <h3 data-space-neighbors-title="">(if selected.is_some() { "Closest muscle matches" } else { "Best matches for saved load" })</h3>
-                        <p class="space-note" data-space-neighbors-note="">(if selected.is_some() { "Similarity uses the complete muscle profile." } else { "Higher scores cover more of the current muscle gaps." })</p>
+                        <p class="space-note" data-space-neighbors-note="">(if selected.is_some() { if selected.is_some_and(|item| item.point.is_none()) { "Add a muscle profile in exercise details to see similar exercises." } else { "Similarity uses the complete muscle profile." } } else { "Higher scores cover more of the current muscle gaps." })</p>
                         <ol data-space-neighbors="">
                             for (index, similarity) in &rows {
                                 <li><a href=(space.exercises[*index].map_url.as_str()) data-space-choice=(*index)><span>(space.exercises[*index].name.as_str())</span><strong>(similarity.map_or_else(|| score_text(space.exercises[*index].score), similarity_text))</strong></a></li>
@@ -466,7 +478,7 @@ async fn space_view(
                 <p>"Color and training fit use the compass’s signed dot product with the original, unnormalized exercise weights. Positive muscle gaps add credit; above-target load subtracts it. This is a fit score, not a predicted dose or a percentage."</p>
                 <p>"The muscle-load preview adds two normal sets at RPE 9: eight volume points multiplied by each muscle’s stored weight. Bar ends stay at the weekly target, or usual weekly pace where no target is set. The percentage shows just the added load. An arrow marks a total beyond the bar’s target. Muscles with a zero target or no usual pace have no percentage scale, so their preview shows added points."</p>
                 <p>(format!("Training fit uses saved workouts through {today}. In-progress sets and session fatigue are not included."))</p>
-                if space.omitted > 0 { <p>(format!("{} catalog exercises have no usable muscle profile and are omitted from the map.", space.omitted))</p> }
+                if space.omitted > 0 { <p>(format!("{} catalog exercises have no usable muscle profile and are omitted from the map. ", space.omitted))<a href="/fitness/exercises?view=list">"See all exercises in the list."</a></p> }
             </details>
             <template data-space-neighbor-template=""><li><a data-space-choice=""><span></span><strong></strong></a></li></template>
             <template data-space-search-template=""><a class="entry-picker-option" data-space-search-choice=""><span class="entry-picker-option__name"></span><span class="entry-picker-option__reason"></span><span class="entry-picker-option__action">"Explore"</span></a></template>
@@ -514,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn search_shares_entry_ranking_and_only_returns_mapped_exercises() {
+    fn search_shares_entry_ranking_and_keeps_unmapped_exercises_selectable() {
         let mut guide = guide();
         guide.exercises[0].equipment = vec!["dumbbell".into()];
         assert_eq!(
@@ -526,12 +538,23 @@ mod tests {
             "Press"
         );
         assert_eq!(search_catalog(&guide, "mid chest").total, 3);
-        assert_eq!(search_catalog(&guide, "unmapped").total, 0);
+        let unmapped = search_catalog(&guide, "unmapped");
+        assert_eq!(unmapped.total, 1);
+        assert_eq!(unmapped.matches[0].url, exercise::page_url("Unmapped"));
+        assert_eq!(
+            search_catalog(&guide, "old press").matches[0].url,
+            page_url(Some("Light press"))
+        );
         assert_eq!(search_catalog(&guide, " -- ").total, 0);
         assert_eq!(search_catalog(&guide, "").total, 0);
         guide.exercises[0].movements = vec!["cardio".into()];
-        assert_eq!(search_catalog(&guide, "press").total, 1);
-        assert_eq!(build(&guide, &focus(), None).exercises.len(), 2);
+        assert_eq!(search_catalog(&guide, "press").total, 2);
+        let space = build(&guide, &focus(), Some("Unmapped"));
+        assert_eq!(space.exercises.len(), 4);
+        assert_eq!(space.selected, Some(3));
+        assert!(space.exercises[3].point.is_none());
+        assert!(space.exercises[3].neighbors.is_empty());
+        assert!(!space.fit_order.contains(&3));
     }
 
     #[test]
@@ -549,7 +572,7 @@ mod tests {
         );
         assert_eq!(
             page_url(Some("Press & pull")),
-            "/fitness/space?exercise=Press%20%26%20pull"
+            "/fitness/exercises?exercise=Press%20%26%20pull"
         );
     }
 }

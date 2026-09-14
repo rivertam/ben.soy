@@ -878,7 +878,7 @@ async function start(root) {
     const spaceLink = node.querySelector("[data-entry-suggestion-space]");
     if (spaceLink) {
       spaceLink.hidden = !suggestion;
-      spaceLink.href = suggestion ? `/fitness/space?exercise=${encodeURIComponent(suggestion.name)}` : '/fitness/space';
+      spaceLink.href = suggestion ? `/fitness/exercises?exercise=${encodeURIComponent(suggestion.name)}` : '/fitness/exercises';
     }
     if (!suggestion) {
       action.disabled = true;

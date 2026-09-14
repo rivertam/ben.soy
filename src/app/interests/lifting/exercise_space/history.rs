@@ -3,7 +3,9 @@ use topcoat::{
     Result,
     context::{Cx, app_context},
     router::{
-        HeaderValue, StatusCode, header, query_params,
+        HeaderValue, StatusCode,
+        error::redirect_permanent,
+        header, query_params,
         response::{IntoResponse, Response},
         route,
     },
@@ -24,6 +26,15 @@ fn history_url(name: &str, page: usize) -> String {
 }
 
 #[route(GET "/fitness/space/history")]
+async fn legacy_history(cx: &Cx) -> Result {
+    Err(redirect_permanent(super::super::with_raw_query(
+        cx,
+        "/fitness/exercises/history",
+    ))
+    .into())
+}
+
+#[route(GET "/fitness/exercises/history")]
 async fn history_endpoint(cx: &Cx) -> Result<Response> {
     let query = query_params::<SpaceQuery>(cx)?;
     let name = query.exercise.as_deref().filter(|name| !name.is_empty());
@@ -116,7 +127,7 @@ mod tests {
     fn history_paging_keeps_the_exercise_and_encodes_its_name() {
         assert_eq!(
             history_url("Press & pull", 2),
-            "/fitness/space?exercise=Press%20%26%20pull&history_page=2#space-history"
+            "/fitness/exercises?exercise=Press%20%26%20pull&history_page=2#space-history"
         );
     }
 }

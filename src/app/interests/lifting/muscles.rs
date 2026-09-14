@@ -491,6 +491,7 @@ pub(super) async fn muscle_figure(
                 <path class=(DIAGRAM_SILHOUETTE) stroke-width="1.5" d=(SILHOUETTE)></path>
                 for path in paths.iter() {
                     <path
+                        data-muscle=(path.muscle)
                         class=(involvement.class_for(path.muscle))
                         stroke-width="0.75"
                         d=(path.d)

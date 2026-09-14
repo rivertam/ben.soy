@@ -553,7 +553,7 @@ pub(super) async fn panel(focus: &TrainingFocus, heading_id: &str, can_edit: boo
             <a
                 class="space-entry-link"
                 href=(super::exercise_space::page_url(focus.recommendation.as_ref().and_then(|recommendation| recommendation.exercises.first().map(String::as_str))))
-            >"Explore exercise space"</a>
+            >"Explore exercises"</a>
 
             <div class="mt-5 border-t border-hairline pt-4">
                 <header>

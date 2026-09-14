@@ -6,7 +6,6 @@ for (const root of document.querySelectorAll('[data-exercise-space]')) {
 
 function initExerciseSpace(root) {
   const data = JSON.parse(root.dataset.exerciseSpace);
-  if (!data.points.length) return;
   const find = (selector) => root.querySelector(selector);
   const canvas = find('[data-space-canvas]');
   const ctx = canvas.getContext('2d');
@@ -47,7 +46,7 @@ function initExerciseSpace(root) {
     panel.querySelector('h3').textContent = item.name;
     const request = new AbortController(); historyRequest = request;
     try {
-      const url = new URL('/fitness/space/history', location.href);
+      const url = new URL('/fitness/exercises/history', location.href);
       url.searchParams.set('exercise', item.name);
       url.searchParams.set('history_page', page);
       const response = await fetch(url, {signal:request.signal,headers:{Accept:'text/html'}});
@@ -125,11 +124,11 @@ function initExerciseSpace(root) {
     const request = new AbortController(); searchRequest = request;
     searchFeedback.textContent = 'Searching exercises…'; searchFeedback.hidden = false;
     try {
-      const response = await fetch(`/fitness/space/search?q=${encodeURIComponent(query)}`, { signal: request.signal, headers: { Accept: 'application/json' } });
+      const response = await fetch(`/fitness/exercises/search?q=${encodeURIComponent(query)}`, { signal: request.signal, headers: { Accept: 'application/json' } });
       if (!response.ok) throw new Error('Search unavailable');
       const found = await response.json();
       if (generation !== searchGeneration || query !== searchInput.value.trim()) return;
-      searchRows = found.matches.filter((item) => nameIndex.has(item.name));
+      searchRows = found.matches;
       for (const item of searchRows) {
         const node = find('[data-space-search-template]').content.firstElementChild.cloneNode(true);
         node.dataset.spaceSearchChoice = item.name; node.href = item.url;
@@ -139,8 +138,11 @@ function initExerciseSpace(root) {
       }
       searchResults.hidden = searchRows.length === 0;
       searchInput.setAttribute('aria-expanded', String(searchRows.length > 0));
-      searchFeedback.textContent = searchRows.length === 0 ? 'No matching exercises in the map.' : `${searchRows.length}${found.total > searchRows.length ? ` of ${found.total}` : ''} matching exercises. Enter explores the first match.`;
-      if (pickFirst && searchRows.length) choose(nameIndex.get(searchRows[0].name));
+      searchFeedback.textContent = searchRows.length === 0 ? 'No matching exercises.' : `${searchRows.length}${found.total > searchRows.length ? ` of ${found.total}` : ''} matching exercises. Enter explores the first match.`;
+      if (pickFirst && searchRows.length) {
+        const index = nameIndex.get(searchRows[0].name);
+        if (index === undefined) location.assign(searchRows[0].url); else choose(index);
+      }
     } catch (error) {
       if (request.signal.aborted || generation !== searchGeneration) return;
       searchFeedback.textContent = 'Exercise search could not load. Try searching again.';
@@ -213,17 +215,17 @@ function initExerciseSpace(root) {
     find('[data-space-selected]').value = item?.name || '';
     find('[data-space-selection-label]').textContent = item ? 'Selected exercise' : 'Your training compass';
     find('[data-space-title]').textContent = item?.name || 'Best training fits';
-    find('[data-space-score]').hidden = !item;
+    find('[data-space-score]').hidden = item?.point == null;
     find('[data-space-score]').dataset.sign = item?.score < 0 ? 'negative' : 'positive';
     find('[data-space-score-value]').textContent = item ? scoreText(item.score) : '';
     const link = find('[data-space-exercise-link]');
     link.hidden = !item;
     link.href = item?.url || '/fitness/exercises';
-    const siblings = item ? data.points[item.point].members.length : 0;
+    const siblings = item?.point == null ? 0 : data.points[item.point].members.length;
     find('[data-space-shared]').hidden = siblings < 2;
     find('[data-space-shared]').textContent = `${siblings} exercises share this muscle and movement profile.`;
     find('[data-space-neighbors-title]').textContent = item ? 'Closest muscle matches' : 'Best matches for saved load';
-    find('[data-space-neighbors-note]').textContent = item ? 'Similarity uses the complete muscle profile.' : 'Higher scores cover more of the current muscle gaps.';
+    find('[data-space-neighbors-note]').textContent = item ? item.point == null ? 'Add a muscle profile in exercise details to see similar exercises.' : 'Similarity uses the complete muscle profile.' : 'Higher scores cover more of the current muscle gaps.';
     const rows = item ? item.neighbors : data.fit_order.slice(0, 6).map((index) => ({ index }));
     const list = find('[data-space-neighbors]');
     list.replaceChildren();
@@ -243,6 +245,8 @@ function initExerciseSpace(root) {
       const url = new URL(location.href);
       url.searchParams.delete('q');
       url.searchParams.delete('history_page');
+      url.searchParams.delete('details');
+      url.searchParams.delete('notice');
       url.hash = '';
       if (item) url.searchParams.set('exercise', item.name); else url.searchParams.delete('exercise');
       history.replaceState(null, '', url);
@@ -283,6 +287,10 @@ function initExerciseSpace(root) {
   find('[data-space-reset]').hidden = false;
   find('[data-space-reset]').addEventListener('click', () => { view = { yaw: -0.55, pitch: -0.35, zoom: 1 }; schedule(); });
   window.addEventListener('popstate', () => { choose(nameIndex.get(new URL(location.href).searchParams.get('exercise')) ?? null, false); loadHistory(selected == null ? null : data.exercises[selected]); });
+  document.addEventListener('exercise-details-select', (event) => {
+    const index = nameIndex.get(event.detail.name);
+    if (index !== undefined && index !== selected) choose(index);
+  });
 
   function project(position) {
     return projectExercisePoint(position.map((value) => value / radius), view, width, height);
@@ -310,7 +318,7 @@ function initExerciseSpace(root) {
       const member = item?.point === index ? selected : point.members.reduce((best, candidate) => data.exercises[candidate].score > data.exercises[best].score ? candidate : best, point.members[0]);
       return { ...project(point.position), index, member, selected: item?.point === index, near: nearby.has(index), count: point.members.length };
     });
-    if (item) {
+    if (item?.point != null) {
       const from = drawn[item.point];
       ctx.strokeStyle = colors.accent;
       ctx.globalAlpha = .35;
