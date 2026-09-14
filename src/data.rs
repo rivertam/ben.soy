@@ -12,9 +12,10 @@ use surrealdb::{
     engine::any::{self, Any},
     opt::auth::Root,
 };
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, RwLock};
 
 mod diary_migrations;
+mod recovery;
 mod schema_migrations;
 
 #[path = "app/interests/lifting/models.rs"]
@@ -58,18 +59,20 @@ pub struct DataConfig {
 #[derive(Clone)]
 pub struct Data {
     config: Result<Arc<DataConfig>, &'static str>,
-    cell: Arc<OnceCell<Arc<Db>>>,
+    cell: Arc<OnceCell<RwLock<Arc<Db>>>>,
 }
 
 #[derive(Debug)]
 pub enum DataError {
     Unconfigured(&'static str),
     Connect(String),
+    NotInitialized,
 }
 
 impl std::fmt::Display for DataError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DataError::NotInitialized => f.write_str("database has not initialized"),
             DataError::Unconfigured(variable) => write!(f, "{variable} is not set"),
             DataError::Connect(error) => write!(f, "database connect failed: {error}"),
         }
@@ -85,7 +88,7 @@ impl Data {
     pub fn from_initialized_db(db: Db) -> Self {
         Self {
             config: Err("database connection was supplied directly"),
-            cell: Arc::new(OnceCell::new_with(Some(Arc::new(db)))),
+            cell: Arc::new(OnceCell::new_with(Some(RwLock::new(Arc::new(db))))),
         }
     }
 
@@ -104,7 +107,7 @@ impl Data {
     /// itself creates a new session whose setup can race its first query.
     pub async fn db(&self) -> Result<Arc<Db>, DataError> {
         if let Some(db) = self.cell.get() {
-            return Ok(Arc::clone(db));
+            return Ok(Arc::clone(&*db.read().await));
         }
         let config = match &self.config {
             Ok(config) => config,
@@ -112,9 +115,9 @@ impl Data {
         };
         let db = self
             .cell
-            .get_or_try_init(|| async { connect(config).await.map(Arc::new) })
+            .get_or_try_init(|| async { connect(config).await.map(|db| RwLock::new(Arc::new(db))) })
             .await?;
-        Ok(Arc::clone(db))
+        Ok(Arc::clone(&*db.read().await))
     }
 
     /// The diary's stricter Interface: migrations run at initialization, then
@@ -149,7 +152,7 @@ fn required_env(variable: &'static str) -> Result<String, &'static str> {
         .ok_or(variable)
 }
 
-pub async fn connect(config: &DataConfig) -> Result<Db, DataError> {
+async fn connect_session(config: &DataConfig) -> Result<Db, DataError> {
     let db = timed(CONNECTION_TIMEOUT, "connection", async {
         any::connect(config.endpoint.as_str())
             .await
@@ -172,6 +175,11 @@ pub async fn connect(config: &DataConfig) -> Result<Db, DataError> {
             .map_err(connect_error)
     })
     .await?;
+    Ok(db)
+}
+
+pub async fn connect(config: &DataConfig) -> Result<Db, DataError> {
+    let db = connect_session(config).await?;
     timed(BOOTSTRAP_TIMEOUT, "schema reconciliation", async {
         db.query(SCHEMA)
             .await
