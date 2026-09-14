@@ -246,18 +246,21 @@ reuse the local sync token or expose unrestricted SurrealQL.
   exposes the best two dot-product matches from that movement family,
   followed by inline search as the fallback. Once an exercise is added those
   starter directions collapse into two next-exercise lanes, again followed
-  by search. “Deepen” ranks muscles and movement patterns already worked plus
-  missing isolation complements (for example direct triceps after pressing);
-  “expand” takes the best remaining match across the catalog. Both use the
-  shared signed dot product first within each fatigue tier; complements,
-  novelty, staleness, and familiarity only break equal fits. Every selected
+  by search. “Diversify” takes the best positive signed dot product against
+  all remaining muscle needs. “Go deeper” uses the same remaining deltas but
+  only rewards muscles in the selected exercises' profiles, including their
+  secondary muscles. Surpluses still subtract credit everywhere, including
+  outside that scope. Prior stimulus never multiplies the scoped needs: after
+  dips cover most of the chest gap, a larger remaining triceps gap can favor
+  extensions without any movement-specific complement rule. The overall
+  winner is always shown; “go deeper” offers the best distinct positive fit
+  in its scope. A lane with no positive candidate offers search instead.
+  Fatigue, then familiarity and name, only break exact score ties. Every selected
   exercise and every added set row enters the active-session load immediately,
   so the lanes recompute as the draft changes without waiting for completion.
-  Repeating a high-fatigue compound in the same movement/body region ranks
-  below less redundant options, and a second high-axial-load compound ranks
-  lower still; for example, Full Squat prevents Sumo Deadlift from surfacing
-  merely to add spinal-erector work. Broad deficits naturally favor compound
-  coverage without a separate workout-frequency multiplier.
+  Broad deficits naturally favor compound coverage; a concentrated gap can
+  put an isolation first. There is no compound-first rule or fatigue tier
+  overriding a better fit.
   Archive deltas reuse training focus's target/regularity and today/yesterday
   recovery gates. The worker subtracts effort- and ratio-weighted planned
   session load on the same eight-week scale: partial work gradually reduces

@@ -163,7 +163,7 @@ const exerciseGuide = (name) => ({
   last_date: '', set_count: 0, workout_count: 0, muscles: [], movements: [], coarse_muscles: [], marks: [], loads: [], picker_meta: 'No workouts logged yet', picker_mark: '',
 });
 
-test('signed muscle deltas survive worker refresh and reload without changing the workout', async () => {
+test('signed muscle deltas survive refresh and update through live set actions', async () => {
   const w = worker();
   const before = structuredClone(w.state.draft);
   const queued = finalization('queue-kept-0001', 1).queued;
@@ -179,14 +179,34 @@ test('signed muscle deltas survive worker refresh and reload without changing th
   const refreshed = await w.rpc('refresh_guide', { guide: updatedGuide }).reply;
   assert.equal(refreshed.ok, true);
   assert.equal(w.state.guide.muscle_needs['glute-max'], -4000);
-  assert.equal(refreshed.value.derived.deepen.name, 'Leg Extension');
-  assert.equal(refreshed.value.derived.deepen.score, 480000);
-  assert.equal(refreshed.value.derived.expand.score, 280000);
+  assert.equal(refreshed.value.derived.expand.name, 'Leg Extension');
+  assert.equal(refreshed.value.derived.expand.score, 480000);
+  assert.equal(refreshed.value.derived.deepen.score, 280000);
   const restored = await w.rpc('bootstrap', { guide: guide(), now_utc: '2026-09-03 15:00:00' }).reply;
   assert.equal(restored.ok, true);
   assert.deepEqual(restored.value.derived.deepen, refreshed.value.derived.deepen);
   assert.deepEqual(w.state.draft, before);
   assert.deepEqual(w.outbox.get(queued.queue_id), queued);
+
+  const edit = async (action) => {
+    const reply = await w.rpc('transition', { action: { exercise_id: 'exercise-0001', ...action } }).reply;
+    assert.equal(reply.ok, true);
+    assert.equal(reply.value.error, null);
+    return reply.value.derived;
+  };
+  const incomplete = await edit({ type: 'toggle_set', set_id: 'set-00000001' });
+  assert.equal(incomplete.completed_count, 0);
+  assert.deepEqual(incomplete.expand, refreshed.value.derived.expand, 'completion does not change the planned dose');
+  const added = await edit({ type: 'add_set', set_id: 'set-00000002' });
+  assert.ok(added.expand.score < incomplete.expand.score, 'new unfinished rows reduce remaining need immediately');
+  const effort = await edit({ type: 'set_rir', set_id: 'set-00000002', effort_hundredths: 900 });
+  assert.equal(effort.expand.score, 160000, 'two RPE-9 sets subtract 6400 from the original 8000 quad gap');
+  assert.equal(effort.deepen, null, 'the glute-heavy alternative now has a negative net fit');
+  const warmup = await edit({ type: 'set_type', set_id: 'set-00000002', set_type: 'WARMUP_SET' });
+  assert.deepEqual(warmup.expand, incomplete.expand, 'warm-ups contribute no dose');
+  const removed = await edit({ type: 'remove_set', set_id: 'set-00000002', replacement_set_id: 'set-unused-0003' });
+  assert.deepEqual(removed.expand, incomplete.expand);
+  assert.deepEqual(w.outbox.get(queued.queue_id), queued, 'guidance edits never mutate queued workouts');
 });
 
 test('repeated catalog refresh and attachment preserve one workout and every earlier set', async () => {

@@ -33,7 +33,7 @@ pub struct ExerciseGuide {
     #[serde(default)]
     pub equipment: Vec<String>,
     pub bodyweight: bool,
-    /// Coarse fatigue metadata used only to avoid redundant recommendations.
+    /// Coarse fatigue metadata used only to break equal-fit ties.
     #[serde(default)]
     pub high_fatigue: bool,
     #[serde(default)]
@@ -357,10 +357,7 @@ fn rir_spoken(effort: u64) -> String {
 #[derive(Default)]
 struct SessionContext {
     muscle_load: BTreeMap<String, u32>,
-    primary: BTreeSet<String>,
-    secondary: BTreeSet<String>,
-    movements: BTreeSet<String>,
-    coarse: BTreeSet<String>,
+    muscles: BTreeSet<String>,
     high_fatigue_count: usize,
     high_axial_count: usize,
     high_fatigue_movements: BTreeSet<String>,
@@ -382,8 +379,6 @@ fn session_context(
             .iter()
             .filter_map(|set| views.get(set.id.as_str()).copied())
             .collect();
-        context.movements.extend(item.movements.iter().cloned());
-        context.coarse.extend(item.coarse_muscles.iter().cloned());
         if item.high_fatigue {
             context.high_fatigue_count += 1;
             context
@@ -403,11 +398,7 @@ fn session_context(
         for (muscle, ratio) in &item.muscles {
             *context.muscle_load.entry(muscle.clone()).or_default() +=
                 volume.saturating_mul(*ratio);
-            if *ratio >= 75 {
-                context.primary.insert(muscle.clone());
-            } else {
-                context.secondary.insert(muscle.clone());
-            }
+            context.muscles.insert(muscle.clone());
         }
     }
     context
@@ -515,17 +506,11 @@ fn starter_suggestions(draft: &Draft, guide: &GuideConfig, direction: &str) -> V
         .collect()
 }
 
-#[derive(Clone)]
 struct Scored<'a> {
     item: &'a ExerciseGuide,
     fit_score: i64,
     fatigue_penalty: f64,
-    deep_score: f64,
-    expand_score: f64,
-    deep_eligible: bool,
-    complement: f64,
     strongest_needed_muscle: String,
-    novel: usize,
 }
 
 fn next_suggestions(
@@ -539,60 +524,58 @@ fn next_suggestions(
         .map(|exercise| exercise.name.as_str())
         .collect();
     let deltas = remaining_deltas(&guide.muscle_needs, &context.muscle_load);
-    let mut scored: Vec<Scored<'_>> = guide
+    // The session defines which needs Deepen can reward, not how strongly it
+    // rewards them. Weighting by prior stimulus would favor the constituents
+    // already getting the most work. Keep every surplus penalty in both lanes.
+    let scoped_deltas: MuscleDeltas = deltas
+        .iter()
+        .filter(|(muscle, delta)| **delta < 0 || context.muscles.contains(*muscle))
+        .map(|(muscle, delta)| (muscle.clone(), *delta))
+        .collect();
+    let candidates: Vec<_> = guide
         .exercises
         .iter()
         .filter(|item| !selected.contains(item.name.as_str()))
         .filter(|item| !item.muscles.is_empty() && !item.movements.iter().any(|m| m == "cardio"))
-        .map(|item| score_candidate(item, guide, context, &deltas))
         .collect();
-    // Deepen chooses among this session's overlaps and complements. Expand
-    // takes the best remaining fit, so the overall winner appears in a lane.
-    scored.sort_by(compare_scored(|item| item.deep_score));
-    let deep = scored
-        .iter()
-        .find(|candidate| candidate.deep_eligible)
-        .cloned();
-    scored.sort_by(compare_scored(|item| item.expand_score));
-    let expand = scored.into_iter().find(|candidate| {
-        deep.as_ref()
-            .is_none_or(|deep| candidate.item.name != deep.item.name)
-    });
+    let best = |deltas: &MuscleDeltas, exclude: Option<&str>| {
+        candidates
+            .iter()
+            .filter(|item| Some(item.name.as_str()) != exclude)
+            .map(|item| score_candidate(item, context, deltas))
+            .filter(|scored| scored.fit_score > 0)
+            .min_by(compare_scored)
+    };
+    // Always show the overall best fit. The scoped lane offers the best
+    // distinct alternative, so the two buttons never duplicate an exercise.
+    let expand = best(&deltas, None);
+    let deep = best(
+        &scoped_deltas,
+        expand.as_ref().map(|scored| scored.item.name.as_str()),
+    );
     (
-        deep.map(|scored| scored_suggestion("deepen", &scored, context, guide)),
-        expand.map(|scored| scored_suggestion("expand", &scored, context, guide)),
+        deep.map(|scored| scored_suggestion("deepen", &scored, guide)),
+        expand.map(|scored| scored_suggestion("expand", &scored, guide)),
     )
 }
 
-fn compare_scored(
-    tie_break: impl Fn(&Scored<'_>) -> f64 + Copy,
-) -> impl Fn(&Scored<'_>, &Scored<'_>) -> Ordering {
-    move |left, right| {
-        // Repeated heavy compounds and axial loading remain fatigue checks.
-        // Within the same fatigue tier the dot product decides; familiarity,
-        // novelty and session complements only resolve equal fits.
-        left.fatigue_penalty
-            .total_cmp(&right.fatigue_penalty)
-            .then_with(|| right.fit_score.cmp(&left.fit_score))
-            .then_with(|| tie_break(right).total_cmp(&tie_break(left)))
-            .then_with(|| right.item.workout_count.cmp(&left.item.workout_count))
-            .then_with(|| left.item.name.cmp(&right.item.name))
-    }
+fn compare_scored(left: &Scored<'_>, right: &Scored<'_>) -> Ordering {
+    right
+        .fit_score
+        .cmp(&left.fit_score)
+        .then_with(|| left.fatigue_penalty.total_cmp(&right.fatigue_penalty))
+        .then_with(|| right.item.workout_count.cmp(&left.item.workout_count))
+        .then_with(|| left.item.name.cmp(&right.item.name))
 }
 
 fn score_candidate<'a>(
     item: &'a ExerciseGuide,
-    guide: &GuideConfig,
     context: &SessionContext,
     deltas: &MuscleDeltas,
 ) -> Scored<'a> {
-    let mut overlap = 0.0;
-    let mut bridge = 0;
     let mut strongest_needed_muscle = String::new();
     let mut strongest_need = 0_i64;
     for (muscle, ratio) in &item.muscles {
-        let session = f64::from(*context.muscle_load.get(muscle).unwrap_or(&0));
-        overlap += session * (f64::from(*ratio) / 100.0);
         let contribution = deltas
             .get(muscle)
             .copied()
@@ -602,21 +585,7 @@ fn score_candidate<'a>(
             strongest_need = contribution;
             strongest_needed_muscle = muscle.clone();
         }
-        if *ratio >= 75 && context.secondary.contains(muscle) && !context.primary.contains(muscle) {
-            bridge += 1;
-        }
     }
-    let novel = item
-        .coarse_muscles
-        .iter()
-        .filter(|group| !context.coarse.contains(*group))
-        .count();
-    let movement_overlap = item
-        .movements
-        .iter()
-        .filter(|movement| context.movements.contains(*movement))
-        .count();
-    let complement = complement_score(item, context);
     let shared_fatigue_movements = item
         .movements
         .iter()
@@ -637,115 +606,25 @@ fn score_candidate<'a>(
     } else {
         0.0
     };
-    let staleness = days_since(&guide.today, &item.last_date)
-        .unwrap_or(30)
-        .min(30) as f64
-        / 30.0;
-    let familiarity = ((item.workout_count + 1) as f64).log2();
-    let deep_score = overlap * 0.16
-        + f64::from(bridge) * 72.0
-        + movement_overlap as f64 * 28.0
-        + complement * 80.0
-        + familiarity;
-    let expand_score = novel as f64 * 34.0 + staleness * 15.0 + familiarity * 1.5 - overlap * 0.08;
     Scored {
         item,
         fit_score: dot_product(deltas, &item.muscles),
         fatigue_penalty: fatigue_penalty + axial_penalty,
-        deep_score,
-        expand_score,
-        deep_eligible: overlap > 0.0 || bridge > 0 || movement_overlap > 0 || complement > 0.0,
-        complement,
         strongest_needed_muscle,
-        novel,
     }
 }
 
-fn complement_score(item: &ExerciseGuide, context: &SessionContext) -> f64 {
-    let has = |movement: &str| context.movements.contains(movement);
-    let candidate_has = |movement: &str| item.movements.iter().any(|value| value == movement);
-    let needs_primary_complement = ((has("horizontal-push") || has("vertical-push") || has("dip"))
-        && candidate_has("elbow-extension")
-        && !has("elbow-extension"))
-        || ((has("horizontal-pull") || has("vertical-pull"))
-            && candidate_has("elbow-flexion")
-            && !has("elbow-flexion"))
-        || ((has("squat-type") || has("hinge"))
-            && candidate_has("knee-flexion")
-            && !has("knee-flexion"));
-    if needs_primary_complement {
-        1.0
-    } else if has("squat-type") && candidate_has("calf-raise") && !has("calf-raise") {
-        0.8
-    } else if (has("horizontal-push") || has("vertical-push"))
-        && candidate_has("shoulder-abduction")
-        && !has("shoulder-abduction")
-    {
-        0.7
-    } else {
-        0.0
-    }
-}
-
-fn scored_suggestion(
-    lane: &str,
-    scored: &Scored<'_>,
-    context: &SessionContext,
-    guide: &GuideConfig,
-) -> Suggestion {
+fn scored_suggestion(lane: &str, scored: &Scored<'_>, guide: &GuideConfig) -> Suggestion {
     let reason = if lane == "deepen" {
-        if scored.complement > 0.0 {
-            if scored
-                .item
-                .movements
-                .iter()
-                .any(|value| value == "elbow-extension")
-            {
-                "Direct triceps.".to_string()
-            } else if scored
-                .item
-                .movements
-                .iter()
-                .any(|value| value == "elbow-flexion")
-            {
-                "Direct elbow flexors.".to_string()
-            } else if scored
-                .item
-                .movements
-                .iter()
-                .any(|value| value == "knee-flexion")
-            {
-                "Direct hamstrings.".to_string()
-            } else if scored
-                .item
-                .movements
-                .iter()
-                .any(|value| value == "calf-raise")
-            {
-                "Direct calves.".to_string()
-            } else {
-                "Adds the missing isolation.".to_string()
-            }
-        } else if let Some(shared) = scored
-            .item
-            .muscles
-            .iter()
-            .map(|(muscle, _)| muscle)
-            .find(|muscle| context.muscle_load.get(*muscle).copied().unwrap_or(0) > 0)
-        {
-            format!("{} again.", muscle_label(shared))
-        } else {
-            "Same movement pattern.".to_string()
-        }
-    } else if !scored.strongest_needed_muscle.is_empty() {
         format!(
-            "{} is behind pace.",
+            "Rounds out {}.",
             muscle_label(&scored.strongest_needed_muscle)
         )
-    } else if scored.novel > 0 {
-        "Adds a new region.".to_string()
     } else {
-        "Changes the pattern.".to_string()
+        format!(
+            "Covers remaining {} need.",
+            muscle_label(&scored.strongest_needed_muscle)
+        )
     };
     present_suggestion(
         scored.item,
@@ -1088,17 +967,116 @@ mod tests {
     }
 
     #[test]
-    fn coverage_and_complement_recommendations_are_golden() {
+    fn overall_and_scoped_recommendations_cover_different_needs() {
+        let mut guide = guide();
+        guide.muscle_needs.insert("hamstrings".into(), 20_000);
         let derived = derive(
             &draft_with("Bench Press"),
-            &guide(),
+            &guide,
             &GuidanceContext::default(),
         );
         assert_eq!(derived.coverage[0].muscle, "chest");
         assert_eq!(derived.coverage[0].level, "main");
         assert_eq!(derived.deepen.as_ref().unwrap().name, "Triceps Extension");
-        assert_eq!(derived.deepen.as_ref().unwrap().reason, "Direct triceps.");
+        assert_eq!(
+            derived.deepen.as_ref().unwrap().reason,
+            "Rounds out triceps."
+        );
         assert_eq!(derived.expand.as_ref().unwrap().name, "Leg Curl");
+    }
+
+    #[test]
+    fn the_overall_winner_is_preserved_when_both_lanes_prefer_it() {
+        let derived = derive(
+            &draft_with("Bench Press"),
+            &guide(),
+            &GuidanceContext::default(),
+        );
+        assert_eq!(derived.expand.as_ref().unwrap().name, "Triceps Extension");
+        assert_eq!(derived.deepen.as_ref().unwrap().name, "Incline Press");
+    }
+
+    #[test]
+    fn dips_lead_to_lagging_triceps_or_a_broader_lower_body_fit() {
+        let mut guide = guide();
+        guide.muscle_needs = MuscleDeltas::from([
+            ("lower-chest".into(), 8_000),
+            ("triceps".into(), 12_800),
+            ("glute-max".into(), 16_000),
+            ("hamstrings".into(), 16_000),
+            ("lats".into(), 20_000),
+        ]);
+        guide.exercises = vec![
+            item(
+                "Dip",
+                20,
+                "2026-09-01",
+                &[("lower-chest", 100), ("triceps", 50)],
+                &["dip"],
+                &["chest"],
+            ),
+            item(
+                "Deadlift",
+                20,
+                "2026-09-01",
+                &[("glute-max", 100), ("hamstrings", 100)],
+                &["hinge"],
+                &["legs"],
+            ),
+            item(
+                "Triceps Extension",
+                5,
+                "2026-09-01",
+                &[("triceps", 100)],
+                &["elbow-extension"],
+                &["arms"],
+            ),
+            item(
+                "Chest Fly",
+                20,
+                "2026-09-01",
+                &[("lower-chest", 100)],
+                &["horizontal-push"],
+                &["chest"],
+            ),
+            item(
+                "Pullover",
+                20,
+                "2026-09-01",
+                &[("lats", 100), ("triceps", 5)],
+                &["shoulder-extension"],
+                &["back"],
+            ),
+        ];
+        let mut draft = draft_with("Dip");
+        let mut second = draft.exercises[0].sets[0].clone();
+        second.id = "set-00000002".into();
+        draft.exercises[0].sets.push(second);
+        for _ in 0..2 {
+            let derived = derive(&draft, &guide, &GuidanceContext::default());
+            assert_eq!(derived.expand.as_ref().unwrap().name, "Deadlift");
+            assert_eq!(derived.expand.as_ref().unwrap().score, 3_200_000.0);
+            assert_eq!(derived.deepen.as_ref().unwrap().name, "Triceps Extension");
+            assert_eq!(derived.deepen.as_ref().unwrap().score, 960_000.0);
+            // Planned work has the same dose as completed work. Neither
+            // completing rows nor catalog order should change these results.
+            for set in &mut draft.exercises[0].sets {
+                set.done = false;
+            }
+            guide.exercises.reverse();
+        }
+        // Unrelated needs cannot earn scoped credit, but unrelated surpluses
+        // still penalize an otherwise strong triceps candidate.
+        guide.muscle_needs.insert("lats".into(), -20_000);
+        let extension = guide
+            .exercises
+            .iter_mut()
+            .find(|item| item.name == "Triceps Extension")
+            .unwrap();
+        extension.muscles.push(("lats".into(), 100));
+        let derived = derive(&draft, &guide, &GuidanceContext::default());
+        assert_eq!(derived.deepen.as_ref().unwrap().name, "Chest Fly");
+        assert_eq!(derived.deepen.as_ref().unwrap().score, 160_000.0);
     }
 
     #[test]
@@ -1192,10 +1170,10 @@ mod tests {
         draft.exercises[0].sets[0].done = false;
         draft.exercises[0].sets[0].reps.clear();
         let first = derive(&draft, &guide, &GuidanceContext::default());
-        assert_eq!(first.deepen.as_ref().unwrap().name, "Chest Fly");
-        assert_eq!(first.deepen.as_ref().unwrap().score, 280_000.0);
+        assert_eq!(first.expand.as_ref().unwrap().name, "Chest Fly");
+        assert_eq!(first.expand.as_ref().unwrap().score, 280_000.0);
         assert_eq!(
-            first.expand.as_ref().unwrap().score,
+            first.deepen.as_ref().unwrap().score,
             240_000.0,
             "partial triceps credit leaves a real gap"
         );
@@ -1210,9 +1188,20 @@ mod tests {
 
         draft.exercises[0].sets[1].set_type = SetType::Normal;
         let second = derive(&draft, &guide, &GuidanceContext::default());
-        assert_eq!(second.deepen.as_ref().unwrap().name, "Triceps Extension");
-        assert_eq!(second.deepen.as_ref().unwrap().score, 80_000.0);
-        assert_eq!(second.expand.as_ref().unwrap().score, -40_000.0);
+        assert_eq!(second.expand.as_ref().unwrap().name, "Triceps Extension");
+        assert_eq!(second.expand.as_ref().unwrap().score, 80_000.0);
+        assert!(
+            second.deepen.is_none(),
+            "the remaining chest option is above target"
+        );
+
+        let mut third = draft.exercises[0].sets[0].clone();
+        third.id = "set-00000003".into();
+        draft.exercises[0].sets.push(third);
+        let met = derive(&draft, &guide, &GuidanceContext::default());
+        assert!(met.expand.is_none());
+        assert!(met.deepen.is_none());
+        draft.exercises[0].sets.pop();
 
         draft.exercises[0].sets.pop();
         let restored = derive(&draft, &guide, &GuidanceContext::default());
@@ -1281,20 +1270,20 @@ mod tests {
         let one_row = derive(&draft, &guide(), &GuidanceContext::default());
         assert!(one_row.has_active_exercise);
         assert!(!one_row.has_completed_set);
-        assert_eq!(one_row.deepen.as_ref().unwrap().name, "Triceps Extension");
+        assert_eq!(one_row.expand.as_ref().unwrap().name, "Triceps Extension");
 
         let mut second = draft.exercises[0].sets[0].clone();
         second.id = "set-00000002".into();
         draft.exercises[0].sets.push(second);
         let two_rows = derive(&draft, &guide(), &GuidanceContext::default());
         assert!(
-            two_rows.deepen.as_ref().unwrap().score < one_row.deepen.as_ref().unwrap().score,
+            two_rows.expand.as_ref().unwrap().score < one_row.expand.as_ref().unwrap().score,
             "another planned set reduces the remaining gap before completion"
         );
     }
 
     #[test]
-    fn an_axial_compound_is_not_recommended_after_another_axial_compound() {
+    fn fatigue_breaks_equal_fits_but_does_not_override_greater_need() {
         let mut guide = GuideConfig {
             version: 1,
             today: "2026-09-03".into(),
@@ -1348,8 +1337,13 @@ mod tests {
         draft.exercises[0].sets[0].done = false;
 
         let derived = derive(&draft, &guide, &GuidanceContext::default());
-        assert_ne!(derived.deepen.as_ref().unwrap().name, "Sumo Deadlift");
-        assert_ne!(derived.expand.as_ref().unwrap().name, "Sumo Deadlift");
+        assert_eq!(derived.expand.as_ref().unwrap().name, "Back Extension");
+
+        guide.muscle_needs.insert("hamstrings".into(), 8_000);
+        guide.muscle_needs.insert("spinal-erectors".into(), 10_000);
+        let derived = derive(&draft, &guide, &GuidanceContext::default());
+        assert_eq!(derived.expand.as_ref().unwrap().name, "Sumo Deadlift");
+        assert_eq!(derived.deepen.as_ref().unwrap().name, "Back Extension");
     }
 
     #[test]

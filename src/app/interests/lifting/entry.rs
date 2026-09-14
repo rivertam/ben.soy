@@ -252,15 +252,15 @@ async fn entry_surface(guide: &GuideConfig) -> Result {
                                 <div class="entry-fork__lanes">
                                     suggestion_lane(
                                         lane: "deepen",
-                                        label: "deepen",
+                                        label: "go deeper",
                                         choice: "More of this",
-                                        reason: "Same training thread."
+                                        reason: "Round out the muscles in this workout."
                                     )
                                     suggestion_lane(
                                         lane: "expand",
-                                        label: "expand",
+                                        label: "diversify",
                                         choice: "Add variety",
-                                        reason: "A different region."
+                                        reason: "Best fit for your remaining needs."
                                     )
                                 </div>
                             </section>

@@ -884,8 +884,8 @@ async function start(root) {
       action.disabled = true;
       action.removeAttribute("data-suggestion-name");
       action.setAttribute("aria-label", "No suggestion available");
-      node.querySelector("[data-entry-suggestion-choice]").textContent = "No route yet";
-      node.querySelector("[data-entry-suggestion-reason]").textContent = "Add an exercise to open this branch.";
+      node.querySelector("[data-entry-suggestion-choice]").textContent = lane === "deepen" ? "No other positive fit" : "No positive fit";
+      node.querySelector("[data-entry-suggestion-reason]").textContent = "Search to choose another exercise.";
       node.querySelector("[data-entry-suggestion-mark]").textContent = "";
       return;
     }
