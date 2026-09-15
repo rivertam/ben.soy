@@ -24,35 +24,10 @@ use crate::{
     components::link_label,
     content::{
         access::is_admin,
-        interests::{INTERESTS, Interest},
         logbook::{Entry, FILTER_TAGS, Kind, LOG, serial},
     },
     util::urlencode,
 };
-
-/// The interests the hero cycles through.
-fn hero_words() -> Vec<&'static Interest> {
-    INTERESTS.iter().collect()
-}
-
-/// The hero's longest rendered line, in ems: "I like {title}." at Fira
-/// Mono's fixed 0.6em glyph advance. The hero never wraps, so logbook.css
-/// divides this out of the column width to cap the font at exactly-fits
-/// (`--log-hero-fit`); phones would otherwise scroll sideways whenever the
-/// rotation lands on a long title. Proportional theme faces (Comic Sans,
-/// Zilla Slab) average narrower than mono, so this bound holds everywhere.
-fn hero_line_ems(words: &[&'static Interest]) -> f64 {
-    words
-        .iter()
-        .map(|i| {
-            format!("I like {}.", i.title.to_lowercase())
-                .chars()
-                .count()
-        })
-        .max()
-        .unwrap_or(0) as f64
-        * 0.6
-}
 
 #[query_params(error = redirect("?"))]
 struct LogQuery {
@@ -408,7 +383,7 @@ async fn legacy_log(cx: &Cx) -> Result {
     Err(redirect_permanent(&target).into())
 }
 
-/// The timeline itself: hero, filter row, entries, pager. Rendered by
+/// The timeline itself: heading, filter row, entries, pager. Rendered by
 /// `home.rs` as the log pane — first of the phone deck's five, the whole
 /// page on desktop. It reads its filter state from the request query, so the
 /// chips work wherever it renders.
@@ -542,41 +517,12 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
         rows.push(Row { year_mark, item });
     }
 
-    let words = hero_words();
-    let hero_fit = format!("--log-hero-fit: {:.1}", hero_line_ems(&words));
-
     view! {
-        // Hero: "I like {interest}", cycling the interest registry. Pure CSS
-        // — see .log-hero-* in logbook.css, including the font-size, which
-        // divides --log-hero-fit (set here from the registry) out of the
-        // text column's container width so the longest rotation always fits.
-        // Each word links to its page; only the currently visible one is
-        // hoverable (visibility + pause-on-hover).
-        <header class="rail-row mt-16">
-            <p class="rail-stamp rail-stamp-label">"log"</p>
-            <div class="flex min-w-0 items-start justify-between gap-4">
-                <div class="@container min-w-0 flex-1" style=(hero_fit.as_str())>
-                    <h1 class="log-hero font-display leading-none font-bold tracking-tight">
-                        "I like "
-                        <span class="log-hero-words">
-                            for interest in words.iter() {
-                                <a
-                                    class="log-hero-word text-oxide"
-                                    href=(format!("/{}", interest.slug))
-                                >(format!("{}.", interest.title.to_lowercase()))</a>
-                            }
-                        </span>
-                    </h1>
-                    <p class="mt-4 max-w-prose text-[17px] leading-relaxed text-ink2">
-                        "Software developer in New York"
-                        // The phone deck's one hint; desktop has the tmux windows.
-                        <span class="text-muted sm:hidden">" · swipe for more →"</span>
-                    </p>
-                </div>
-                if can_log {
-                    crate::app::interests::lifting::home::log_launcher()
-                }
-            </div>
+        <header class="home-log-heading">
+            <h2>"Activity log"</h2>
+            if can_log {
+                crate::app::interests::lifting::home::log_launcher()
+            }
         </header>
 
         // Filter row: kind chips, tag chips, search, and the feed. Server-side
@@ -584,7 +530,7 @@ pub(crate) async fn timeline(cx: &Cx) -> Result {
         // search box is a plain GET form that does the same (hidden inputs
         // carry the active filters along). Phones drop the row for the
         // minimal pane look; the timeline itself is the mobile page.
-        <div class="mt-11 hidden flex-wrap items-baseline gap-4 border-t border-hairline pt-4 font-meta text-[13px] sm:flex">
+        <div class="mt-3 hidden flex-wrap items-baseline gap-4 border-t border-hairline pt-4 font-meta text-[13px] sm:flex">
             for chip in kind_chips.iter() {
                 <a
                     class=(if chip.active { "log-chip log-chip-active" } else { "log-chip" })
@@ -1029,31 +975,6 @@ mod tests {
                 _ => None,
             })
             .expect("a fold row")
-    }
-
-    /// The hero's fit variable is set here and consumed in logbook.css;
-    /// renaming either side alone would quietly restore the sideways
-    /// scrolling on phones.
-    #[test]
-    fn the_hero_fit_variable_reaches_its_stylesheet() {
-        const LOGBOOK_CSS: &str = include_str!("../../styles/logbook.css");
-        assert!(LOGBOOK_CSS.contains("var(--log-hero-fit"));
-        let words = hero_words();
-        assert!(!words.is_empty());
-        // "I like slay the spire." is today's widest line; the derivation
-        // must track the registry, not a constant.
-        assert_eq!(format!("{:.1}", hero_line_ems(&words)), "13.2");
-    }
-
-    #[test]
-    fn the_hero_rotation_has_one_css_slot_per_interest() {
-        const LOGBOOK_CSS: &str = include_str!("../../styles/logbook.css");
-        let word_count = hero_words().len();
-        let cycle_seconds = word_count as f64 * 2.6;
-        assert!(LOGBOOK_CSS.contains(&format!(
-            "animation: log-word {cycle_seconds:.1}s ease infinite"
-        )));
-        assert!(LOGBOOK_CSS.contains(&format!(".log-hero-word:nth-child({word_count})")));
     }
 
     #[test]

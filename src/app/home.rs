@@ -5,7 +5,7 @@
 //! honest), plus a netrw-style `more` pane listing everything else. Granted
 //! hidden pages join that listing as dotfiles for their viewers only (the
 //! response layer keeps those renders out of the CDN). Desktop reaches the
-//! listing too: the hero's "multitudes" targets `#more`, which unfolds
+//! listing too: the navigation targets `#more`, which unfolds
 //! below the timeline. Old `/interests` bookmarks land here.
 
 use benjisponge::data::Data;
@@ -20,7 +20,7 @@ use topcoat::{
 use super::login::viewer;
 use crate::{
     components::shell,
-    content::{access, interests::INTERESTS},
+    content::{access, drum_covers::DRUM_COVERS, interests::INTERESTS},
 };
 
 const PANES_JS: Asset = asset!("../components/browser/panes.js");
@@ -44,6 +44,7 @@ struct Listing {
 async fn home(cx: &Cx) -> Result {
     // Allowlisted hidden pages join the `more` listing for their viewers
     // only, the way netrw shows dotfiles to people who ask.
+    let cover = &DRUM_COVERS[0];
     let current = viewer(cx);
     let can_log = current
         .as_ref()
@@ -84,6 +85,45 @@ async fn home(cx: &Cx) -> Result {
         shell(page: "", active: "~", fitness_pwa: true,
         <div class="pane-deck" data-pane-deck="">
             <section class="pane pane-log" id="log" data-pane="" aria-label="the log">
+                <header class="home-intro">
+                    <div class="home-intro-copy">
+                        <h1>"Ben Berman"</h1>
+                        <p class="home-tagline">"software - drums - stuff"</p>
+                        <p class="home-bio">
+                            "I’m a software developer in New York. Away from the keyboard, \
+                             I play drums, lift weights, and hang out with my dog, Felix. \
+                             Here’s what I’m making and getting into."
+                        </p>
+                        <a class="home-say-hi oxlink" href="mailto:ben.m.berman@gmail.com">"Say hi."</a>
+                    </div>
+                    <figure class="home-portrait">
+                        <a href=(cover.watch_url) aria-label=(format!("Watch my drum cover of {} by {}", cover.title, cover.artist))>
+                            <img
+                                src=(format!("https://img.youtube.com/vi/{}/mqdefault.jpg", cover.youtube_id))
+                                alt="Ben playing his drum kit at home"
+                                width="320" height="180" fetchpriority="high"
+                            >
+                        </a>
+                        <figcaption><span aria-hidden="true">"↗"</span>" that's me!"</figcaption>
+                    </figure>
+                </header>
+                <nav class="home-features" aria-label="A few things to explore">
+                    <a class="home-feature" href="/fitness" data-rail-item="" data-rail-href="/fitness">
+                        <span class="home-feature-kind">"my lifting tracker"</span>
+                        <strong>"Picking things up, putting them down"</strong>
+                        <span>"A deep strength training logging and analysis personal application"</span>
+                    </a>
+                    <a class="home-feature" href="/thoughts/crop-deaths" data-rail-item="" data-rail-href="/thoughts/same-age-as-my-dog">
+                        <span class="home-feature-kind">"my most recent essay"</span>
+                        <strong>"So you think you care about crop deaths..."</strong>
+                        <span>"A refutation of a common anti-vegan argument"</span>
+                    </a>
+                    <a class="home-feature" href="/felix" data-rail-item="" data-rail-href="/felix">
+                        <span class="home-feature-kind">"My dog"</span>
+                        <strong>"Felix"</strong>
+                        <span>"A page for pictures etc."</span>
+                    </a>
+                </nav>
                 crate::app::log::timeline()
             </section>
             <section class="pane pane-felix" id="felix" data-pane="" aria-label="felix">
