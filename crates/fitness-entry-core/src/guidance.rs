@@ -531,9 +531,14 @@ fn next_suggestions(
     // The session defines which needs Deepen can reward, not how strongly it
     // rewards them. Weighting by prior stimulus would favor the constituents
     // already getting the most work. Keep every surplus penalty in both lanes.
-    let scoped_deltas: MuscleDeltas = deltas
+    let deepen_deltas: MuscleDeltas = deltas
         .iter()
         .filter(|(muscle, delta)| **delta < 0 || context.muscles.contains(*muscle))
+        .map(|(muscle, delta)| (muscle.clone(), *delta))
+        .collect();
+    let expand_deltas: MuscleDeltas = deltas
+        .iter()
+        .filter(|(muscle, delta)| **delta < 0 || !context.muscles.contains(*muscle))
         .map(|(muscle, delta)| (muscle.clone(), *delta))
         .collect();
     let candidates: Vec<_> = guide
@@ -550,11 +555,11 @@ fn next_suggestions(
             .filter(|scored| scored.fit_score > 0)
             .min_by(compare_scored)
     };
-    // Always show the overall best fit. The scoped lane offers the best
-    // distinct alternative, so the two buttons never duplicate an exercise.
-    let expand = best(&deltas, None);
+    // Diversify only earns credit for needs outside the session's coverage.
+    // Keep the two exercises distinct when a compound fits both scopes.
+    let expand = best(&expand_deltas, None);
     let deep = best(
-        &scoped_deltas,
+        &deepen_deltas,
         expand.as_ref().map(|scored| scored.item.name.as_str()),
     );
     (
@@ -971,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn overall_and_scoped_recommendations_cover_different_needs() {
+    fn recommendations_cover_inside_and_outside_session_needs() {
         let mut guide = guide();
         guide.muscle_needs.insert("hamstrings".into(), 20_000);
         let derived = derive(
@@ -990,14 +995,105 @@ mod tests {
     }
 
     #[test]
-    fn the_overall_winner_is_preserved_when_both_lanes_prefer_it() {
+    fn diversify_does_not_repeat_the_strongest_in_session_need() {
         let derived = derive(
             &draft_with("Bench Press"),
             &guide(),
             &GuidanceContext::default(),
         );
-        assert_eq!(derived.expand.as_ref().unwrap().name, "Triceps Extension");
-        assert_eq!(derived.deepen.as_ref().unwrap().name, "Incline Press");
+        assert_eq!(derived.expand.as_ref().unwrap().name, "Leg Curl");
+        assert_eq!(derived.deepen.as_ref().unwrap().name, "Triceps Extension");
+    }
+
+    #[test]
+    fn three_incline_row_sets_diversify_to_uncovered_muscles() {
+        let mut guide = guide();
+        guide.muscle_needs = MuscleDeltas::from([
+            ("mid-traps".into(), 30_000),
+            ("biceps".into(), 20_000),
+            ("spinal-erectors".into(), 8_000),
+        ]);
+        guide.exercises = vec![
+            item(
+                "Incline Row",
+                20,
+                "",
+                &[("mid-traps", 100), ("biceps", 50)],
+                &["horizontal-pull"],
+                &["back"],
+            ),
+            item(
+                "Cable Row",
+                10,
+                "",
+                &[("mid-traps", 100)],
+                &["horizontal-pull"],
+                &["back"],
+            ),
+            item(
+                "Machine Row",
+                5,
+                "",
+                &[("mid-traps", 90)],
+                &["horizontal-pull"],
+                &["back"],
+            ),
+            item(
+                "Biceps Curl",
+                5,
+                "",
+                &[("biceps", 100)],
+                &["elbow-flexion"],
+                &["arms"],
+            ),
+            item(
+                "Back Extension",
+                5,
+                "",
+                &[("spinal-erectors", 100)],
+                &["hinge"],
+                &["back"],
+            ),
+        ];
+        let mut draft = draft_with("Incline Row");
+        for index in 2..=3 {
+            let mut set = draft.exercises[0].sets[0].clone();
+            set.id = format!("set-{index:08}");
+            draft.exercises[0].sets.push(set);
+        }
+        for _ in 0..2 {
+            let derived = derive(&draft, &guide, &GuidanceContext::default());
+            assert_eq!(derived.deepen.as_ref().unwrap().name, "Cable Row");
+            assert_eq!(
+                derived.deepen.as_ref().unwrap().reason,
+                "Rounds out mid traps."
+            );
+            assert_eq!(derived.expand.as_ref().unwrap().name, "Back Extension");
+            assert_eq!(derived.expand.as_ref().unwrap().score, 800_000.0);
+            assert_eq!(
+                derived.expand.as_ref().unwrap().reason,
+                "Covers remaining spinal erectors need."
+            );
+            guide.exercises.reverse();
+            for set in &mut draft.exercises[0].sets {
+                set.done = false;
+            }
+        }
+
+        // Diversify keeps surplus penalties even for already-covered muscles.
+        guide.muscle_needs.insert("mid-traps".into(), -10_000);
+        let extension = guide
+            .exercises
+            .iter_mut()
+            .find(|item| item.name == "Back Extension")
+            .unwrap();
+        extension.muscles.push(("mid-traps".into(), 100));
+        let derived = derive(&draft, &guide, &GuidanceContext::default());
+        assert!(
+            derived.expand.is_none(),
+            "do not fall back to another covered muscle"
+        );
+        assert_eq!(derived.deepen.as_ref().unwrap().name, "Biceps Curl");
     }
 
     #[test]
@@ -1174,12 +1270,12 @@ mod tests {
         draft.exercises[0].sets[0].done = false;
         draft.exercises[0].sets[0].reps.clear();
         let first = derive(&draft, &guide, &GuidanceContext::default());
-        assert_eq!(first.expand.as_ref().unwrap().name, "Chest Fly");
-        assert_eq!(first.expand.as_ref().unwrap().score, 280_000.0);
+        assert!(first.expand.is_none(), "no needs outside the session");
+        assert_eq!(first.deepen.as_ref().unwrap().name, "Chest Fly");
         assert_eq!(
             first.deepen.as_ref().unwrap().score,
-            240_000.0,
-            "partial triceps credit leaves a real gap"
+            280_000.0,
+            "partial chest credit leaves a real gap"
         );
 
         let mut second = draft.exercises[0].sets[0].clone();
@@ -1192,12 +1288,9 @@ mod tests {
 
         draft.exercises[0].sets[1].set_type = SetType::Normal;
         let second = derive(&draft, &guide, &GuidanceContext::default());
-        assert_eq!(second.expand.as_ref().unwrap().name, "Triceps Extension");
-        assert_eq!(second.expand.as_ref().unwrap().score, 80_000.0);
-        assert!(
-            second.deepen.is_none(),
-            "the remaining chest option is above target"
-        );
+        assert!(second.expand.is_none());
+        assert_eq!(second.deepen.as_ref().unwrap().name, "Triceps Extension");
+        assert_eq!(second.deepen.as_ref().unwrap().score, 80_000.0);
 
         let mut third = draft.exercises[0].sets[0].clone();
         third.id = "set-00000003".into();
@@ -1274,14 +1367,15 @@ mod tests {
         let one_row = derive(&draft, &guide(), &GuidanceContext::default());
         assert!(one_row.has_active_exercise);
         assert!(!one_row.has_completed_set);
-        assert_eq!(one_row.expand.as_ref().unwrap().name, "Triceps Extension");
+        assert_eq!(one_row.deepen.as_ref().unwrap().name, "Triceps Extension");
+        assert_eq!(one_row.expand.as_ref().unwrap().name, "Leg Curl");
 
         let mut second = draft.exercises[0].sets[0].clone();
         second.id = "set-00000002".into();
         draft.exercises[0].sets.push(second);
         let two_rows = derive(&draft, &guide(), &GuidanceContext::default());
         assert!(
-            two_rows.expand.as_ref().unwrap().score < one_row.expand.as_ref().unwrap().score,
+            two_rows.deepen.as_ref().unwrap().score < one_row.deepen.as_ref().unwrap().score,
             "another planned set reduces the remaining gap before completion"
         );
     }
@@ -1341,13 +1435,24 @@ mod tests {
         draft.exercises[0].sets[0].done = false;
 
         let derived = derive(&draft, &guide, &GuidanceContext::default());
-        assert_eq!(derived.expand.as_ref().unwrap().name, "Back Extension");
+        assert!(derived.expand.is_none());
+        assert_eq!(derived.deepen.as_ref().unwrap().name, "Back Extension");
 
         guide.muscle_needs.insert("hamstrings".into(), 8_000);
         guide.muscle_needs.insert("spinal-erectors".into(), 10_000);
         let derived = derive(&draft, &guide, &GuidanceContext::default());
-        assert_eq!(derived.expand.as_ref().unwrap().name, "Sumo Deadlift");
+        assert_eq!(derived.expand.as_ref().unwrap().name, "Leg Curl");
         assert_eq!(derived.deepen.as_ref().unwrap().name, "Back Extension");
+
+        // Greater scoped need still beats fatigue when fit scores differ.
+        let sumo = guide
+            .exercises
+            .iter_mut()
+            .find(|item| item.name == "Sumo Deadlift")
+            .unwrap();
+        sumo.muscles[0].1 = 110;
+        let derived = derive(&draft, &guide, &GuidanceContext::default());
+        assert_eq!(derived.deepen.as_ref().unwrap().name, "Sumo Deadlift");
     }
 
     #[test]
