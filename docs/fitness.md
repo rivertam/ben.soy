@@ -247,14 +247,14 @@ reuse the local sync token or expose unrestricted SurrealQL.
   followed by inline search as the fallback. Once an exercise is added those
   starter directions collapse into two next-exercise lanes, again followed
   by search. “Diversify” takes the best positive signed dot product against
-  all remaining muscle needs. “Go deeper” uses the same remaining deltas but
-  only rewards muscles in the selected exercises' profiles, including their
-  secondary muscles. Surpluses still subtract credit everywhere, including
+  remaining needs outside the selected exercises' muscle profiles. “Go deeper”
+  only rewards remaining needs inside those profiles, including secondary
+  muscles. Surpluses still subtract credit everywhere, including
   outside that scope. Prior stimulus never multiplies the scoped needs: after
   dips cover most of the chest gap, a larger remaining triceps gap can favor
-  extensions without any movement-specific complement rule. The overall
-  winner is always shown; “go deeper” offers the best distinct positive fit
-  in its scope. A lane with no positive candidate offers search instead.
+  extensions without any movement-specific complement rule. Each lane uses its
+  own scope; “go deeper” offers the best positive fit distinct from the
+  diversify exercise. A lane with no positive candidate offers search instead.
   Fatigue, then familiarity and name, only break exact score ties. Every selected
   exercise and every added set row enters the active-session load immediately,
   so the lanes recompute as the draft changes without waiting for completion.
